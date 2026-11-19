@@ -102,8 +102,7 @@ loaded skins or the default Steve/Alex). Nametags use team prefix/suffix colours
 and the below-name objective; armour-stand and mob custom names (`CustomNameVisible`) render as labels.
 A capture against the reference server checked the sidebar, title, Tab overlay, team nametag and an
 invisible armour-stand hologram. `--smoke-tab` holds the list key for validation captures. Known gaps:
-world labels skip unicode glyphs and bold, lack vanilla's see-through background, and `hearts` list
-objectives show numbers.
+world labels skip unicode glyphs and bold, and `hearts` list objectives show numbers.
 
 Inventory checkpoint. Windows know their `GuiContainer` (player, chest of any rows, hopper,
 dispenser/dropper, crafting table, furnace, and a chest-style fallback) with vanilla sheets, slot
@@ -178,7 +177,14 @@ flag 0x10 with a sword) and `aimedBow` (both arms along the head); the bow draws
 from how long the using flag has been set (`Entity::use_ticks`). A synthetic-player capture checked
 holding, blocking, drawing, a held block, sneaking, a fishing rod and an apple from front and side.
 
-Next (in order): see-through nametag backgrounds; live Hypixel PvP play test.
+Name labels follow `Render.renderLivingLabel`: each label gets a black backing at alpha 0.25 and its
+text at alpha 0x20 drawn through walls, then the full text depth-tested; sneaking players get only a
+depth-tested backing and faint text (`RendererLivingEntity.renderName`). Labels render in their own
+pass on the non-sRGB view, after the world and before the hand, keeping the world's depth, so the
+translucency blends in gamma space as vanilla. A capture checked a label behind a wall, a sneaking
+label and the backing over sky.
+
+Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 

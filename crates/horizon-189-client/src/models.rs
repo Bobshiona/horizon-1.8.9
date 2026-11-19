@@ -1370,10 +1370,13 @@ pub(crate) fn first_person_arm(
     }
 }
 
-/// Depth-tested player labels. Texture properties remain on each profile
-/// for an asynchronous skin/cape provider to consume.
+/// Name labels as `Render.renderLivingLabel` draws them: a translucent
+/// black backing and faint text seen through walls (`through`), then the
+/// full text where nothing hides it (`tested`). Sneaking players get only a
+/// depth-tested backing and faint text, as `RendererLivingEntity.renderName`.
 pub fn nametags(
-    out: &mut Vec<Vertex>,
+    through: &mut Vec<Vertex>,
+    tested: &mut Vec<Vertex>,
     entities: &[(i32, Entity)],
     partial: f32,
     origin: [i64; 3],
@@ -1385,13 +1388,35 @@ pub fn nametags(
     // `RendererLivingEntity.canRenderName` with team name-tag visibility.
     let own_team = board.team_of(own_name).map(|(name, _)| name);
     let below = board.slot(2);
-    let label = |out: &mut Vec<Vertex>, at: Vec3, text: &str, row: f32| {
+    let label = |through: &mut Vec<Vertex>,
+                 tested: &mut Vec<Vertex>,
+                 at: Vec3,
+                 text: &str,
+                 sneaking: bool| {
         let f = 0.016_666_668 * 1.6;
         let matrix = Mat4::from_translation(at)
             * Mat4::from_rotation_y((-camera.yaw).to_radians())
             * Mat4::from_rotation_x(camera.pitch.to_radians())
             * Mat4::from_scale(Vec3::new(-f, -f, f));
-        text_line(out, matrix, text, row, widths, [1.0; 3]);
+        let faint = if sneaking {
+            &mut *tested
+        } else {
+            &mut *through
+        };
+        label_backing(faint, matrix, text_width(text, widths) / 2);
+        let start = faint.len();
+        text_line(faint, matrix, text, 0.0, widths, [1.0; 3]);
+        // 553648127: white at alpha 0x20; colour codes keep that alpha.
+        for vertex in &mut faint[start..] {
+            vertex.hurt = 32.0 / 255.0;
+        }
+        if !sneaking {
+            let start = tested.len();
+            text_line(tested, matrix, text, 0.0, widths, [1.0; 3]);
+            for vertex in &mut tested[start..] {
+                vertex.hurt = 1.0;
+            }
+        }
     };
     for (_, entity) in entities {
         let distance: f64 = entity
@@ -1421,18 +1446,25 @@ pub fn nametags(
                 if distance > range * range {
                     continue;
                 }
+                let sneaking = entity.sneaking();
                 let mut at = position(entity, partial, origin)
-                    + Vec3::new(0.0, if entity.sneaking() { 2.05 } else { 2.3 }, 0.0);
+                    + Vec3::new(0.0, if sneaking { 2.05 } else { 2.3 }, 0.0);
                 // `renderOffsetLivingLabel`: the below-name score within ten
                 // blocks, with the name raised one line.
                 if let Some((objective, info)) = below
                     && distance < 100.0
                 {
                     let points = board.points(objective, &profile.name).unwrap_or(0);
-                    label(out, at, &format!("{points} {}", info.display), 0.0);
+                    label(
+                        through,
+                        tested,
+                        at,
+                        &format!("{points} {}", info.display),
+                        false,
+                    );
                     at += Vec3::new(0.0, 9.0 * 1.15 * 0.016_666_668 * 1.6, 0.0);
                 }
-                label(out, at, &board.format(&profile.name), 0.0);
+                label(through, tested, at, &board.format(&profile.name), sneaking);
             }
             (Kind::Mob(_) | Kind::Object(78), _) => {
                 let Some(name) = &entity.custom_name else {
@@ -1443,7 +1475,7 @@ pub fn nametags(
                 }
                 let at = position(entity, partial, origin)
                     + Vec3::new(0.0, entity.label_height() as f32, 0.0);
-                label(out, at, name, 0.0);
+                label(through, tested, at, name, false);
             }
             _ => {}
         }
@@ -1537,6 +1569,44 @@ pub fn glyph_widths(font: &[u8], width: u32) -> [u8; 256] {
         *slot = if code == 32 { 4 } else { (last + 1) as u8 };
     }
     widths
+}
+
+/// `FontRenderer.getStringWidth` over ascii glyphs, skipping `§` codes.
+fn text_width(text: &str, widths: &[u8; 256]) -> i32 {
+    let mut total = 0;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '§' {
+            chars.next();
+            continue;
+        }
+        if let Some(index) = crate::ui::ascii_index(c) {
+            total += i32::from(widths[index]);
+        }
+    }
+    total
+}
+
+/// The label's backing: black at alpha 0.25 from (-half - 1, -1) to
+/// (half + 1, 8) in label pixels, both sides.
+fn label_backing(out: &mut Vec<Vertex>, matrix: Mat4, half: i32) {
+    let (left, right) = ((-half - 1) as f32, (half + 1) as f32);
+    let corners = [
+        Vec3::new(left, -1.0, 0.0),
+        Vec3::new(left, 8.0, 0.0),
+        Vec3::new(right, 8.0, 0.0),
+        Vec3::new(right, -1.0, 0.0),
+    ]
+    .map(|point| matrix.transform_point3(point).to_array());
+    for index in [0, 1, 2, 0, 2, 3] {
+        out.push(Vertex {
+            position: corners[index],
+            uv: [0.0; 2],
+            layer: u32::MAX,
+            color: [0.0; 3],
+            hurt: 0.25,
+        });
+    }
 }
 
 fn text_line(

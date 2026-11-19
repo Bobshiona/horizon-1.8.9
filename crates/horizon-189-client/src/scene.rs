@@ -38,6 +38,13 @@ struct GpuColumn {
 pub struct Scene {
     pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
+    /// `renderLivingLabel`: one pipeline ignores depth (the see-through
+    /// pass), the other tests it; both blend in gamma space.
+    label_pipelines: [wgpu::RenderPipeline; 2],
+    labels: wgpu::Buffer,
+    labels_capacity: u64,
+    /// Vertices drawn through walls, then depth-tested ones.
+    label_counts: [u32; 2],
     fixture: Option<GpuMesh>,
     columns: HashMap<(i32, i32), GpuColumn>,
     origin: [i64; 3],
@@ -279,6 +286,52 @@ impl Scene {
         };
         let pipeline = make_pipeline(false);
         let translucent_pipeline = make_pipeline(true);
+        let make_label_pipeline = |through: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(if through {
+                    "See-through labels"
+                } else {
+                    "Depth-tested labels"
+                }),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0=>Float32x3, 1=>Float32x2, 2=>Uint32, 3=>Float32x3, 4=>Float32],
+                    })],
+                },
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(if through {
+                        wgpu::CompareFunction::Always
+                    } else {
+                        wgpu::CompareFunction::GreaterEqual
+                    }),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("label_fragment"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format.remove_srgb_suffix(),
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let label_pipelines = [make_label_pipeline(true), make_label_pipeline(false)];
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -408,6 +461,13 @@ impl Scene {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let labels_capacity = 64 * 1024;
+        let labels = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Label vertices"),
+            size: labels_capacity,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let entity_capacity = 64 * 1024;
         let entities = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Entity vertices"),
@@ -419,6 +479,10 @@ impl Scene {
         let mut scene = Self {
             pipeline,
             translucent_pipeline,
+            label_pipelines,
+            labels,
+            labels_capacity,
+            label_counts: [0; 2],
             fixture: None,
             columns: HashMap::new(),
             origin: [0; 3],
@@ -587,6 +651,61 @@ impl Scene {
         }
         self.entity_count = u32::try_from(vertices.len())?;
         Ok(())
+    }
+
+    /// Replace this frame's name labels: `through` draws over everything,
+    /// `tested` only where nothing nearer hides it.
+    pub fn set_labels(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        through: &[Vertex],
+        tested: &[Vertex],
+    ) -> Result<(), Box<dyn Error>> {
+        let size = std::mem::size_of_val(through) + std::mem::size_of_val(tested);
+        if size as u64 > self.labels_capacity {
+            self.labels_capacity = (size as u64)
+                .next_power_of_two()
+                .min(device.limits().max_buffer_size);
+            if size as u64 > self.labels_capacity {
+                return Err("Label mesh exceeds device buffer limit".into());
+            }
+            self.labels = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Label vertices"),
+                size: self.labels_capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        let through_bytes: &[u8] = bytemuck::cast_slice(through);
+        if !through_bytes.is_empty() {
+            queue.write_buffer(&self.labels, 0, through_bytes);
+        }
+        let tested_bytes: &[u8] = bytemuck::cast_slice(tested);
+        if !tested_bytes.is_empty() {
+            queue.write_buffer(&self.labels, through_bytes.len() as u64, tested_bytes);
+        }
+        self.label_counts = [u32::try_from(through.len())?, u32::try_from(tested.len())?];
+        Ok(())
+    }
+
+    pub fn has_labels(&self) -> bool {
+        self.label_counts.iter().any(|&count| count > 0)
+    }
+
+    /// Labels, in a gamma-space pass that keeps the world's depth.
+    pub fn draw_labels(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let [through, tested] = self.label_counts;
+        pass.set_bind_group(0, &self.entity_bindings, &[]);
+        pass.set_vertex_buffer(0, self.labels.slice(..));
+        if through > 0 {
+            pass.set_pipeline(&self.label_pipelines[0]);
+            pass.draw(0..through, 0..1);
+        }
+        if tested > 0 {
+            pass.set_pipeline(&self.label_pipelines[1]);
+            pass.draw(through..through + tested, 0..1);
+        }
     }
 
     /// Camera effects for the next `set_camera`.

@@ -24,6 +24,8 @@ pub struct Renderer {
     view_distance: u8,
     pose: PositionLook,
     entity_vertices: Vec<crate::terrain::Vertex>,
+    /// See-through and depth-tested label vertices, reused between frames.
+    label_vertices: [Vec<crate::terrain::Vertex>; 2],
     ui: Option<crate::ui::Pass>,
     pub layout: crate::ui::Layout,
     gui_scale: u32,
@@ -131,6 +133,7 @@ impl Renderer {
             view_distance,
             pose: PositionLook::default(),
             entity_vertices: Vec::new(),
+            label_vertices: Default::default(),
             ui,
             layout: crate::ui::Layout::new((size.width, size.height), 1.0, gui_scale),
             gui_scale,
@@ -297,9 +300,13 @@ impl Renderer {
             self.pose,
         );
         vertices.extend_from_slice(extra);
+        let [mut through, mut tested] = std::mem::take(&mut self.label_vertices);
+        through.clear();
+        tested.clear();
         if let Some(registry) = &self.registry {
             crate::models::nametags(
-                &mut vertices,
+                &mut through,
+                &mut tested,
                 entities,
                 partial,
                 scene.origin(),
@@ -309,8 +316,11 @@ impl Renderer {
                 own_name,
             );
         }
-        let result = scene.set_entities(&self.device, &self.queue, &vertices);
+        let result = scene
+            .set_entities(&self.device, &self.queue, &vertices)
+            .and_then(|()| scene.set_labels(&self.device, &self.queue, &through, &tested));
         self.entity_vertices = vertices;
+        self.label_vertices = [through, tested];
         result
     }
 
@@ -581,6 +591,34 @@ impl Renderer {
                 scene.draw(&mut pass, &self.config);
             }
         }
+        let plain = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.config.format.remove_srgb_suffix()),
+            ..Default::default()
+        });
+        if let Some(scene) = self.scene.as_ref().filter(|scene| scene.has_labels()) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Name labels"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &plain,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &scene.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            scene.draw_labels(&mut pass);
+        }
         if let Some(scene) = &self.scene {
             // renderHand: depth cleared so the hand never enters walls.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -607,10 +645,6 @@ impl Renderer {
             scene.draw_hand(&mut pass);
         }
         if let Some(ui) = &self.ui {
-            let plain = texture.create_view(&wgpu::TextureViewDescriptor {
-                format: Some(self.config.format.remove_srgb_suffix()),
-                ..Default::default()
-            });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Legacy interface"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

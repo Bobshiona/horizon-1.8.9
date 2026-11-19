@@ -50,3 +50,21 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     let fog = clamp((distance - camera.fog.w) / max(camera.eye.w - camera.fog.w, 1.0), 0.0, 1.0);
     return vec4<f32>(mix(lit, camera.fog.rgb, fog), color.a);
 }
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
+
+// Name labels: font glyphs or an untextured quad (layer 0xffffffff), with
+// the vertex `hurt` slot carrying alpha. Drawn to a non-sRGB view so
+// translucency blends in gamma space as vanilla does.
+@fragment
+fn label_fragment(in: VertexOut) -> @location(0) vec4<f32> {
+    var texel = vec4<f32>(1.0);
+    if in.layer != 0xffffffffu {
+        let sampled = textureSampleLevel(block_texture, block_sampler, in.uv, in.layer, 0.0);
+        if sampled.a < 0.1 { discard; }
+        texel = vec4<f32>(linear_to_srgb(sampled.rgb), sampled.a);
+    }
+    return vec4<f32>(texel.rgb * in.color, texel.a * in.hurt);
+}
