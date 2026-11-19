@@ -15,15 +15,17 @@ struct VertexOut {
     @location(1) @interpolate(flat) layer: u32,
     @location(2) color: vec3<f32>,
     @location(3) relative: vec3<f32>,
+    @location(4) hurt: f32,
 }
 
 @vertex
-fn vertex_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) layer: u32, @location(3) color: vec3<f32>) -> VertexOut {
+fn vertex_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) layer: u32, @location(3) color: vec3<f32>, @location(4) hurt: f32) -> VertexOut {
     var out: VertexOut;
     out.position = camera.view_projection * vec4<f32>(position, 1.0);
     out.uv = uv;
     out.layer = layer;
     out.color = color;
+    out.hurt = hurt;
     out.relative = position - camera.eye.xyz;
     return out;
 }
@@ -38,7 +40,10 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     let color = textureSample(block_texture, block_sampler, in.uv, in.layer);
     if color.a < 0.1 { discard; }
-    let lit = color.rgb * srgb_to_linear(in.color);
+    // Legacy hurt overlay blends in gamma space before lighting.
+    let gamma = select(1.055 * pow(color.rgb, vec3<f32>(1.0 / 2.4)) - 0.055, color.rgb * 12.92, color.rgb <= vec3<f32>(0.0031308));
+    let tinted = mix(gamma, vec3<f32>(1.0, 0.0, 0.0), in.hurt);
+    let lit = srgb_to_linear(tinted) * srgb_to_linear(in.color);
     // Linear distance fog from 3/4 of the view distance, as vanilla's
     // terrain fog, so loading column edges fade instead of popping.
     let distance = length(in.relative);

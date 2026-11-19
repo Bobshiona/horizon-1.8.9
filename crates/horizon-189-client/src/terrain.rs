@@ -22,6 +22,7 @@ pub struct Vertex {
     pub uv: [f32; 2],
     pub layer: u32,
     pub color: [f32; 3],
+    pub hurt: f32,
 }
 
 #[derive(Clone)]
@@ -809,6 +810,7 @@ fn append(
             uv: uv[index],
             layer,
             color,
+            hurt: 0.0,
         });
     }
 }

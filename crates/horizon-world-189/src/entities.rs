@@ -44,6 +44,8 @@ pub struct Entity {
     /// `swingProgressInt` ticks of the six-tick arm swing, if swinging.
     pub swing: Option<u8>,
     pub age: u32,
+    /// Remaining vanilla hurt-flash ticks, refreshed by entity status 2.
+    pub hurt_time: u8,
 }
 
 impl Entity {
@@ -72,6 +74,7 @@ impl Entity {
             equipment: Default::default(),
             swing: None,
             age: 0,
+            hurt_time: 0,
         }
     }
 
@@ -117,6 +120,7 @@ impl Entity {
     }
 
     fn tick(&mut self) {
+        self.hurt_time = self.hurt_time.saturating_sub(1);
         self.previous = self.position;
         self.previous_head_yaw = self.head_yaw;
         self.previous_body_yaw = self.body_yaw;
@@ -321,6 +325,15 @@ impl Entities {
                     *target = item;
                 }
             }
+            EntityPacket::Status { id, status: 2 } => {
+                if let Some(entity) = self.map.get_mut(&id)
+                    && entity.living()
+                {
+                    entity.hurt_time = 10;
+                    entity.limb_amount = 1.5;
+                }
+            }
+            EntityPacket::Status { .. } => {}
             EntityPacket::Animation { id, animation } => {
                 if animation == 0
                     && let Some(entity) = self.map.get_mut(&id)
@@ -374,6 +387,29 @@ mod tests {
         assert!(flagged.invisible() && flagged.sneaking());
         entities.apply(EntityPacket::Destroy(vec![5]));
         assert!(entities.is_empty());
+    }
+
+    #[test]
+    fn hurt_status_uses_fixed_width_id_and_expires_after_ten_ticks() {
+        let mut entities = Entities::default();
+        spawn(&mut entities);
+        let packet = horizon_protocol_47::entities::decode(0x1a, &[0, 0, 0, 5, 2])
+            .unwrap()
+            .unwrap();
+        entities.apply(packet);
+        assert_eq!(entities.get(5).unwrap().hurt_time, 10);
+        for _ in 0..9 {
+            entities.tick();
+        }
+        assert_eq!(entities.get(5).unwrap().hurt_time, 1);
+        entities.apply(EntityPacket::Status { id: 5, status: 2 });
+        assert_eq!(entities.get(5).unwrap().hurt_time, 10);
+        for _ in 0..10 {
+            entities.tick();
+        }
+        assert_eq!(entities.get(5).unwrap().hurt_time, 0);
+        assert!(horizon_protocol_47::entities::decode(0x1a, &[5, 2]).is_err());
+        assert!(horizon_protocol_47::entities::decode(0x1a, &[0, 0, 0, 5, 2, 0]).is_err());
     }
 
     #[test]

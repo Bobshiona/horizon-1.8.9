@@ -168,6 +168,7 @@ fn add(out: &mut Vec<Vertex>, matrix: Mat4, cube: Cuboid, layer: Texture, tint: 
                 uv: uv[index],
                 layer: layer as u32,
                 color: tint.map(|channel| channel * light),
+                hurt: 0.0,
             });
         }
     }
@@ -357,6 +358,103 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
     );
 }
 
+/// Standard zombie and skeleton boxes with `ModelZombie` arm animation.
+fn humanoid_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i64; 3]) {
+    let skeleton = entity.kind == Kind::Mob(51);
+    let texture = if skeleton {
+        Texture::Skeleton
+    } else {
+        Texture::Zombie
+    };
+    let yaw = lerp_angle(entity.previous_body_yaw, entity.body_yaw, partial);
+    let head_yaw = lerp_angle(entity.previous_head_yaw, entity.head_yaw, partial) - yaw;
+    let base = Mat4::from_translation(position(entity, partial, origin))
+        * Mat4::from_rotation_y((180.0 - yaw).to_radians())
+        * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+        * Mat4::from_translation(Vec3::new(0.0, -1.507_812_5, 0.0));
+    let amount = lerp(entity.previous_limb_amount, entity.limb_amount, partial).min(1.0);
+    let limb = entity.limb_swing - entity.limb_amount * (1.0 - partial);
+    let age = entity.age as f32 + partial;
+    let progress = entity
+        .swing
+        .map_or(0.0, |tick| (f32::from(tick) + partial) / 6.0);
+    let strike = (progress * PI).sin();
+    let recovery = ((1.0 - (1.0 - progress).powi(2)) * PI).sin();
+    let arm_x = -PI / 2.0 - strike * 1.2 + recovery * 0.4;
+    let idle_z = (age * 0.09).cos() * 0.05 + 0.05;
+    let idle_x = (age * 0.067).sin() * 0.05;
+    let white = [1.0; 3];
+    let head = part(
+        base,
+        [0.0; 3],
+        [entity.pitch.to_radians(), head_yaw.to_radians(), 0.0],
+    );
+    add(
+        out,
+        head,
+        cuboid(0.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8]),
+        texture,
+        white,
+    );
+    if !skeleton {
+        add(
+            out,
+            head,
+            cuboid(32.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8]).inflated(0.5),
+            texture,
+            white,
+        );
+    }
+    add(
+        out,
+        part(base, [0.0; 3], [0.0; 3]),
+        cuboid(16.0, 16.0, [-4.0, 0.0, -2.0], [8, 12, 4]),
+        texture,
+        white,
+    );
+    let (width, depth, right_x, z) = if skeleton {
+        (2, 2, -1.0, -1.0)
+    } else {
+        (4, 4, -3.0, -2.0)
+    };
+    for (side, mirror) in [(-1.0, false), (1.0, true)] {
+        let arm = part(
+            base,
+            [side * 5.0, 2.0, 0.0],
+            [
+                arm_x - side * idle_x,
+                side * (0.1 - strike * 0.6),
+                -side * idle_z,
+            ],
+        );
+        let mut arm_box = cuboid(
+            40.0,
+            16.0,
+            [if mirror { -1.0 } else { right_x }, -2.0, z],
+            [width, 12, depth],
+        );
+        arm_box.mirror = mirror;
+        add(out, arm, arm_box, texture, white);
+        let leg = part(
+            base,
+            [side * 1.9, 12.0, 0.0],
+            [
+                (limb * 0.6662 + if mirror { PI } else { 0.0 }).cos() * 1.4 * amount,
+                0.0,
+                0.0,
+            ],
+        );
+        let mut leg_box = cuboid(
+            0.0,
+            16.0,
+            [if skeleton { -1.0 } else { -2.0 }, 0.0, z],
+            [width, 12, depth],
+        );
+        leg_box.mirror = mirror;
+        add(out, leg, leg_box, texture, white);
+    }
+}
+
 /// Placeholder size (width, height) and tint for non-player entities.
 fn placeholder(kind: Kind) -> ([f32; 2], [f32; 3]) {
     let hostile = [0.75, 0.32, 0.30];
@@ -405,8 +503,10 @@ pub fn entities(out: &mut Vec<Vertex>, entities: &[(i32, Entity)], partial: f32,
         if entity.invisible() {
             continue;
         }
+        let start = out.len();
         match entity.kind {
             Kind::Player { slim } => player(out, entity, slim, partial, origin),
+            Kind::Mob(51 | 54) => humanoid_mob(out, entity, partial, origin),
             kind => {
                 let ([width, height], tint) = placeholder(kind);
                 let at = position(entity, partial, origin);
@@ -428,6 +528,11 @@ pub fn entities(out: &mut Vec<Vertex>, entities: &[(i32, Entity)], partial: f32,
                     Texture::White,
                     tint,
                 );
+            }
+        }
+        if entity.hurt_time > 0 {
+            for vertex in &mut out[start..] {
+                vertex.hurt = 0.3;
             }
         }
     }
@@ -558,6 +663,7 @@ fn text_line(
                     uv: uv[index],
                     layer: Texture::Font as u32,
                     color: colour,
+                    hurt: 0.0,
                 });
             }
         }

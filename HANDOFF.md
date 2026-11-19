@@ -20,13 +20,17 @@ pushed (it holds local paths). The squashed commit covers:
 Before any push: `python3 tools/check_public_tree.py`, and grep the new commits for home-directory paths,
 account names and tokens. Never commit the jar, extracted assets, the reference server or captures.
 
-Next: Hypixel login and lobby, combat (attack/interact packets with vanilla swing-before-attack order),
+Checkpoint added fixed-width entity status decoding, ten-tick hurt feedback with gamma-space red overlay,
+and textured standard zombie/skeleton geometry. Scoped tests (including owned-jar/Metal), Clippy, formatting,
+layer/public-tree checks and the local entity/flight gate pass. The entity capture was inspected.
+
+Next: player equipment, names, skin/cape hooks, remaining mobs, then combat (attack/interact packets with vanilla swing-before-attack order),
 inventory and held-item rendering, nametags, real skins.
 
 ## 2. Verified State
 
-- 66 scoped tests pass with `--include-ignored` (client 10, login CLI 2, assets 1, auth 2, physics 14,
-  protocol 25, world 13 — counts include the Metal readback and the owned-jar registry test).
+- 67 scoped tests pass with `--include-ignored` (client 9, login CLI 2, assets 1, auth 2, physics 14,
+  protocol 25, world 14 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata
@@ -68,7 +72,7 @@ inventory and held-item rendering, nametags, real skins.
 
 1. Combat and interaction packets (attack, use item, block placement and digging) and inventory UI.
 2. Nametags, held items and armour on players; real skins from the session server.
-3. Mob models (placeholders are sized, tinted boxes).
+3. Standard zombie/skeleton models are implemented; other mobs remain sized, tinted boxes.
 4. Full client light engine (heightmap skylight covers open sky; covered cells use server light).
 5. Fluid flow textures and smooth lighting/AO.
 

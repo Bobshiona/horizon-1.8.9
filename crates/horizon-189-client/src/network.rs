@@ -612,7 +612,7 @@ fn run_actor(
                     play::Packet::Other { id, fields }
                         if matches!(
                             id,
-                            0x04 | 0x0b | 0x0c | 0x0e | 0x0f | 0x11 | 0x13 | 0x15..=0x19 | 0x1c
+                            0x04 | 0x0b | 0x0c | 0x0e | 0x0f | 0x11 | 0x13 | 0x15..=0x1a | 0x1c
                         ) =>
                     {
                         if let Some(packet) = entity_packets::decode(id, fields)? {

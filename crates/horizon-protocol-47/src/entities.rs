@@ -66,6 +66,10 @@ pub enum EntityPacket {
         slot: i16,
         item: Option<Item>,
     },
+    Status {
+        id: i32,
+        status: i8,
+    },
     Animation {
         id: i32,
         animation: u8,
@@ -208,6 +212,10 @@ pub fn decode(id: i32, fields: &[u8]) -> io::Result<Option<EntityPacket>> {
         0x19 => EntityPacket::HeadLook {
             id: read_varint(&mut input)?,
             yaw: byte(&mut input)?,
+        },
+        0x1a => EntityPacket::Status {
+            id: int(&mut input)?,
+            status: byte(&mut input)?,
         },
         0x1c => EntityPacket::Metadata {
             id: read_varint(&mut input)?,
