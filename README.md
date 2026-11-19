@@ -27,7 +27,7 @@
   Java `HashSet` order.
 - **Draws 1.8.9.** All 198 block IDs and 2,557 blockstate variants from your own game jar, with neighbour
   states (stairs, fences, panes, walls, doors), biome tints, flat lighting with client skylight, cutout and
-  sorted translucency, mipmaps and fog. Players with armor, held blocks/items, names and hurt feedback; thirteen common mob types;
+  sorted translucency, mipmaps and fog. Players with armor, held blocks/items, names, skin/cape bindings and hurt feedback; thirteen common mob types;
   chests, signs with text, skulls and banners. Additional entity variants remain in progress.
 - **Accepts real play input.** User-driven attacks and interactions, sword blocking, hotbar selection,
   survival/creative digging, block placement, and basic inventory/container pickup transactions. The local

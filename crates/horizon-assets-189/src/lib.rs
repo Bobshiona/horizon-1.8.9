@@ -151,6 +151,10 @@ impl Assets {
         let data = self
             .source
             .read_limited(&format!("assets/{namespace}/textures/{name}.png"), 16 << 20)?;
+        Self::decode_png(&data)
+    }
+
+    pub fn decode_png(data: &[u8]) -> Result<Texture, Box<dyn Error>> {
         let mut decoder = png::Decoder::new(Cursor::new(data));
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut reader = decoder.read_info()?;

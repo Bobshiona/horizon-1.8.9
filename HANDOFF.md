@@ -51,11 +51,22 @@ Selection shares entity dimensions, including child/slime sizes. Spectator mode 
 bypasses collision/push-out and preserves flight on ground contact. The managed server test confirms
 travel through a solid wall after switching to spectator mode. The expanded native mob/flight gate passes.
 
-Next: finish the parity gaps below, connect skin/cape rendering hooks, then validate a live Hypixel lobby.
+Skin/cape bindings now resolve server profile properties asynchronously from the Mojang texture CDN.
+Classic 64x32 skins are normalized to 64x64; slim metadata selects arm geometry. Dynamic Metal layers
+are reused across despawns and restored after surface recovery. Cape geometry obeys the player model
+parts bit. Downloads and decode stay off the simulation/window threads, with bounded payloads and retry
+backoff. The local proxy gate exercised a public profile skin and a synthetic cape fixture.
+
+An 80-player synthetic Protocol 47 lobby plus reference entities rendered 700 frames. Debug frame-submit
+wall times over 699 samples measured P50 7,539 us, P95 7,695 us and P99 7,787 us. The viewport tracked
+about 90 entities. One frame used the smoke-only offscreen target. These figures cover frame submission
+and drawable acquisition; GPU duration and live multiplayer latency need their own measurement.
+
+Next: finish the parity gaps below and validate a live Hypixel lobby.
 
 ## 2. Verified State
 
-- 81 scoped tests pass with `--include-ignored` (client 16, login CLI 2, assets 1, auth 2, physics 16,
+- 83 scoped tests pass with `--include-ignored` (client 18, login CLI 2, assets 1, auth 2, physics 16,
   protocol 29, world 15 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -79,7 +90,7 @@ Next: finish the parity gaps below, connect skin/cape rendering hooks, then vali
 | `horizon-world-189` | Columns, sections, block changes, heightmap skylight; `blocks.rs` IDs 0–197; `variants.rs` blockstate selection; `entities.rs` tracked entities (3-step interpolation, body yaw, limb swing, swings); `block_entities.rs` (signs, skulls, banners). |
 | `horizon-physics-189` | Exact AABB clipping; legacy sine table; per-block collision shapes; the player tick with flight and Depth Strider. |
 | `horizon-assets-189` | Owned-jar blockstates, rotated model baking, textures. |
-| `horizon-189-client` | `keyboard.rs` macOS key state; `network.rs` Protocol 47 actor + mesher thread; `terrain.rs` column meshing; `models.rs` entity/block-entity geometry; `scene.rs` Metal resources; `renderer.rs` surface, camera, capture; `gameplay.rs` ordered interaction controller; `inventory.rs` authoritative snapshots/transactions; `hardness.rs` and `items.rs` queried legacy registry facts. |
+| `horizon-189-client` | `skins.rs` bounded CDN worker/cache and bindings; `frame_stats.rs` allocation-free smoke timing; `keyboard.rs` macOS key state; `network.rs` Protocol 47 actor + mesher thread; `terrain.rs` column meshing; `models.rs` entity/block-entity geometry; `scene.rs` Metal resources; `renderer.rs` surface, camera, capture; `gameplay.rs` ordered interaction controller; `inventory.rs` authoritative snapshots/transactions; `hardness.rs` and `items.rs` queried legacy registry facts. |
 
 ## 4. Live-play audit (after the first keyboard/mouse session)
 
@@ -102,10 +113,10 @@ Next: finish the parity gaps below, connect skin/cape rendering hooks, then vali
    prediction/crack effects, full first-person item transforms, consumable durations, crafting/shift-click
    and special-container rules. Adventure restrictions are enforced conservatively. Live Hypixel remains
    unverified.
-2. Player armor and sword/bow sprites are present, with depth-tested profile nametags. Signed texture
-   properties are preserved as skin/cape hooks. Remote texture loading, capes, team label rules, leather
-   overlay/glint, first-person hands and exact item display transforms remain pending. Generated item sprites and held
-   block geometry now reuse owned textures/models.
+2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
+   skin/cape bindings are present. Team label rules, leather overlay/glint, first-person hands and exact
+   item display transforms remain pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
+   position cape dynamics and additional HD texture layouts require further parity.
 3. Standard zombie, skeleton, wither skeleton, creeper, pig, cow, villager, sheep, chicken, wolf, spider,
    cave spider, slime and enderman meshes are present. Age, sheep shearing/color, slime size, wolf texture
    flags and server ground state are retained. Child transforms cover zombies and several quadrupeds.
@@ -136,17 +147,24 @@ cargo test --offline $P --target aarch64-apple-darwin
 cargo clippy --offline $P --all-targets --target aarch64-apple-darwin -- -D warnings
 cargo fmt --check $P -p horizon-client-input
 python3 tools/check_layers.py --base 4e60c05893 && python3 tools/check_public_tree.py
+python3 tools/test_189_reference.py
 ```
 
-The private `horizon-189-interaction-gate.py` runner starts the official reference server, configures a
-local fixture, runs all scoped tests with `--include-ignored`, independently checks placement/mining, and
-always stops the server. It sets `HORIZON_189_REFERENCE_GATE`, `HORIZON_189_FIXTURE_READY` and the owned-jar
+The private `horizon-189-skins-gate.py` runner injects a public skin and synthetic cape into the native
+viewport through a loopback framing/compression proxy. `horizon-189-lobby-gate.py` adds 80 synthetic
+players and movement packets for the frame-submission measurement. These fixtures remain outside git.
+
+The committed `tools/test_189_reference.py` runner locates Java 8, verifies/downloads the official server
+into the system temporary directory, configures an offline loopback fixture, runs all scoped tests with
+`--include-ignored`, independently confirms placement/mining, and runs a native Metal smoke. It stops the
+server in `finally` and retains diagnostic logs outside git. The native client gets isolated runtime homes.
+The earlier private `horizon-189-interaction-gate.py` runner provides the same interaction fixture. It sets `HORIZON_189_REFERENCE_GATE`, `HORIZON_189_FIXTURE_READY` and the owned-jar
 path for the ignored interaction test. Run that test only through the managed fixture. The private
 `horizon-189-mobs-gate.py` runner covers the second player, armor, held items, names, common mobs,
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest gate outcomes are 81 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest gate outcomes are 83 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.

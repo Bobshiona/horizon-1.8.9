@@ -112,6 +112,12 @@ pub const SOURCES: [&str; 44] = [
     "minecraft:entity/wolf/wolf_angry",
 ];
 
+impl From<Texture> for u32 {
+    fn from(texture: Texture) -> Self {
+        texture as u32
+    }
+}
+
 /// One box of a vanilla model: texture offset, origin, integer size, inflation.
 #[derive(Clone, Copy)]
 struct Cuboid {
@@ -163,7 +169,8 @@ fn shade(normal: Vec3) -> f32 {
 }
 
 /// Append one `ModelBox` under `matrix`, with a uniform tint and layer.
-fn add(out: &mut Vec<Vertex>, matrix: Mat4, cube: Cuboid, layer: Texture, tint: [f32; 3]) {
+fn add(out: &mut Vec<Vertex>, matrix: Mat4, cube: Cuboid, layer: impl Into<u32>, tint: [f32; 3]) {
+    let layer = layer.into();
     let [dx, dy, dz] = cube.size.map(f32::from);
     let [mut x, mut y, mut z] = cube.origin;
     let (mut x2, mut y2, mut z2) = (x + dx, y + dy, z + dz);
@@ -229,7 +236,7 @@ fn add(out: &mut Vec<Vertex>, matrix: Mat4, cube: Cuboid, layer: Texture, tint: 
             out.push(Vertex {
                 position: points[index].to_array(),
                 uv: uv[index],
-                layer: layer as u32,
+                layer,
                 color: tint.map(|channel| channel * light),
                 hurt: 0.0,
             });
@@ -273,6 +280,7 @@ fn player(
     partial: f32,
     origin: [i64; 3],
     registry: Option<&crate::terrain::Registry>,
+    binding: Option<&crate::skins::Binding>,
 ) {
     let mut at = position(entity, partial, origin);
     let sneaking = entity.sneaking();
@@ -345,7 +353,16 @@ fn player(
     right_arm[0] += (age * 0.067).sin() * 0.05;
     left_arm[0] -= (age * 0.067).sin() * 0.05;
     head[0] = head[0].clamp(-PI / 2.0, PI / 2.0);
-    let skin = if slim { Texture::Alex } else { Texture::Steve };
+    let skin = binding.map_or_else(
+        || {
+            if slim {
+                Texture::Alex as u32
+            } else {
+                Texture::Steve as u32
+            }
+        },
+        |b| b.skin,
+    );
     let white = [1.0; 3];
     let head_matrix = part(base, [0.0, head_y, 0.0], head);
     add(
@@ -507,6 +524,24 @@ fn player(
                 layer,
             );
         }
+    }
+    if entity.skin_parts & 1 != 0
+        && let Some(cape) = binding.and_then(|b| b.cape)
+    {
+        let sway = (swing * 6.0).sin() * amount * 32.0;
+        let angle = (6.0 + sway + if sneaking { 25.0 } else { 0.0 }).to_radians();
+        let matrix = part(
+            base,
+            [0.0, if sneaking { 2.0 } else { 0.0 }, 2.0],
+            [-angle, 0.0, 0.0],
+        );
+        add(
+            out,
+            matrix,
+            cuboid(0.0, 0.0, [-5.0, 0.0, 0.0], [10, 16, 1]),
+            cape,
+            [1.0; 3],
+        );
     }
 }
 
@@ -915,14 +950,24 @@ pub fn entities(
     partial: f32,
     origin: [i64; 3],
     registry: Option<&crate::terrain::Registry>,
+    bindings: Option<&std::collections::HashMap<u128, crate::skins::Binding>>,
 ) {
     for (_, entity) in entities {
         if entity.invisible() {
             continue;
         }
         let start = out.len();
+        let binding = bindings.and_then(|b| b.get(&entity.uuid));
         match entity.kind {
-            Kind::Player { slim } => player(out, entity, slim, partial, origin, registry),
+            Kind::Player { slim } => player(
+                out,
+                entity,
+                binding.map_or(slim, |b| b.slim),
+                partial,
+                origin,
+                registry,
+                binding,
+            ),
             Kind::Mob(51 | 54) => humanoid_mob(out, entity, partial, origin),
             Kind::Mob(50 | 90 | 92 | 120) => common_mob(out, entity, partial, origin),
             Kind::Mob(52 | 55 | 58 | 59 | 91 | 93 | 95) => {
@@ -1480,6 +1525,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skin_and_cape_bindings_follow_player_parts_metadata() {
+        use horizon_protocol_47::{entities::EntityPacket, nbt::Meta};
+        use horizon_world_189::entities::Entities;
+        let mut tracked = Entities::default();
+        tracked.apply(EntityPacket::SpawnPlayer {
+            id: 1,
+            uuid: 7,
+            position: [0; 3],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let bindings = std::collections::HashMap::from([(
+            7,
+            crate::skins::Binding {
+                skin: 1000,
+                cape: Some(1001),
+                slim: true,
+            },
+        )]);
+        let mut out = Vec::new();
+        entities(
+            &mut out,
+            &[(1, tracked.get(1).unwrap().clone())],
+            0.5,
+            [0; 3],
+            None,
+            Some(&bindings),
+        );
+        assert!(out.iter().any(|v| v.layer == 1000));
+        assert!(out.iter().any(|v| v.layer == 1001));
+        tracked.apply(EntityPacket::Metadata {
+            id: 1,
+            entries: vec![(10, Meta::Byte(0x7e))],
+        });
+        out.clear();
+        entities(
+            &mut out,
+            &[(1, tracked.get(1).unwrap().clone())],
+            0.5,
+            [0; 3],
+            None,
+            Some(&bindings),
+        );
+        assert!(out.iter().any(|v| v.layer == 1000));
+        assert!(out.iter().all(|v| v.layer != 1001));
+    }
+
+    #[test]
     fn common_mob_meshes_use_owned_layers_and_shearing_removes_fleece() {
         use horizon_protocol_47::{entities::EntityPacket, nbt::Meta};
         use horizon_world_189::entities::Entities;
@@ -1509,6 +1604,7 @@ mod tests {
                 0.5,
                 [0; 3],
                 None,
+                None,
             );
             assert!(out.iter().any(|v| v.layer == texture as u32));
             assert!(out.iter().flat_map(|v| v.position).all(f32::is_finite));
@@ -1524,6 +1620,7 @@ mod tests {
                     &[(1, tracked.get(1).unwrap().clone())],
                     0.5,
                     [0; 3],
+                    None,
                     None,
                 );
                 assert!(out.iter().all(|v| v.layer != Texture::Wool as u32));
@@ -1562,7 +1659,7 @@ mod tests {
         }
         let entities = vec![(1, tracked.get(1).unwrap().clone())];
         let mut vertices = Vec::new();
-        super::entities(&mut vertices, &entities, 0.5, [0; 3], None);
+        super::entities(&mut vertices, &entities, 0.5, [0; 3], None, None);
         for layer in [Texture::Diamond1, Texture::Diamond2, Texture::DiamondSword] {
             assert!(vertices.iter().any(|v| v.layer == layer as u32));
         }
@@ -1577,6 +1674,7 @@ mod tests {
             &[(1, tracked.get(1).unwrap().clone())],
             0.5,
             [0; 3],
+            None,
             None,
         );
         assert!(vertices.is_empty());

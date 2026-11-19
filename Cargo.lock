@@ -1873,6 +1873,7 @@ dependencies = [
 name = "horizon-189-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytemuck",
  "glam",
  "horizon-assets-189",
@@ -1884,6 +1885,8 @@ dependencies = [
  "objc2-core-graphics",
  "png",
  "pollster",
+ "serde_json",
+ "ureq",
  "wgpu",
  "winit",
 ]

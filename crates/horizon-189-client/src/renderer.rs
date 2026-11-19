@@ -27,6 +27,9 @@ pub struct Renderer {
     cursor: [f32; 2],
     offscreen: Option<wgpu::Texture>,
     pub offscreen_frames: u64,
+    skin_loader: crate::skins::Loader,
+    skins: std::collections::HashMap<u128, crate::skins::Binding>,
+    skin_images: std::collections::HashMap<u128, crate::skins::Loaded>,
 }
 
 impl Renderer {
@@ -120,6 +123,9 @@ impl Renderer {
             cursor: [0.0; 2],
             offscreen: None,
             offscreen_frames: 0,
+            skin_loader: crate::skins::Loader::new()?,
+            skins: Default::default(),
+            skin_images: Default::default(),
         };
         renderer.resize(size);
         Ok(renderer)
@@ -162,6 +168,53 @@ impl Renderer {
         let Some(scene) = &mut self.scene else {
             return Ok(());
         };
+        self.skins
+            .retain(|uuid, _| entities.iter().any(|(_, e)| e.uuid == *uuid));
+        self.skin_images
+            .retain(|uuid, _| self.skins.contains_key(uuid));
+        self.skin_loader
+            .retain(entities.iter().map(|(_, e)| e.uuid));
+        for (_, entity) in entities {
+            if let Some(profile) = &entity.profile {
+                self.skin_loader.request(entity.uuid, profile);
+            }
+        }
+        while let Ok(result) = self.skin_loader.results.try_recv() {
+            match result {
+                Ok(loaded) => {
+                    if !entities.iter().any(|(_, e)| e.uuid == loaded.uuid) {
+                        continue;
+                    }
+                    let Some(layer) = self.skins.get(&loaded.uuid).map(|b| b.skin).or_else(|| {
+                        (scene.skin_base..scene.skin_base + 256)
+                            .step_by(2)
+                            .find(|layer| self.skins.values().all(|b| b.skin != *layer))
+                    }) else {
+                        continue;
+                    };
+                    if scene.upload_skin(&self.queue, layer, &loaded) {
+                        self.skins.insert(
+                            loaded.uuid,
+                            crate::skins::Binding {
+                                skin: layer,
+                                cape: loaded.cape.as_ref().map(|_| layer + 1),
+                                slim: loaded.slim,
+                            },
+                        );
+                        eprintln!(
+                            "SKIN_LOADED cape={} slim={}",
+                            loaded.cape.is_some(),
+                            loaded.slim
+                        );
+                        self.skin_images.insert(loaded.uuid, loaded);
+                    }
+                }
+                Err((uuid, error)) => {
+                    self.skin_loader.failed(uuid);
+                    eprintln!("SKIN_LOAD_FAILED {error}");
+                }
+            }
+        }
         let mut vertices = std::mem::take(&mut self.entity_vertices);
         vertices.clear();
         crate::models::entities(
@@ -170,6 +223,7 @@ impl Renderer {
             partial,
             scene.origin(),
             self.registry.as_deref(),
+            Some(&self.skins),
         );
         if let Some(registry) = &self.registry {
             crate::models::nametags(
@@ -341,6 +395,11 @@ impl Renderer {
                         scene.adopt(old);
                     }
                     scene.set_camera(&self.queue, &self.config, self.pose);
+                    for (uuid, image) in &self.skin_images {
+                        if let Some(binding) = self.skins.get(uuid) {
+                            scene.upload_skin(&self.queue, binding.skin, image);
+                        }
+                    }
                     self.scene = Some(scene);
                 }
                 self.resize(self.window.inner_size());

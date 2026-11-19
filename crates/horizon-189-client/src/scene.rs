@@ -43,6 +43,9 @@ pub struct Scene {
     origin: [i64; 3],
     bindings: wgpu::BindGroup,
     entity_bindings: wgpu::BindGroup,
+    entity_texture: wgpu::Texture,
+    pub skin_base: u32,
+    skin_capacity: u32,
     /// Moving entities, rewritten every frame.
     entities: wgpu::Buffer,
     entity_capacity: u64,
@@ -299,7 +302,8 @@ impl Scene {
             ],
         });
         let entity_size = crate::models::LAYER_SIZE;
-        let entity_layers = registry.entity_textures.len() as u32;
+        let skin_base = registry.entity_textures.len() as u32;
+        let entity_layers = (skin_base + 256).min(device.limits().max_texture_array_layers);
         let entity_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Owned legacy entity textures"),
             size: wgpu::Extent3d {
@@ -381,6 +385,9 @@ impl Scene {
             origin: [0; 3],
             bindings,
             entity_bindings,
+            entity_texture,
+            skin_base,
+            skin_capacity: entity_layers,
             entities,
             entity_capacity,
             entity_count: 0,
@@ -465,6 +472,47 @@ impl Scene {
             }
         }
         Ok(())
+    }
+
+    pub fn upload_skin(
+        &self,
+        queue: &wgpu::Queue,
+        layer: u32,
+        loaded: &crate::skins::Loaded,
+    ) -> bool {
+        if layer < self.skin_base || layer + 1 >= self.skin_capacity {
+            return false;
+        }
+        for (index, image) in [
+            (layer, Some(&loaded.skin)),
+            (layer + 1, loaded.cape.as_ref()),
+        ] {
+            let Some(image) = image else { continue };
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.entity_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: index,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &image.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(image.width * 4),
+                    rows_per_image: Some(image.height),
+                },
+                wgpu::Extent3d {
+                    width: image.width,
+                    height: image.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        true
     }
 
     /// Replace this frame's moving-entity vertices.

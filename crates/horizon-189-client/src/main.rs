@@ -2,6 +2,7 @@
 //! transport and platform gates recorded in HANDOFF.md.
 #![forbid(unsafe_code)]
 
+mod frame_stats;
 mod gameplay;
 mod hardness;
 mod inventory;
@@ -14,6 +15,7 @@ mod renderer;
 mod scene;
 #[cfg(test)]
 mod scene_tests;
+mod skins;
 mod terrain;
 
 use horizon_client_platform::is_quit_shortcut_down;
@@ -49,6 +51,7 @@ struct App {
     sensitivity: f32,
     view_distance: u8,
     frames: u64,
+    frame_stats: frame_stats::FrameStats,
     smoke_frames: Option<u64>,
     started: Instant,
     next_frame: Instant,
@@ -393,6 +396,7 @@ impl ApplicationHandler for App {
                 if self.smoke_frames.is_some_and(|limit| self.frames >= limit) {
                     return;
                 }
+                let frame_started = Instant::now();
                 if self.keyboard.reconcile() {
                     eprintln!("keys_reconciled=true");
                     self.publish_keys();
@@ -435,6 +439,9 @@ impl ApplicationHandler for App {
                         Ok(true) => {
                             if self.network.is_none() || renderer.world_ready() {
                                 self.frames += 1;
+                                if self.smoke_frames.is_some() && capture.is_none() {
+                                    self.frame_stats.record(frame_started.elapsed());
+                                }
                             }
                         }
                         Ok(false) => {}
@@ -450,6 +457,7 @@ impl ApplicationHandler for App {
                     } else {
                         "METAL"
                     };
+                    self.frame_stats.report();
                     eprintln!(
                         "{mode}_SMOKE_PASS frames={} elapsed_ms={} columns={} offscreen_frames={}",
                         self.frames,
@@ -569,6 +577,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         sensitivity: options.sensitivity,
         view_distance: options.view_distance,
         frames: 0,
+        frame_stats: Default::default(),
         smoke_frames,
         started: Instant::now(),
         next_frame: Instant::now(),
