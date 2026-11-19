@@ -2,6 +2,10 @@
 //! transport and platform gates recorded in HANDOFF.md.
 #![forbid(unsafe_code)]
 
+mod gameplay;
+mod hardness;
+mod inventory;
+mod items;
 mod keyboard;
 mod models;
 mod network;
@@ -40,6 +44,8 @@ struct App {
     /// Raw pointer deltas since the last frame, in AppKit points (y down).
     mouse: (f64, f64),
     skip_motion: bool,
+    cursor: (f64, f64),
+    menu_open: bool,
     sensitivity: f32,
     view_distance: u8,
     frames: u64,
@@ -87,6 +93,12 @@ impl App {
         self.captured = false;
         self.mouse = (0.0, 0.0);
         self.keyboard.clear();
+        if let Some(network) = &self.network
+            && let Ok(mut state) = network.shared.lock()
+        {
+            state.input.attack = false;
+            state.input.using = false;
+        }
         self.publish_keys();
     }
 
@@ -101,7 +113,11 @@ impl App {
             Keys::default()
         };
         if let Ok(mut shared) = network.shared.lock() {
-            shared.keys = keys;
+            shared.keys = if shared.inventory.open {
+                Keys::default()
+            } else {
+                keys
+            };
         }
     }
 
@@ -140,7 +156,7 @@ impl App {
     ) -> Option<(
         PositionLook,
         f32,
-        Vec<(i32, horizon_world_189::entities::Entity)>,
+        Arc<Vec<(i32, horizon_world_189::entities::Entity)>>,
     )> {
         let shared = self.network.as_ref()?.shared.lock().ok()?;
         if !shared.positioned {
@@ -206,6 +222,9 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                if self.smoke_frames.is_some() {
+                    renderer.window.focus_window();
+                }
                 renderer.window.request_redraw();
                 self.renderer = Some(renderer);
             }
@@ -254,32 +273,155 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                         return;
                     }
-                    if key == KeyCode::Escape && event.state == ElementState::Pressed {
-                        self.release_cursor();
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        if let Some(network) = &self.network
+                            && let Ok(mut state) = network.shared.lock()
+                        {
+                            use gameplay::Action;
+                            let action = match key {
+                                KeyCode::Digit1 => Some(Action::Select(0)),
+                                KeyCode::Digit2 => Some(Action::Select(1)),
+                                KeyCode::Digit3 => Some(Action::Select(2)),
+                                KeyCode::Digit4 => Some(Action::Select(3)),
+                                KeyCode::Digit5 => Some(Action::Select(4)),
+                                KeyCode::Digit6 => Some(Action::Select(5)),
+                                KeyCode::Digit7 => Some(Action::Select(6)),
+                                KeyCode::Digit8 => Some(Action::Select(7)),
+                                KeyCode::Digit9 => Some(Action::Select(8)),
+                                KeyCode::KeyE if !state.inventory.open => {
+                                    Some(Action::OpenInventory)
+                                }
+                                KeyCode::KeyE | KeyCode::Escape if state.inventory.open => {
+                                    Some(Action::CloseInventory)
+                                }
+                                _ => None,
+                            };
+                            if let Some(action) = action
+                                && state.input.actions.len() < 128
+                            {
+                                state.input.actions.push_back(action);
+                            }
+                        }
+                        if key == KeyCode::Escape {
+                            self.release_cursor();
+                        }
                     }
                     self.publish_keys();
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => self.cursor = (position.x, position.y),
+            WindowEvent::MouseWheel { delta, .. } if self.captured => {
+                let amount = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
+                };
+                if let Some(network) = &self.network
+                    && let Ok(mut state) = network.shared.lock()
+                    && amount != 0.0
+                    && state.input.actions.len() < 128
+                {
+                    let current = state
+                        .input
+                        .actions
+                        .iter()
+                        .rev()
+                        .find_map(|a| {
+                            if let gameplay::Action::Select(slot) = a {
+                                Some(*slot)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(state.inventory.selected);
+                    state.input.actions.push_back(gameplay::Action::Select(
+                        (i32::from(current) - if amount > 0.0 { 1 } else { -1 }).rem_euclid(9)
+                            as u8,
+                    ));
+                }
+            }
             WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
+                state: button_state,
+                button,
                 ..
             } => {
-                if !self.captured {
+                let pressed = button_state == ElementState::Pressed;
+                let mut open = false;
+                if let Some(network) = &self.network
+                    && let Ok(mut state) = network.shared.lock()
+                {
+                    open = state.inventory.open;
+                    if open && pressed {
+                        if let Some(renderer) = &self.renderer {
+                            let size = renderer.window.inner_size();
+                            let scale = 300.0 / f64::from(size.height.max(1));
+                            let x = (self.cursor.0 - f64::from(size.width) / 2.0) * scale;
+                            let y = (self.cursor.1 - f64::from(size.height) / 2.0) * scale;
+                            if let Some(slot) = state.inventory.slot_at(x as f32, y as f32)
+                                && state.input.actions.len() < 128
+                            {
+                                state.input.actions.push_back(gameplay::Action::Click {
+                                    slot,
+                                    right: button == MouseButton::Right,
+                                });
+                            }
+                        }
+                    } else if self.captured {
+                        let action = match button {
+                            MouseButton::Left => {
+                                state.input.attack = pressed;
+                                Some(gameplay::Action::Attack)
+                            }
+                            MouseButton::Right => {
+                                state.input.using = pressed;
+                                Some(gameplay::Action::Use)
+                            }
+                            _ => None,
+                        };
+                        if pressed
+                            && let Some(action) = action
+                            && state.input.actions.len() < 128
+                        {
+                            state.input.actions.push_back(action);
+                        }
+                    }
+                }
+                if !open && !self.captured && pressed && button == MouseButton::Left {
                     self.capture_cursor();
                 }
             }
             WindowEvent::RedrawRequested => {
+                if self.smoke_frames.is_some_and(|limit| self.frames >= limit) {
+                    return;
+                }
                 if self.keyboard.reconcile() {
                     eprintln!("keys_reconciled=true");
                     self.publish_keys();
                 }
+                let menu = self
+                    .network
+                    .as_ref()
+                    .and_then(|network| network.shared.lock().ok().map(|s| s.inventory.open))
+                    .unwrap_or(false);
+                if menu && self.captured {
+                    self.release_cursor();
+                }
+                if !menu && self.menu_open && self.focused && self.smoke_frames.is_none() {
+                    self.capture_cursor();
+                }
+                self.menu_open = menu;
                 self.apply_look();
                 let pose = self.camera_pose();
                 if let Some(renderer) = &mut self.renderer {
                     if let Some((pose, partial, entities)) = pose {
                         renderer.set_pose(pose);
-                        if let Err(error) = renderer.set_entities(&entities, partial) {
+                        renderer.set_cursor(self.cursor);
+                        let ui = self.network.as_ref().and_then(|n| {
+                            n.shared
+                                .lock()
+                                .ok()
+                                .map(|s| (s.inventory.clone(), s.swing, s.using_item))
+                        });
+                        if let Err(error) = renderer.set_entities(&entities, partial, ui.as_ref()) {
                             self.fail(event_loop, error);
                             return;
                         }
@@ -289,7 +431,7 @@ impl ApplicationHandler for App {
                         .is_some_and(|limit| self.frames + 1 >= limit)
                         && (self.network.is_none() || renderer.world_ready());
                     let capture = if last { self.capture.take() } else { None };
-                    match renderer.render(capture.as_deref()) {
+                    match renderer.render(capture.as_deref(), self.smoke_frames.is_some()) {
                         Ok(true) => {
                             if self.network.is_none() || renderer.world_ready() {
                                 self.frames += 1;
@@ -309,10 +451,11 @@ impl ApplicationHandler for App {
                         "METAL"
                     };
                     eprintln!(
-                        "{mode}_SMOKE_PASS frames={} elapsed_ms={} columns={}",
+                        "{mode}_SMOKE_PASS frames={} elapsed_ms={} columns={} offscreen_frames={}",
                         self.frames,
                         self.started.elapsed().as_millis(),
-                        self.renderer.as_ref().map_or(0, Renderer::column_count)
+                        self.renderer.as_ref().map_or(0, Renderer::column_count),
+                        self.renderer.as_ref().map_or(0, |r| r.offscreen_frames)
                     );
                     event_loop.exit();
                 }
@@ -361,7 +504,7 @@ impl ApplicationHandler for App {
             .as_ref()
             .and_then(|network| network.shared.lock().ok().map(|shared| shared.positioned))
             .unwrap_or(false);
-        if positioned && self.focused && !self.auto_captured {
+        if positioned && self.focused && !self.auto_captured && self.smoke_frames.is_none() {
             self.auto_captured = true;
             self.capture_cursor();
         }
@@ -421,6 +564,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         auto_captured: false,
         mouse: (0.0, 0.0),
         skip_motion: false,
+        cursor: (0.0, 0.0),
+        menu_open: false,
         sensitivity: options.sensitivity,
         view_distance: options.view_distance,
         frames: 0,

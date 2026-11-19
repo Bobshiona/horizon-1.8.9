@@ -5,6 +5,7 @@
 mod cipher;
 pub mod entities;
 mod frame;
+pub mod interaction;
 pub mod login;
 pub mod nbt;
 pub mod packet;

@@ -67,6 +67,8 @@ pub struct Registry {
     /// 128-pixel entity layers in `models::Texture` order, and font advances.
     pub entity_textures: Vec<Texture>,
     pub glyphs: [u8; 256],
+    item_layers: HashMap<i16, u32>,
+    block_layers: Vec<u32>,
 }
 
 fn direction(name: &str) -> [i32; 3] {
@@ -316,6 +318,39 @@ impl Registry {
                 rgba: canvas,
             });
         }
+        let mut block_layers = Vec::with_capacity(textures.len());
+        for texture in &textures {
+            block_layers.push(entity_textures.len() as u32);
+            let mut canvas = vec![0u8; size * size * 4];
+            for y in 0..16usize {
+                canvas[y * size * 4..y * size * 4 + 64]
+                    .copy_from_slice(&texture.rgba[y * 64..y * 64 + 64]);
+            }
+            entity_textures.push(Texture {
+                width: size as u32,
+                height: size as u32,
+                rgba: canvas,
+            });
+        }
+        let mut item_layers = HashMap::new();
+        for &(id, name) in crate::items::ITEMS {
+            if let Ok(image) = assets.item_texture(name) {
+                let w = image.width.min(size as u32) as usize;
+                let h = image.height.min(size as u32) as usize;
+                let mut canvas = vec![0u8; size * size * 4];
+                for y in 0..h {
+                    let start = y * image.width as usize * 4;
+                    canvas[y * size * 4..y * size * 4 + w * 4]
+                        .copy_from_slice(&image.rgba[start..start + w * 4]);
+                }
+                item_layers.insert(id, entity_textures.len() as u32);
+                entity_textures.push(Texture {
+                    width: size as u32,
+                    height: size as u32,
+                    rgba: canvas,
+                });
+            }
+        }
         let grass = colormap("minecraft:colormap/grass")?;
         let foliage = colormap("minecraft:colormap/foliage")?;
         let water = layer_for("minecraft:blocks/water_still", &mut textures);
@@ -335,6 +370,8 @@ impl Registry {
             inexact: Vec::new(),
             entity_textures,
             glyphs,
+            item_layers,
+            block_layers,
         };
         let empty = World::default();
         let mut unresolved = Vec::new();
@@ -388,6 +425,50 @@ impl Registry {
             return self.static_states[usize::from(state.0)];
         }
         variant(world, pos, state).map(|found| self.lookup(&found))
+    }
+
+    pub fn item_layer(&self, item: &horizon_protocol_47::nbt::Item) -> Option<u32> {
+        if item.id >= 256 {
+            return self.item_layers.get(&item.id).copied();
+        }
+        let state = BlockState(((item.id as u16) << 4) | (item.damage as u16 & 15));
+        let model = self.resolve(&World::default(), [0; 3], state)?;
+        let face = self.models[model as usize]
+            .alternatives
+            .first()?
+            .0
+            .first()?;
+        self.block_layers.get(face.layer as usize).copied()
+    }
+
+    pub fn held_block(
+        &self,
+        out: &mut Vec<Vertex>,
+        item: &horizon_protocol_47::nbt::Item,
+        matrix: glam::Mat4,
+    ) {
+        if !(1..198).contains(&item.id) {
+            return;
+        }
+        let state = BlockState(((item.id as u16) << 4) | (item.damage as u16 & 15));
+        let Some(model) = self.resolve(&World::default(), [0; 3], state) else {
+            return;
+        };
+        for face in &self.models[model as usize].alternatives[0].0 {
+            for i in [0, 1, 2, 0, 2, 3] {
+                out.push(Vertex {
+                    position: matrix
+                        .transform_point3(
+                            glam::Vec3::from_array(face.positions[i]) - glam::Vec3::splat(0.5),
+                        )
+                        .to_array(),
+                    uv: face.uv[i].map(|v| v * 16.0 / crate::models::LAYER_SIZE as f32),
+                    layer: self.block_layers[face.layer as usize],
+                    color: [face.shade; 3],
+                    hurt: 0.0,
+                });
+            }
+        }
     }
 
     pub fn stone_fixture(&self) -> Vec<Vertex> {

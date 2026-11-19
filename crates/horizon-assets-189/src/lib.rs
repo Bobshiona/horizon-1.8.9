@@ -69,6 +69,29 @@ impl Assets {
         Ok(bake_model(&self.models.resolve(&name)?)?)
     }
 
+    /// First generated-item texture, following legacy item-model parents.
+    pub fn item_texture(&self, name: &str) -> Result<Texture, Box<dyn Error>> {
+        use horizon_assets::model::TextureSlot;
+        let mut name = format!("minecraft:item/{name}");
+        for _ in 0..32 {
+            let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", &name));
+            let bytes = self
+                .source
+                .read_limited(&format!("assets/{namespace}/models/{path}.json"), 1 << 20)?;
+            let model = CuboidModel::from_json(std::str::from_utf8(&bytes)?)?;
+            if let Some(TextureSlot::Material(material)) = model.textures.get("layer0") {
+                return self.texture(&material.sprite);
+            }
+            let Some(parent) = model.parent else { break };
+            name = if parent.contains(':') {
+                parent
+            } else {
+                format!("minecraft:{parent}")
+            };
+        }
+        Err("Item has no generated sprite".into())
+    }
+
     /// Every `assets/minecraft/blockstates/*.json` variant map, keyed by file
     /// stem. 1.8 files have no multipart section.
     pub fn blockstates(&self) -> Result<Vec<(String, Vec<(String, VariantSet)>)>, Box<dyn Error>> {

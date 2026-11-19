@@ -133,6 +133,7 @@ pub struct Player {
     pub jump_boost: Option<i8>,
     pub blindness: bool,
     pub food: i32,
+    pub using_item: bool,
     /// `PlayerCapabilities`: flying, allowFlying and the fly speed (0.05F).
     pub flying: bool,
     pub allow_flying: bool,
@@ -171,6 +172,7 @@ impl Default for Player {
             jump_boost: None,
             blindness: false,
             food: 20,
+            using_item: false,
             flying: false,
             allow_flying: false,
             fly_speed: 0.05,
@@ -515,6 +517,11 @@ impl Player {
             strafe = (f64::from(strafe) * 0.3) as f32;
             forward = (f64::from(forward) * 0.3) as f32;
         }
+        if self.using_item {
+            strafe *= 0.2;
+            forward *= 0.2;
+            self.sprint_toggle_timer = 0;
+        }
         self.input_forward = forward;
         self.input_strafe = strafe;
         let half_width = f64::from(WIDTH) * 0.35;
@@ -532,6 +539,7 @@ impl Player {
             && !self.sprinting
             && fed
             && !self.blindness
+            && !self.using_item
         {
             if self.sprint_toggle_timer <= 0 && !keys.sprint {
                 self.sprint_toggle_timer = 7;
@@ -539,7 +547,13 @@ impl Player {
                 self.set_sprinting(true);
             }
         }
-        if !self.sprinting && forward >= 0.8 && fed && !self.blindness && keys.sprint {
+        if !self.sprinting
+            && forward >= 0.8
+            && fed
+            && !self.blindness
+            && !self.using_item
+            && keys.sprint
+        {
             self.set_sprinting(true);
         }
         if self.sprinting && (forward < 0.8 || self.collided_horizontally || !fed) {

@@ -2799,6 +2799,7 @@ name = "horizon-physics-189"
 version = "0.1.0"
 dependencies = [
  "horizon-core",
+ "horizon-protocol-47",
  "horizon-world-189",
  "serde_json",
 ]

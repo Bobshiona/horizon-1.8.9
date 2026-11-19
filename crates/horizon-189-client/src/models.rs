@@ -243,7 +243,14 @@ fn position(entity: &Entity, partial: f32, origin: [i64; 3]) -> Vec3 {
 }
 
 /// `ModelPlayer` with `ModelBiped.setRotationAngles`, drawn by `RenderPlayer`.
-fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, origin: [i64; 3]) {
+fn player(
+    out: &mut Vec<Vertex>,
+    entity: &Entity,
+    slim: bool,
+    partial: f32,
+    origin: [i64; 3],
+    registry: Option<&crate::terrain::Registry>,
+) {
     let mut at = position(entity, partial, origin);
     let sneaking = entity.sneaking();
     if sneaking {
@@ -267,7 +274,16 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
     let right_leg = [(swing * 0.6662).cos() * 1.4 * amount, 0.0, 0.0];
     let left_leg = [(swing * 0.6662 + PI).cos() * 1.4 * amount, 0.0, 0.0];
     if entity.equipment[0].is_some() {
-        right_arm[0] = right_arm[0] * 0.5 - PI / 10.0;
+        if entity.flags & 0x10 != 0
+            && entity.equipment[0]
+                .as_ref()
+                .is_some_and(|i| matches!(i.id, 267 | 268 | 272 | 276 | 283))
+        {
+            right_arm[0] = right_arm[0] * 0.5 - PI * 0.3;
+            right_arm[1] = -PI / 6.0;
+        } else {
+            right_arm[0] = right_arm[0] * 0.5 - PI / 10.0;
+        }
     }
     let arm_width = if slim { 3.0 } else { 4.0 };
     let mut right_arm_point = [-5.0, if slim { 2.5 } else { 2.0 }, 0.0];
@@ -312,13 +328,15 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
         skin,
         white,
     );
-    add(
-        out,
-        head_matrix,
-        cuboid(32.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8]).inflated(0.5),
-        skin,
-        white,
-    );
+    if entity.skin_parts & 64 != 0 {
+        add(
+            out,
+            head_matrix,
+            cuboid(32.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8]).inflated(0.5),
+            skin,
+            white,
+        );
+    }
     let body_matrix = part(base, [0.0; 3], body);
     add(
         out,
@@ -327,13 +345,15 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
         skin,
         white,
     );
-    add(
-        out,
-        body_matrix,
-        cuboid(16.0, 32.0, [-4.0, 0.0, -2.0], [8, 12, 4]).inflated(0.25),
-        skin,
-        white,
-    );
+    if entity.skin_parts & 2 != 0 {
+        add(
+            out,
+            body_matrix,
+            cuboid(16.0, 32.0, [-4.0, 0.0, -2.0], [8, 12, 4]).inflated(0.25),
+            skin,
+            white,
+        );
+    }
     let arm = [arm_width as u8, 12, 4];
     let right = part(base, right_arm_point, right_arm);
     let left = part(base, left_arm_point, left_arm);
@@ -345,13 +365,15 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
         skin,
         white,
     );
-    add(
-        out,
-        right,
-        cuboid(40.0, 32.0, [right_x, -2.0, -2.0], arm).inflated(0.25),
-        skin,
-        white,
-    );
+    if entity.skin_parts & 8 != 0 {
+        add(
+            out,
+            right,
+            cuboid(40.0, 32.0, [right_x, -2.0, -2.0], arm).inflated(0.25),
+            skin,
+            white,
+        );
+    }
     add(
         out,
         left,
@@ -359,13 +381,15 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
         skin,
         white,
     );
-    add(
-        out,
-        left,
-        cuboid(48.0, 48.0, [-1.0, -2.0, -2.0], arm).inflated(0.25),
-        skin,
-        white,
-    );
+    if entity.skin_parts & 4 != 0 {
+        add(
+            out,
+            left,
+            cuboid(48.0, 48.0, [-1.0, -2.0, -2.0], arm).inflated(0.25),
+            skin,
+            white,
+        );
+    }
     let right = part(base, [-1.9, leg_y, leg_z], right_leg);
     let left = part(base, [1.9, leg_y, leg_z], left_leg);
     add(
@@ -375,13 +399,15 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
         skin,
         white,
     );
-    add(
-        out,
-        right,
-        cuboid(0.0, 32.0, [-2.0, 0.0, -2.0], [4, 12, 4]).inflated(0.25),
-        skin,
-        white,
-    );
+    if entity.skin_parts & 32 != 0 {
+        add(
+            out,
+            right,
+            cuboid(0.0, 32.0, [-2.0, 0.0, -2.0], [4, 12, 4]).inflated(0.25),
+            skin,
+            white,
+        );
+    }
     add(
         out,
         left,
@@ -389,13 +415,15 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
         skin,
         white,
     );
-    add(
-        out,
-        left,
-        cuboid(0.0, 48.0, [-2.0, 0.0, -2.0], [4, 12, 4]).inflated(0.25),
-        skin,
-        white,
-    );
+    if entity.skin_parts & 16 != 0 {
+        add(
+            out,
+            left,
+            cuboid(0.0, 48.0, [-2.0, 0.0, -2.0], [4, 12, 4]).inflated(0.25),
+            skin,
+            white,
+        );
+    }
     for (slot, item) in entity.equipment.iter().enumerate().skip(1) {
         let Some(item) = item else { continue };
         let Some(texture) = armor_texture(item.id, slot) else {
@@ -435,14 +463,23 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
             _ => {}
         }
     }
-    if let Some(item) = &entity.equipment[0]
-        && let Some(texture) = held_texture(item.id)
-    {
+    if let Some(item) = &entity.equipment[0] {
         let hand = part(base, right_arm_point, right_arm)
-            * Mat4::from_translation(Vec3::new(-1.0, 9.0, 0.0))
-            * Mat4::from_rotation_x(-PI / 2.0)
-            * Mat4::from_rotation_y(PI);
-        sprite(out, hand, texture);
+            * Mat4::from_translation(Vec3::new(-1.0, 9.0, 0.0));
+        if item.id < 256 {
+            if let Some(registry) = registry {
+                registry.held_block(out, item, hand * Mat4::from_scale(Vec3::splat(6.0)));
+            }
+        } else if let Some(layer) = registry
+            .and_then(|r| r.item_layer(item))
+            .or_else(|| held_texture(item.id).map(|t| t as u32))
+        {
+            sprite(
+                out,
+                hand * Mat4::from_rotation_x(-PI / 2.0) * Mat4::from_rotation_y(PI),
+                layer,
+            );
+        }
     }
 }
 
@@ -499,7 +536,7 @@ fn held_texture(id: i16) -> Option<Texture> {
 
 /// Double-sided item sprite attached to the animated hand. Alpha cutout
 /// retains the owned item's silhouette.
-fn sprite(out: &mut Vec<Vertex>, matrix: Mat4, texture: Texture) {
+fn sprite(out: &mut Vec<Vertex>, matrix: Mat4, texture: u32) {
     let points = [
         [-8.0, 0.0, 0.0],
         [-8.0, -16.0, 0.0],
@@ -511,7 +548,7 @@ fn sprite(out: &mut Vec<Vertex>, matrix: Mat4, texture: Texture) {
         out.push(Vertex {
             position: matrix.transform_point3(Vec3::from(points[i])).to_array(),
             uv: uv[i].map(|v| v / LAYER_SIZE as f32),
-            layer: texture as u32,
+            layer: texture,
             color: [1.0; 3],
             hurt: 0.0,
         });
@@ -802,14 +839,20 @@ fn placeholder(kind: Kind) -> ([f32; 2], [f32; 3]) {
 }
 
 /// Geometry for every visible tracked entity at the frame's partial tick.
-pub fn entities(out: &mut Vec<Vertex>, entities: &[(i32, Entity)], partial: f32, origin: [i64; 3]) {
+pub fn entities(
+    out: &mut Vec<Vertex>,
+    entities: &[(i32, Entity)],
+    partial: f32,
+    origin: [i64; 3],
+    registry: Option<&crate::terrain::Registry>,
+) {
     for (_, entity) in entities {
         if entity.invisible() {
             continue;
         }
         let start = out.len();
         match entity.kind {
-            Kind::Player { slim } => player(out, entity, slim, partial, origin),
+            Kind::Player { slim } => player(out, entity, slim, partial, origin, registry),
             Kind::Mob(51 | 54) => humanoid_mob(out, entity, partial, origin),
             Kind::Mob(50 | 90 | 92 | 120) => common_mob(out, entity, partial, origin),
             kind => {
@@ -877,6 +920,206 @@ pub fn nametags(
             * Mat4::from_rotation_x(camera.pitch.to_radians())
             * Mat4::from_scale(Vec3::new(-0.025, -0.025, 0.025));
         text_line(out, matrix, &profile.name, 0.0, widths, [1.0; 3]);
+    }
+}
+
+fn panel(out: &mut Vec<Vertex>, matrix: Mat4, rect: [f32; 4], color: [f32; 3]) {
+    let [x, y, w, h] = rect;
+    let points = [
+        [x, y, 0.0],
+        [x + w, y, 0.0],
+        [x + w, y + h, 0.0],
+        [x, y + h, 0.0],
+    ];
+    for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+        out.push(Vertex {
+            position: matrix.transform_point3(Vec3::from(points[i])).to_array(),
+            uv: [0.0; 2],
+            layer: Texture::White as u32,
+            color,
+            hurt: 0.0,
+        });
+    }
+}
+
+fn icon(out: &mut Vec<Vertex>, matrix: Mat4, x: f32, y: f32, layer: u32) {
+    let p = [
+        [x, y, 0.0],
+        [x + 16.0, y, 0.0],
+        [x + 16.0, y + 16.0, 0.0],
+        [x, y + 16.0, 0.0],
+    ];
+    let uv = [[0.0, 0.0], [16.0, 0.0], [16.0, 16.0], [0.0, 16.0]];
+    for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+        out.push(Vertex {
+            position: matrix.transform_point3(Vec3::from(p[i])).to_array(),
+            uv: uv[i].map(|v| v / LAYER_SIZE as f32),
+            layer,
+            color: [1.0; 3],
+            hurt: 0.0,
+        });
+    }
+}
+
+/// Functional inventory/hotbar and a first-person sword/bow animation.
+#[allow(clippy::too_many_arguments)]
+pub fn hud(
+    out: &mut Vec<Vertex>,
+    view: &crate::inventory::View,
+    swing: Option<u8>,
+    using: bool,
+    partial: f32,
+    camera: horizon_protocol_47::play::PositionLook,
+    origin: [i64; 3],
+    registry: &crate::terrain::Registry,
+    aspect: f32,
+    cursor: [f32; 2],
+) {
+    let widths = &registry.glyphs;
+    let eye = Vec3::from_array(std::array::from_fn(|a| {
+        (camera.position[a] - origin[a] as f64) as f32
+    }));
+    let basis = Mat4::from_translation(eye)
+        * Mat4::from_rotation_y((-camera.yaw).to_radians())
+        * Mat4::from_rotation_x(camera.pitch.to_radians());
+    let pixel = 2.0 * (35.0f32.to_radians()).tan() * 0.1 / 300.0;
+    let matrix = basis
+        * Mat4::from_translation(Vec3::new(0.0, 0.0, 0.1))
+        * Mat4::from_scale(Vec3::new(-pixel, -pixel, 1.0));
+    if view.open {
+        for (slot, x, y) in view.layout() {
+            panel(out, matrix, [x, y, 17.0, 17.0], [0.18; 3]);
+            if let Some(item) = &view.slots[slot as usize] {
+                if let Some(layer) = registry.item_layer(item) {
+                    icon(
+                        out,
+                        matrix * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.0001)),
+                        x + 1.0,
+                        y + 1.0,
+                        layer,
+                    );
+                }
+                let label = if registry.item_layer(item).is_none() {
+                    item.id.to_string()
+                } else {
+                    String::new()
+                };
+                text_line(
+                    out,
+                    matrix
+                        * Mat4::from_translation(Vec3::new(x + 8.5, y + 2.0, -0.0001))
+                        * Mat4::from_scale(Vec3::splat(0.6)),
+                    &label,
+                    0.0,
+                    widths,
+                    [1.0; 3],
+                );
+                if item.count > 1 {
+                    text_line(
+                        out,
+                        matrix
+                            * Mat4::from_translation(Vec3::new(x + 11.0, y + 10.0, -0.0001))
+                            * Mat4::from_scale(Vec3::splat(0.6)),
+                        &item.count.to_string(),
+                        0.0,
+                        widths,
+                        [0.9; 3],
+                    );
+                }
+            }
+        }
+        if let Some(item) = &view.cursor {
+            let layer = matrix * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.0003));
+            if let Some(texture) = registry.item_layer(item) {
+                icon(out, layer, cursor[0] - 8.0, cursor[1] - 8.0, texture);
+            }
+            text_line(
+                out,
+                layer
+                    * Mat4::from_translation(Vec3::new(cursor[0] + 4.0, cursor[1] + 5.0, 0.0))
+                    * Mat4::from_scale(Vec3::splat(0.7)),
+                &item.count.to_string(),
+                0.0,
+                widths,
+                [1.0; 3],
+            );
+        }
+        return;
+    }
+    // Crosshair stays legible on dark and light surfaces.
+    panel(out, matrix, [-4.0, -0.5, 8.0, 1.0], [0.9; 3]);
+    panel(out, matrix, [-0.5, -4.0, 1.0, 8.0], [0.9; 3]);
+    let y = 128.0;
+    for slot in 0..9 {
+        let x = -81.0 + slot as f32 * 18.0;
+        panel(
+            out,
+            matrix,
+            [x, y, 17.0, 18.0],
+            if slot == usize::from(view.selected) {
+                [0.5; 3]
+            } else {
+                [0.13; 3]
+            },
+        );
+        let index = if view.window == 0 {
+            36 + slot
+        } else {
+            view.slots.len().saturating_sub(9) + slot
+        };
+        if let Some(item) = view.slots.get(index).and_then(Option::as_ref) {
+            if let Some(layer) = registry.item_layer(item) {
+                icon(
+                    out,
+                    matrix * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.0001)),
+                    x + 1.0,
+                    y + 1.0,
+                    layer,
+                );
+            } else {
+                text_line(
+                    out,
+                    matrix
+                        * Mat4::from_translation(Vec3::new(x + 8.0, y + 5.0, -0.0001))
+                        * Mat4::from_scale(Vec3::splat(0.65)),
+                    &item.id.to_string(),
+                    0.0,
+                    widths,
+                    [1.0; 3],
+                );
+            }
+            if item.count > 1 {
+                text_line(
+                    out,
+                    matrix
+                        * Mat4::from_translation(Vec3::new(x + 12.0, y + 10.0, -0.0002))
+                        * Mat4::from_scale(Vec3::splat(0.7)),
+                    &item.count.to_string(),
+                    0.0,
+                    widths,
+                    [1.0; 3],
+                );
+            }
+        }
+    }
+    if let Some(item) = view
+        .slots
+        .get(36 + usize::from(view.selected))
+        .and_then(Option::as_ref)
+        && let Some(texture) = registry.item_layer(item)
+    {
+        let progress = swing.map_or(0.0, |v| (f32::from(v) + partial) / 6.0);
+        let arc = (progress.sqrt() * PI).sin();
+        let mut hand =
+            basis * Mat4::from_translation(Vec3::new(-0.22 * aspect.min(1.6), -0.18, 0.55));
+        hand *= Mat4::from_rotation_z(if using { -0.9 } else { -0.35 + arc * 0.6 });
+        hand *= Mat4::from_rotation_y(if using { -0.8 } else { arc * 0.6 });
+        hand *= Mat4::from_scale(Vec3::new(0.025, -0.025, 0.025));
+        if item.id < 256 {
+            registry.held_block(out, item, hand * Mat4::from_scale(Vec3::splat(12.0)));
+        } else {
+            sprite(out, hand, texture);
+        }
     }
 }
 
@@ -1194,7 +1437,7 @@ mod tests {
         }
         let entities = vec![(1, tracked.get(1).unwrap().clone())];
         let mut vertices = Vec::new();
-        super::entities(&mut vertices, &entities, 0.5, [0; 3]);
+        super::entities(&mut vertices, &entities, 0.5, [0; 3], None);
         for layer in [Texture::Diamond1, Texture::Diamond2, Texture::DiamondSword] {
             assert!(vertices.iter().any(|v| v.layer == layer as u32));
         }
@@ -1209,6 +1452,7 @@ mod tests {
             &[(1, tracked.get(1).unwrap().clone())],
             0.5,
             [0; 3],
+            None,
         );
         assert!(vertices.is_empty());
     }

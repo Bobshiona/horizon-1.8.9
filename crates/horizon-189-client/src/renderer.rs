@@ -24,6 +24,9 @@ pub struct Renderer {
     view_distance: u8,
     pose: PositionLook,
     entity_vertices: Vec<crate::terrain::Vertex>,
+    cursor: [f32; 2],
+    offscreen: Option<wgpu::Texture>,
+    pub offscreen_frames: u64,
 }
 
 impl Renderer {
@@ -114,6 +117,9 @@ impl Renderer {
             view_distance,
             pose: PositionLook::default(),
             entity_vertices: Vec::new(),
+            cursor: [0.0; 2],
+            offscreen: None,
+            offscreen_frames: 0,
         };
         renderer.resize(size);
         Ok(renderer)
@@ -138,18 +144,33 @@ impl Renderer {
         }
     }
 
+    pub fn set_cursor(&mut self, position: (f64, f64)) {
+        let scale = 300.0 / self.config.height.max(1) as f64;
+        self.cursor = [
+            ((position.0 - self.config.width as f64 / 2.0) * scale) as f32,
+            ((position.1 - self.config.height as f64 / 2.0) * scale) as f32,
+        ];
+    }
+
     /// Rebuild moving-entity geometry at this frame's partial tick.
     pub fn set_entities(
         &mut self,
         entities: &[(i32, horizon_world_189::entities::Entity)],
         partial: f32,
+        ui: Option<&(Arc<crate::inventory::View>, Option<u8>, bool)>,
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
             return Ok(());
         };
         let mut vertices = std::mem::take(&mut self.entity_vertices);
         vertices.clear();
-        crate::models::entities(&mut vertices, entities, partial, scene.origin());
+        crate::models::entities(
+            &mut vertices,
+            entities,
+            partial,
+            scene.origin(),
+            self.registry.as_deref(),
+        );
         if let Some(registry) = &self.registry {
             crate::models::nametags(
                 &mut vertices,
@@ -158,6 +179,22 @@ impl Renderer {
                 scene.origin(),
                 self.pose,
                 &registry.glyphs,
+            );
+        }
+        if let Some((view, swing, using_item)) = ui
+            && let Some(registry) = &self.registry
+        {
+            crate::models::hud(
+                &mut vertices,
+                view,
+                *swing,
+                *using_item,
+                partial,
+                self.pose,
+                scene.origin(),
+                registry,
+                self.config.width as f32 / self.config.height.max(1) as f32,
+                self.cursor,
             );
         }
         let result = scene.set_entities(&self.device, &self.queue, &vertices);
@@ -175,6 +212,7 @@ impl Renderer {
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
         let max = self.device.limits().max_texture_dimension_2d;
+        self.offscreen = None;
         self.drawable = (1..=max).contains(&size.width) && (1..=max).contains(&size.height);
         if self.drawable {
             self.config.width = size.width;
@@ -258,13 +296,18 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn render(&mut self, capture: Option<&std::path::Path>) -> Result<bool, Box<dyn Error>> {
+    pub fn render(
+        &mut self,
+        capture: Option<&std::path::Path>,
+        smoke: bool,
+    ) -> Result<bool, Box<dyn Error>> {
         if !self.drawable {
             return Ok(false);
         }
         let (frame, reconfigure) = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
+            wgpu::CurrentSurfaceTexture::Success(frame) => (Some(frame), false),
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (Some(frame), true),
+            wgpu::CurrentSurfaceTexture::Occluded if smoke => (None, false),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return Ok(false);
             }
@@ -307,9 +350,34 @@ impl Renderer {
                 return Err("Surface validation failed".into());
             }
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let texture = if let Some(frame) = &frame {
+            &frame.texture
+        } else {
+            if self.offscreen_frames == 0 {
+                eprintln!("SMOKE_OFFSCREEN_ACTIVE surface_occluded=true");
+            }
+            self.offscreen_frames += 1;
+            self.offscreen.get_or_insert_with(|| {
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Occluded smoke target"),
+                    size: wgpu::Extent3d {
+                        width: self.config.width,
+                        height: self.config.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.config.format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                })
+            });
+            self.offscreen
+                .as_ref()
+                .expect("smoke target was initialized")
+        };
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -351,10 +419,12 @@ impl Renderer {
         }
         self.queue.submit([encoder.finish()]);
         if let Some(path) = capture {
-            self.capture(&frame.texture, path)?;
+            self.capture(texture, path)?;
         }
-        self.window.pre_present_notify();
-        self.queue.present(frame);
+        if let Some(frame) = frame {
+            self.window.pre_present_notify();
+            self.queue.present(frame);
+        }
         if reconfigure {
             self.resize(self.window.inner_size());
         }

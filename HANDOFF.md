@@ -5,8 +5,8 @@
 Updated November 18–19, 2026 (America/Los_Angeles). Release target December 2.
 
 Native Rust + Apple Metal client for Minecraft 1.8.9 (Protocol 47), built inside the Horizon workspace and
-isolated from its modern 26.3 code. Public at `github.com/Bobshiona/horizon-1.8.9` (`main`), one squashed
-commit on top of upstream `4e60c05893`, authored with the account's noreply address. Local
+isolated from its modern 26.3 code. Public at `github.com/Bobshiona/horizon-1.8.9` (`main`), a squashed launch
+commit plus verified development checkpoints on top of upstream `4e60c05893`, authored with the account's noreply address. Local
 `feature/minecraft-1.8.9` tracks it; `backup/pre-launch-squash` keeps the unsquashed history and is never
 pushed (it holds local paths). The squashed commit covers:
 
@@ -30,13 +30,28 @@ a diamond armor set and sword, captured 700 Metal frames, and finished flight wi
 All 69 scoped tests, strict Clippy and formatting pass. Profile README/bio updates and three private PNG
 avatars have been completed outside this repository.
 
-Next: combat (attack/interact packets with vanilla swing-before-attack order),
-inventory and held-item rendering, nametags, real skins.
+Interaction checkpoint adds bounded legacy slot/NBT serialization, ray selection, ordered user-driven
+attack/interact/use/digging, a nine-slot hotbar, inventory/container synchronization with rejected
+transaction recovery, and an item-icon grid. Mining strength, harvest permissions and stack limits were
+queried from all 326 registered item entries against 198 blocks in the official reference server. Empty
+typed NBT lists and modified UTF-8 survive round trips.
+
+The managed local reference gate confirms zombie hurt status after an attack, sword use/release, hotbar
+selection, cobblestone placement and survival mining, then chest open/pickup/close. Both resulting block
+changes were independently confirmed by the server. Native equipment/flight smoke renders 700 frames
+per viewport with zero movement flags. An occluded smoke window uses a reusable offscreen Metal target,
+with offscreen counts reported explicitly. Entity/profile and inventory snapshots are shared by Arc; ray
+selection retains scratch storage.
+
+The personal repository is now `origin`; the original project is `upstream`. The feature branch tracks
+`origin/main`. All new commits retain the configured GitHub noreply author. The backup branch stays local.
+
+Next: finish the parity gaps below, broaden entity variants, then validate a live Hypixel lobby.
 
 ## 2. Verified State
 
-- 69 scoped tests pass with `--include-ignored` (client 10, login CLI 2, assets 1, auth 2, physics 14,
-  protocol 26, world 14 — counts include the Metal readback and the owned-jar registry test).
+- 78 scoped tests pass with `--include-ignored` (client 15, login CLI 2, assets 1, auth 2, physics 15,
+  protocol 29, world 14 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata
@@ -45,7 +60,7 @@ inventory and held-item rendering, nametags, real skins.
   (`cargo run -p horizon-physics-189 --example stairs_probe` against a private reflection harness).
 - Movement gate (official 1.8.9 server, view distance 8): walk/sprint/sprint-jump/sneak/strafe/back-jump
   autopilot for 300 ticks, 357 columns meshed, `SERVER_MOVEMENT_FLAGS 0`.
-- Entity gate: a second native client renders as a skinned player; zombie and villager placeholders; an
+- Entity gate: a second native client renders as a skinned player; textured zombie and villager models; an
   invisible armour stand stays hidden; single, double, trapped and ender chests; a standing sign with its
   text in the vanilla font; creeper and skeleton skulls; banners in their base dye. A creative client then
   double-taps into flight, climbs, cruises, sprint-flies, descends and lands with `SERVER_MOVEMENT_FLAGS 0`.
@@ -55,11 +70,11 @@ inventory and held-item rendering, nametags, real skins.
 
 | Package | Role |
 | --- | --- |
-| `horizon-protocol-47` | Framing, compression, AES/CFB8, login, play primitives; `player.rs` (entity actions, health, velocity, explosions, attributes, effects); `entities.rs` (spawns, moves, teleports, metadata, equipment, animations, abilities, slots, signs, block entities); `nbt.rs` (bounded NBT, slots, watcher metadata). |
+| `horizon-protocol-47` | Framing, compression, AES/CFB8, login, play primitives; `player.rs` (entity actions, health, velocity, explosions, attributes, effects); `entities.rs` (spawns, movement, metadata, equipment, status, abilities, signs and block entities); `interaction.rs` (user action packets); `player_list.rs` (profile/texture properties); `nbt.rs` (bounded read/write NBT and slots). |
 | `horizon-world-189` | Columns, sections, block changes, heightmap skylight; `blocks.rs` IDs 0–197; `variants.rs` blockstate selection; `entities.rs` tracked entities (3-step interpolation, body yaw, limb swing, swings); `block_entities.rs` (signs, skulls, banners). |
 | `horizon-physics-189` | Exact AABB clipping; legacy sine table; per-block collision shapes; the player tick with flight and Depth Strider. |
 | `horizon-assets-189` | Owned-jar blockstates, rotated model baking, textures. |
-| `horizon-189-client` | `keyboard.rs` macOS key state; `network.rs` Protocol 47 actor + mesher thread; `terrain.rs` column meshing; `models.rs` entity/block-entity geometry; `scene.rs` Metal resources; `renderer.rs` surface, camera, capture. |
+| `horizon-189-client` | `keyboard.rs` macOS key state; `network.rs` Protocol 47 actor + mesher thread; `terrain.rs` column meshing; `models.rs` entity/block-entity geometry; `scene.rs` Metal resources; `renderer.rs` surface, camera, capture; `gameplay.rs` ordered interaction controller; `inventory.rs` authoritative snapshots/transactions; `hardness.rs` and `items.rs` queried legacy registry facts. |
 
 ## 4. Live-play audit (after the first keyboard/mouse session)
 
@@ -76,10 +91,16 @@ inventory and held-item rendering, nametags, real skins.
 
 ## 5. Known Gaps
 
-1. Combat and interaction packets (attack, use item, block placement and digging) and inventory UI.
+1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
+   block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
+   includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
+   prediction/crack effects, full first-person item transforms, consumable durations, crafting/shift-click
+   and special-container rules. Adventure restrictions are enforced conservatively. Live Hypixel remains
+   unverified.
 2. Player armor and sword/bow sprites are present, with depth-tested profile nametags. Signed texture
    properties are preserved as skin/cape hooks. Remote texture loading, capes, team label rules, leather
-   overlay/glint, block/tool held meshes and first-person hands remain pending.
+   overlay/glint, first-person hands and exact item display transforms remain pending. Generated item sprites and held
+   block geometry now reuse owned textures/models.
 3. Standard adult zombie, skeleton, creeper, pig, cow and villager meshes are present. Baby variants,
    profession/subtype textures, additional mobs and special animation states remain pending.
 4. Full client light engine (heightmap skylight covers open sky; covered cells use server light).
@@ -104,19 +125,28 @@ export PATH="$HOME/.cargo/bin:$PATH" CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4
 export HORIZON_189_TEST_JAR="$HOME/Library/Application Support/minecraft/versions/1.8.9/1.8.9.jar"
 P=(-p horizon-189-client -p horizon-protocol-47 -p horizon-auth -p horizon-world-189 -p horizon-assets-189 -p horizon-physics-189 -p horizon-client-platform)
 cargo build --offline -p horizon-189-client --target aarch64-apple-darwin
-cargo test --offline $P --target aarch64-apple-darwin --target-dir /tmp/horizon-189-native-target -- --include-ignored
-cargo clippy --offline $P --all-targets --target aarch64-apple-darwin --target-dir /tmp/horizon-189-native-target -- -D warnings
+cargo test --offline $P --target aarch64-apple-darwin
+cargo clippy --offline $P --all-targets --target aarch64-apple-darwin -- -D warnings
 cargo fmt --check $P -p horizon-client-input
-python3 tools/check_layers.py --base origin/main && python3 tools/check_public_tree.py
-python3 /tmp/horizon-189-movement-gate.py      # official server, autopilot, movement flags
-python3 /tmp/horizon-189-registry-gate.py      # block showcase capture
-python3 /tmp/horizon-189-entity-gate.py        # second client, mobs, block entities, flight
+python3 tools/check_layers.py --base 4e60c05893 && python3 tools/check_public_tree.py
 ```
 
-The gate scripts and the reference server (`/tmp/mc-1.8.9-ref`: Zulu 8, official server SHA-1
-`b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, flat world, offline mode, view distance 8, Easy, 4 players)
-live outside git. Use `--offline` because `Cargo.lock` gained path-dependency edges.
+The private `horizon-189-interaction-gate.py` runner starts the official reference server, configures a
+local fixture, runs all scoped tests with `--include-ignored`, independently checks placement/mining, and
+always stops the server. It sets `HORIZON_189_REFERENCE_GATE`, `HORIZON_189_FIXTURE_READY` and the owned-jar
+path for the ignored interaction test. Run that test only through the managed fixture. The private
+`horizon-189-equipment-gate.py` runner covers the second player, armor, held items, names, common mobs,
+block entities and flight. Both scripts and all server files live in the system temporary directory.
+The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
+
+Latest gate outcomes are 78 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
+server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
+This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
 
 Manual play: run the canonical binary with `--offline --username <name> --server 127.0.0.1` against the
-reference server. The cursor captures on join; Escape releases it; click recaptures. Keys: WASD, Space,
-Shift (sneak), Control or Left Option (sprint), double-tap Space to fly where allowed.
+reference server. The cursor captures on join; Escape releases it; click recaptures. Keys are WASD, Space,
+Shift for sneak, Control or Left Option for sprint, and double-tap Space to fly where allowed. Left/right
+mouse drive attack/dig and interact/use. Number keys or the wheel select hotbar slots. E opens the player
+inventory; E or Escape closes it. Container slots accept normal left/right pickup clicks. Tokens remain
+memory-only and a later authenticated session requires another device-code login or direct token.

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod player;
+pub mod raycast;
 pub mod shapes;
 pub mod trig;
 

@@ -11,6 +11,7 @@ horizon-core = { path = "../horizon-core" }
 horizon-world-189 = { path = "../horizon-world-189" }
 
 [dev-dependencies]
+horizon-protocol-47 = { path = "../horizon-protocol-47" }
 serde_json = "1.0.151"
 
 [lints]

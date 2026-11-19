@@ -58,6 +58,10 @@ enum MeshCommand {
 #[derive(Default)]
 pub struct Shared {
     pub keys: Keys,
+    pub input: crate::gameplay::Input,
+    pub inventory: Arc<crate::inventory::View>,
+    pub swing: Option<u8>,
+    pub using_item: bool,
     pub yaw: f32,
     pub pitch: f32,
     pub previous: [f64; 3],
@@ -66,7 +70,7 @@ pub struct Shared {
     pub positioned: bool,
     pub sneaking: bool,
     /// Tracked entities as of the last tick, for interpolated drawing.
-    pub entities: Vec<(i32, Entity)>,
+    pub entities: Arc<Vec<(i32, Entity)>>,
 }
 
 pub struct Network {
@@ -403,7 +407,9 @@ fn run_actor(
     };
     let mut player = Player::default();
     let mut entities = Entities::default();
-    let mut inventory: Vec<Option<horizon_protocol_47::nbt::Item>> = vec![None; 45];
+    let mut inventory = crate::inventory::Inventory::default();
+    let mut controller = crate::gameplay::Controller::default();
+    let mut game_mode = 0;
     let mut capabilities = entity_packets::Abilities {
         invulnerable: false,
         flying: false,
@@ -427,6 +433,7 @@ fn run_actor(
                 match play::decode(&body)? {
                     play::Packet::Join(join) => {
                         entity_id = join.entity_id;
+                        game_mode = join.game_mode & 7;
                         entities.clear();
                         sky_light = Some(join.dimension == 0);
                         write(world)?.set_sky(join.dimension == 0);
@@ -555,6 +562,11 @@ fn run_actor(
                                 i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
                             })
                             .ok_or_else(|| io::Error::other("Short respawn packet"))?;
+                        game_mode = *fields
+                            .get(5)
+                            .ok_or_else(|| io::Error::other("Short respawn game mode"))?;
+                        inventory = crate::inventory::Inventory::default();
+                        controller = crate::gameplay::Controller::default();
                         sky_light = Some(dimension == 0);
                         let mut world = write(world)?;
                         let keys: Vec<(i32, i32)> = world.columns().map(|(key, _)| key).collect();
@@ -576,25 +588,36 @@ fn run_actor(
                         player.fly_speed = abilities.fly_speed;
                         capabilities = abilities;
                     }
+                    play::Packet::Other { id: 0x2b, fields } => {
+                        if fields.len() == 5 && fields[0] == 3 {
+                            game_mode = f32::from_be_bytes(fields[1..5].try_into().unwrap()) as u8;
+                        }
+                    }
+                    play::Packet::Other { id: 0x09, fields } => {
+                        inventory.view.selected = crate::inventory::server_hotbar(fields)?;
+                    }
+                    play::Packet::Other { id: 0x2d, fields } => {
+                        inventory.open_packet(fields)?;
+                    }
+                    play::Packet::Other { id: 0x2e, fields } => {
+                        if fields.first() == Some(&inventory.view.window) {
+                            inventory.close();
+                        }
+                    }
+                    play::Packet::Other { id: 0x32, fields } => {
+                        if let Some(packet) = inventory.confirm(fields)? {
+                            writer.send(&packet)?;
+                        }
+                    }
                     play::Packet::Other { id: 0x2f, fields } => {
                         let (window, slot, item) = entity_packets::decode_set_slot(fields)?;
-                        if window == 0
-                            && let Some(target) = usize::try_from(slot)
-                                .ok()
-                                .and_then(|slot| inventory.get_mut(slot))
-                        {
-                            *target = item;
-                            player.depth_strider = depth_strider(&inventory);
-                        }
+                        inventory.set_slot(window as u8, slot, item);
+                        player.depth_strider = depth_strider(&inventory.player);
                     }
                     play::Packet::Other { id: 0x30, fields } => {
                         let (window, items) = entity_packets::decode_window_items(fields)?;
-                        if window == 0 {
-                            for (target, item) in inventory.iter_mut().zip(items) {
-                                *target = item;
-                            }
-                            player.depth_strider = depth_strider(&inventory);
-                        }
+                        inventory.items(window, items);
+                        player.depth_strider = depth_strider(&inventory.player);
                     }
                     play::Packet::Other { id: 0x33, fields } => {
                         let (at, lines) = entity_packets::decode_sign(fields)?;
@@ -654,12 +677,22 @@ fn run_actor(
                     play::Packet::Other { id: 0x1d, fields } => {
                         let effect = fields::decode_effect(fields)?;
                         if effect.entity == entity_id {
+                            match effect.effect {
+                                3 => controller.haste = Some(effect.amplifier),
+                                4 => controller.fatigue = Some(effect.amplifier),
+                                _ => {}
+                            }
                             apply_effect(&mut player, effect.effect, Some(effect.amplifier));
                         }
                     }
                     play::Packet::Other { id: 0x1e, fields } => {
                         let (entity, effect) = fields::decode_remove_effect(fields)?;
                         if entity == entity_id {
+                            match effect {
+                                3 => controller.haste = None,
+                                4 => controller.fatigue = None,
+                                _ => {}
+                            }
                             apply_effect(&mut player, effect, None);
                         }
                     }
@@ -686,15 +719,40 @@ fn run_actor(
             if !positioned || !player.chunk_loaded(&world_view) {
                 continue;
             }
-            let keys = {
+            let (keys, mut input) = {
                 let mut state = lock(shared)?;
                 if scripted {
                     autopilot(reports, config.autopilot_fly, &mut state);
                 }
                 player.yaw = state.yaw;
                 player.pitch = state.pitch;
-                state.keys
+                (
+                    state.keys,
+                    crate::gameplay::Input {
+                        attack: state.input.attack,
+                        using: state.input.using,
+                        actions: std::mem::take(&mut state.input.actions),
+                    },
+                )
             };
+            controller.tick(
+                &mut input,
+                &mut player,
+                &world_view,
+                &entities,
+                &mut inventory,
+                game_mode,
+                writer,
+            )?;
+            {
+                let mut state = lock(shared)?;
+                state.inventory = Arc::new(inventory.view.clone());
+                state.swing = controller.swing;
+                state.using_item = controller.using;
+                if state.input.actions.is_empty() {
+                    state.input.actions = std::mem::take(&mut input.actions);
+                }
+            }
             player.tick(&world_view, keys);
             // sendPlayerAbilities happens inside onLivingUpdate, before the
             // walking update's actions and movement.
@@ -754,10 +812,9 @@ fn run_actor(
                 entities.tick();
             }
             let mut state = lock(shared)?;
-            state.entities.clear();
-            state
-                .entities
-                .extend(entities.iter().map(|(id, entity)| (id, entity.clone())));
+            let snapshot = Arc::make_mut(&mut state.entities);
+            snapshot.clear();
+            snapshot.extend(entities.iter().map(|(id, entity)| (id, entity.clone())));
         }
         let remainder = Duration::from_nanos((late % tick.as_nanos()) as u64);
         next_tick = now + tick - remainder;

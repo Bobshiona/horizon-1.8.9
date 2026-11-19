@@ -34,7 +34,7 @@ pub enum Startup {
 
 pub const HELP: &str = "Horizon 1.8.9\n\
     --assets JAR                  Owned 1.8.9 jar for terrain or Metal smoke\n\
-    --smoke-frames N              Present N Metal frames and exit\n\
+    --smoke-frames N              Render N Metal frames and exit\n\
     --login                       Verify Microsoft device-code authentication\n\
     --offline --username NAME     Use an offline testing identity\n\
     --username NAME --uuid UUID --access-token TOKEN\n\

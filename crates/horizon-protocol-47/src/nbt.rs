@@ -18,6 +18,8 @@ pub enum Tag {
     ByteArray(Vec<u8>),
     String(String),
     List(Vec<Tag>),
+    /// Empty lists retain their declared element type for slot equality.
+    EmptyList(u8),
     Compound(Vec<(String, Tag)>),
     IntArray(Vec<i32>),
 }
@@ -83,8 +85,29 @@ impl Reader<'_, '_> {
         self.budget(u64::from(length))?;
         let mut bytes = vec![0; usize::from(length)];
         self.input.read_exact(&mut bytes)?;
-        // Java modified UTF-8 is close enough for names and sign text.
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        let mut units = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            let first = bytes[index];
+            let (mut value, length) = match first {
+                0..=127 => (u16::from(first), 1),
+                0xc0..=0xdf => (u16::from(first & 31), 2),
+                0xe0..=0xef => (u16::from(first & 15), 3),
+                _ => return Err(invalid("Malformed modified UTF-8")),
+            };
+            if index + length > bytes.len() {
+                return Err(invalid("Truncated modified UTF-8"));
+            }
+            for &byte in &bytes[index + 1..index + length] {
+                if byte & 0xc0 != 0x80 {
+                    return Err(invalid("Malformed modified UTF-8 continuation"));
+                }
+                value = (value << 6) | u16::from(byte & 63);
+            }
+            units.push(value);
+            index += length;
+        }
+        Ok(String::from_utf16_lossy(&units))
     }
 
     fn length(&mut self, element: u64) -> io::Result<usize> {
@@ -127,7 +150,11 @@ impl Reader<'_, '_> {
                 for _ in 0..length {
                     values.push(self.payload(element, depth + 1)?);
                 }
-                Tag::List(values)
+                if length == 0 && element != 0 {
+                    Tag::EmptyList(element)
+                } else {
+                    Tag::List(values)
+                }
             }
             10 => {
                 let mut entries = Vec::new();
@@ -285,6 +312,131 @@ pub fn read_metadata(input: &mut Cursor<&[u8]>) -> io::Result<Vec<(u8, Meta)>> {
     }
 }
 
+/// Encode a legacy slot, retaining NBT for placement and inventory transactions.
+/// Encoding is staged so validation errors leave the caller's buffer intact.
+pub fn write_slot(output: &mut Vec<u8>, item: Option<&Item>) -> io::Result<()> {
+    let mut bytes = Vec::new();
+    let Some(item) = item else {
+        output.extend_from_slice(&(-1i16).to_be_bytes());
+        return Ok(());
+    };
+    if item.id < 0 || item.count <= 0 {
+        return Err(invalid("Invalid outgoing item stack"));
+    }
+    bytes.extend_from_slice(&item.id.to_be_bytes());
+    bytes.push(item.count as u8);
+    bytes.extend_from_slice(&item.damage.to_be_bytes());
+    if let Some(tag) = &item.nbt {
+        if !matches!(tag, Tag::Compound(_)) {
+            return Err(invalid("Root NBT tag must be compound"));
+        }
+        bytes.extend([10, 0, 0]);
+        write_payload(&mut bytes, tag, 0)?;
+    } else {
+        bytes.push(0);
+    }
+    output.extend_from_slice(&bytes);
+    Ok(())
+}
+
+fn tag_kind(tag: &Tag) -> u8 {
+    match tag {
+        Tag::Byte(_) => 1,
+        Tag::Short(_) => 2,
+        Tag::Int(_) => 3,
+        Tag::Long(_) => 4,
+        Tag::Float(_) => 5,
+        Tag::Double(_) => 6,
+        Tag::ByteArray(_) => 7,
+        Tag::String(_) => 8,
+        Tag::List(_) | Tag::EmptyList(_) => 9,
+        Tag::Compound(_) => 10,
+        Tag::IntArray(_) => 11,
+    }
+}
+
+fn write_utf(output: &mut Vec<u8>, text: &str) -> io::Result<()> {
+    let mut bytes = Vec::new();
+    for unit in text.encode_utf16() {
+        match unit {
+            1..=127 => bytes.push(unit as u8),
+            0..=2047 => bytes.extend([0xc0 | (unit >> 6) as u8, 0x80 | (unit & 63) as u8]),
+            _ => bytes.extend([
+                0xe0 | (unit >> 12) as u8,
+                0x80 | ((unit >> 6) & 63) as u8,
+                0x80 | (unit & 63) as u8,
+            ]),
+        }
+    }
+    let length = u16::try_from(bytes.len()).map_err(|_| invalid("NBT string too long"))?;
+    output.extend_from_slice(&length.to_be_bytes());
+    output.extend(bytes);
+    Ok(())
+}
+
+fn write_payload(output: &mut Vec<u8>, tag: &Tag, depth: usize) -> io::Result<()> {
+    if depth > MAX_DEPTH || output.len() as u64 > MAX_BYTES {
+        return Err(invalid("NBT size or depth exceeded"));
+    }
+    match tag {
+        Tag::Byte(v) => output.push(*v as u8),
+        Tag::Short(v) => output.extend_from_slice(&v.to_be_bytes()),
+        Tag::Int(v) => output.extend_from_slice(&v.to_be_bytes()),
+        Tag::Long(v) => output.extend_from_slice(&v.to_be_bytes()),
+        Tag::Float(v) => output.extend_from_slice(&v.to_be_bytes()),
+        Tag::Double(v) => output.extend_from_slice(&v.to_be_bytes()),
+        Tag::String(v) => write_utf(output, v)?,
+        Tag::ByteArray(values) => {
+            let n = i32::try_from(values.len()).map_err(|_| invalid("NBT array too long"))?;
+            if values.len() as u64 > MAX_BYTES {
+                return Err(invalid("NBT array too long"));
+            }
+            output.extend_from_slice(&n.to_be_bytes());
+            output.extend(values);
+        }
+        Tag::IntArray(values) => {
+            if values.len() as u64 > MAX_BYTES / 4 {
+                return Err(invalid("NBT array too long"));
+            }
+            output.extend_from_slice(&(values.len() as i32).to_be_bytes());
+            for v in values {
+                output.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+        Tag::EmptyList(kind) => {
+            if *kind > 11 {
+                return Err(invalid("Invalid empty list type"));
+            }
+            output.push(*kind);
+            output.extend_from_slice(&0i32.to_be_bytes());
+        }
+        Tag::List(values) => {
+            let kind = values.first().map_or(0, tag_kind);
+            if values.iter().any(|v| tag_kind(v) != kind) {
+                return Err(invalid("Mixed NBT list"));
+            }
+            let n = i32::try_from(values.len()).map_err(|_| invalid("NBT list too long"))?;
+            output.push(kind);
+            output.extend_from_slice(&n.to_be_bytes());
+            for v in values {
+                write_payload(output, v, depth + 1)?;
+            }
+        }
+        Tag::Compound(values) => {
+            for (name, value) in values {
+                output.push(tag_kind(value));
+                write_utf(output, name)?;
+                write_payload(output, value, depth + 1)?;
+            }
+            output.push(0);
+        }
+    }
+    if output.len() as u64 > MAX_BYTES {
+        return Err(invalid("NBT size exceeded"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +453,34 @@ mod tests {
         bytes.push(0);
         bytes.push(0);
         bytes
+    }
+
+    #[test]
+    fn empty_typed_list_slot_round_trip_retains_original_wire_bytes() {
+        let bytes = [0, 1, 1, 0, 0, 10, 0, 0, 9, 0, 1, b'x', 10, 0, 0, 0, 0, 0];
+        let item = read_slot(&mut Cursor::new(bytes.as_slice())).unwrap();
+        let mut out = Vec::new();
+        write_slot(&mut out, item.as_ref()).unwrap();
+        assert_eq!(out, bytes);
+    }
+
+    #[test]
+    fn slots_preserve_modified_utf8_nulls_and_supplementary_text() {
+        let item = Item {
+            id: 1,
+            count: 1,
+            damage: 0,
+            nbt: Some(Tag::Compound(vec![(
+                "label".into(),
+                Tag::String("a\0🦀".into()),
+            )])),
+        };
+        let mut bytes = Vec::new();
+        write_slot(&mut bytes, Some(&item)).unwrap();
+        assert_eq!(
+            read_slot(&mut Cursor::new(bytes.as_slice())).unwrap(),
+            Some(item)
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ pub enum Kind {
 pub struct Entity {
     pub kind: Kind,
     pub uuid: u128,
-    pub profile: Option<horizon_protocol_47::player_list::Profile>,
+    pub profile: Option<std::sync::Arc<horizon_protocol_47::player_list::Profile>>,
     pub skin_parts: u8,
     server: [i32; 3],
     target: [f64; 3],
@@ -48,6 +48,7 @@ pub struct Entity {
     pub age: u32,
     /// Remaining vanilla hurt-flash ticks, refreshed by entity status 2.
     pub hurt_time: u8,
+    pub health: f32,
 }
 
 impl Entity {
@@ -79,6 +80,7 @@ impl Entity {
             swing: None,
             age: 0,
             hurt_time: 0,
+            health: 20.0,
         }
     }
 
@@ -98,6 +100,7 @@ impl Entity {
         for (index, value) in entries {
             match (index, value) {
                 (0, Meta::Byte(flags)) => self.flags = *flags as u8,
+                (6, Meta::Float(health)) if self.living() => self.health = *health,
                 (10, Meta::Byte(parts)) if matches!(self.kind, Kind::Player { .. }) => {
                     self.skin_parts = *parts as u8
                 }
@@ -198,7 +201,7 @@ pub fn slim_skin(uuid: u128) -> bool {
 #[derive(Debug, Default)]
 pub struct Entities {
     map: HashMap<i32, Entity>,
-    profiles: HashMap<u128, horizon_protocol_47::player_list::Profile>,
+    profiles: HashMap<u128, std::sync::Arc<horizon_protocol_47::player_list::Profile>>,
 }
 
 impl Entities {
@@ -234,6 +237,7 @@ impl Entities {
         for update in updates {
             match update {
                 Update::Add { uuid, profile } => {
+                    let profile = std::sync::Arc::new(profile);
                     for entity in self.map.values_mut().filter(|entity| entity.uuid == uuid) {
                         entity.profile = Some(profile.clone());
                     }
@@ -359,6 +363,13 @@ impl Entities {
                 {
                     entity.hurt_time = 10;
                     entity.limb_amount = 1.5;
+                }
+            }
+            EntityPacket::Status { id, status: 3 } => {
+                if let Some(entity) = self.map.get_mut(&id)
+                    && entity.living()
+                {
+                    entity.health = 0.0;
                 }
             }
             EntityPacket::Status { .. } => {}
