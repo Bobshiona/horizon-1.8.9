@@ -141,9 +141,7 @@ projection. Camera effects follow `EntityRenderer`: hurt tilt, death roll and vi
 ground, not in water or blind) and enchanted hits, S0B animations 4/5 from the server, and arrow crit
 trails. Physics now tracks fall distance, distance walked and camera yaw/pitch for these effects. A
 capture checked dropped items, a stuck arrow, swelling TNT, a landed falling block, collected XP orbs and
-the held sword, bow, fishing rod and wool block. Known gaps: other players' held items still use an
-approximate third-person transform (no `LayerHeldItem` port, so their block-hit pose is not shown), no
-fishing line, no item pickup animation, no explosion/smoke/block-break particles, and the cast fishing
+the held sword, bow, fishing rod and wool block. Known gaps: no fishing line, no item pickup animation, no explosion/smoke/block-break particles, and the cast fishing
 rod model is not swapped in.
 
 Saved sign-in and release pacing checkpoint. A device-code sign-in now keeps Microsoft's refresh token
@@ -170,7 +168,17 @@ build (`cargo build --release`, thin LTO) in the 80-player synthetic lobby with 
 interval P50 16,665 us, P95 17,097, P99 17,310, max 18,103, no interval over twice the median. A
 covered smoke window still drops to macOS's throttled cadence; the pacing runner shows one window only.
 
-Next (in order): other players' held items and block-hit (`LayerHeldItem`); live Hypixel PvP play test.
+Other players' held items checkpoint. `LayerHeldItem` is ported: the item hangs from the arm's
+`postRenderArm` point plus (-1, 7, 1) pixels, chests get the render-type-2 transform, sneaking adds
+0.203125, and every item uses its 1.8.9 `THIRD_PERSON` display (handheld tools, bow, fishing rod, the
+flat-item depth variants, and the block, carpet, fence, gate, anvil and button transforms), through
+`ItemRenderer.renderItem`'s doubling for blocks and `RenderItem.renderItem`'s half scale. `ModelBiped`
+poses come from the jar: holding (-pi/10), block-hitting (-3pi/10 and -30 degrees yaw, from the using
+flag 0x10 with a sword) and `aimedBow` (both arms along the head); the bow draws its pulling frames
+from how long the using flag has been set (`Entity::use_ticks`). A synthetic-player capture checked
+holding, blocking, drawing, a held block, sneaking, a fishing rod and an apple from front and side.
+
+Next (in order): see-through nametag backgrounds; live Hypixel PvP play test.
 
 ## 2. Verified State
 
@@ -218,12 +226,12 @@ Next (in order): other players' held items and block-hit (`LayerHeldItem`); live
 1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
    block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
    includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
-   prediction/crack effects, third-person held-item transforms, crafting/shift-click
+   prediction/crack effects, crafting/shift-click
    and special-container rules. Adventure restrictions are enforced conservatively. Live Hypixel remains
    unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
    skin/cape bindings are present, as are first-person hands and first-person item display transforms.
-   Enchantment glint and third-person item display transforms remain pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
+   Third-person item display transforms are ported; enchantment glint remains pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
    position cape dynamics and additional HD texture layouts require further parity.
 3. Standard zombie, skeleton, wither skeleton, creeper, pig, cow, villager, sheep, chicken, wolf, spider,
    cave spider, slime and enderman meshes are present. Age, sheep shearing/color, slime size, wolf texture

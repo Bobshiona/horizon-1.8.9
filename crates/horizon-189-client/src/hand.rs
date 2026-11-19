@@ -290,6 +290,18 @@ fn held_item(out: &mut Vec<Vertex>, m: Mat4, item: &Item, registry: &Registry, u
         * rotate(25.0, Z)
         * Mat4::from_scale(Vec3::splat(1.7 * 0.5))
         * Mat4::from_translation(Vec3::splat(-0.5));
+    generated_item(out, m, item, registry, used);
+}
+
+/// A generated item model's layers (bow pulling, potion and leather tints)
+/// in model space, 0 to 1 on each axis.
+fn generated_item(
+    out: &mut Vec<Vertex>,
+    m: Mat4,
+    item: &Item,
+    registry: &Registry,
+    used: Option<f32>,
+) {
     let sprite = |name| registry.sprite(name);
     let tint = |color: u32| {
         let [r, g, b, _] = crate::ui::argb(color | 0xFF00_0000);
@@ -352,6 +364,88 @@ fn held_item(out: &mut Vec<Vertex>, m: Mat4, item: &Item, registry: &Registry, u
         if let Some(layer) = layer {
             registry.item_mesh(out, layer, m, color);
         }
+    }
+}
+
+/// An item model's `display` transform: translation in pixels, then yaw,
+/// pitch and roll in degrees, then scale (`ItemTransformVec3f.apply`).
+fn display(rotation: [f32; 3], translation: [f32; 3], scale: f32) -> Mat4 {
+    Mat4::from_translation(Vec3::from(translation) / 16.0)
+        * rotate(rotation[1], Y)
+        * rotate(rotation[0], X)
+        * rotate(rotation[2], Z)
+        * Mat4::from_scale(Vec3::splat(scale))
+}
+
+/// The `THIRD_PERSON` display of the 1.8.9 item models, by item.
+fn third_person_display(item: &Item) -> Mat4 {
+    if (1..198).contains(&item.id) && !flat_block(item.id) {
+        let (rotation, translation) = match item.id {
+            // Carpets, trapdoors, daylight sensors and snow layers.
+            78 | 96 | 151 | 167 | 171 | 178 => ([10.0, -45.0, 170.0], [0.0, 0.25, -2.75]),
+            85 | 113 | 188..=192 => ([0.0, 0.0, 180.0], [0.0, 1.5, -2.75]),
+            107 | 183..=187 => ([0.0, -90.0, 170.0], [0.0, 1.5, -2.75]),
+            145 => ([10.0, -45.0, 170.0], [0.25, 1.5, -2.5]),
+            77 | 143 => ([10.0, -45.0, 170.0], [0.0, 1.0, -1.75]),
+            // Chests are drawn by their block entity renderer: no display.
+            54 | 130 | 146 => return Mat4::IDENTITY,
+            _ => ([10.0, -45.0, 170.0], [0.0, 1.5, -2.75]),
+        };
+        return display(rotation, translation, 0.375);
+    }
+    let flat = |z: f32| display([-90.0, 0.0, 0.0], [0.0, 1.0, z], 0.55);
+    match (item.id, item.damage) {
+        // Tools, swords, sticks and bones are held like a handle.
+        (256..=258 | 267..=280 | 283..=286 | 290..=294 | 352, _) => {
+            display([0.0, 90.0, -35.0], [0.0, 1.25, -3.5], 0.85)
+        }
+        (369, _) => display([0.0, 90.0, -35.0], [0.0, 0.75, -3.5], 0.85),
+        (346 | 398, _) => display([180.0, 90.0, -35.0], [0.0, 0.0, -3.5], 0.85),
+        (261, _) => display([5.0, 80.0, -45.0], [0.75, 0.0, 0.25], 1.0),
+        (281 | 282 | 295 | 301 | 305 | 309 | 313 | 317 | 361 | 362 | 372 | 413, _)
+        | (351, 5 | 8 | 9 | 12 | 13) => flat(-2.5),
+        (298 | 302 | 306 | 310 | 314 | 370 | 414, _) => flat(-2.25),
+        (371, _) => flat(-2.0),
+        _ => flat(-3.0),
+    }
+}
+
+/// `LayerHeldItem` from the arm's item point (`postRenderArm` then
+/// (-1, 7, 1) pixels), in block units: what another player holds.
+/// `used` is how long they have been using it, for the bow.
+pub(crate) fn third_person(
+    out: &mut Vec<Vertex>,
+    mut m: Mat4,
+    item: &Item,
+    registry: &Registry,
+    sneaking: bool,
+    used: Option<f32>,
+) {
+    let block = (1..198).contains(&item.id) && !flat_block(item.id);
+    if matches!(item.id, 54 | 130 | 146) {
+        // Render type 2 (chests).
+        m *= Mat4::from_translation(Vec3::new(0.0, 0.1875, -0.3125))
+            * rotate(20.0, X)
+            * rotate(45.0, Y)
+            * Mat4::from_scale(Vec3::new(-0.375, -0.375, 0.375));
+    }
+    if sneaking {
+        m *= Mat4::from_translation(Vec3::new(0.0, 0.203125, 0.0));
+    }
+    if block {
+        m *= Mat4::from_scale(Vec3::splat(2.0));
+    }
+    m = m * third_person_display(item) * Mat4::from_scale(Vec3::splat(0.5));
+    if block {
+        registry.held_block(out, item, m);
+    } else {
+        generated_item(
+            out,
+            m * Mat4::from_translation(Vec3::splat(-0.5)),
+            item,
+            registry,
+            used,
+        );
     }
 }
 

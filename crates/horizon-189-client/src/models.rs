@@ -358,6 +358,16 @@ fn player(
     left_arm[2] -= (age * 0.09).cos() * 0.05 + 0.05;
     right_arm[0] += (age * 0.067).sin() * 0.05;
     left_arm[0] -= (age * 0.067).sin() * 0.05;
+    // `aimedBow`: both arms follow the head while a bow is drawn.
+    if entity.flags & 0x10 != 0 && entity.equipment[0].as_ref().is_some_and(|i| i.id == 261) {
+        let pitch = head[0].clamp(-PI / 2.0, PI / 2.0);
+        right_arm = [-PI / 2.0 + pitch, -0.1 + head[1], 0.0];
+        left_arm = [-PI / 2.0 + pitch, 0.1 + head[1] + 0.4, 0.0];
+        right_arm[2] += (age * 0.09).cos() * 0.05 + 0.05;
+        left_arm[2] -= (age * 0.09).cos() * 0.05 + 0.05;
+        right_arm[0] += (age * 0.067).sin() * 0.05;
+        left_arm[0] -= (age * 0.067).sin() * 0.05;
+    }
     head[0] = head[0].clamp(-PI / 2.0, PI / 2.0);
     let skin = binding.map_or_else(
         || {
@@ -514,19 +524,19 @@ fn player(
         }
     }
     if let Some(item) = &entity.equipment[0] {
+        // `LayerHeldItem`: the arm's item point, back in block units.
         let hand = part(base, right_arm_point, right_arm)
-            * Mat4::from_translation(Vec3::new(-1.0, 9.0, 0.0));
-        if item.id < 256 {
-            if let Some(registry) = registry {
-                registry.held_block(out, item, hand * Mat4::from_scale(Vec3::splat(6.0)));
-            }
-        } else if let Some(layer) = registry
-            .and_then(|r| r.item_layer(item))
-            .or_else(|| held_texture(item.id).map(|t| t as u32))
-        {
+            * Mat4::from_translation(Vec3::new(-1.0, 7.0, 1.0))
+            * Mat4::from_scale(Vec3::splat(16.0));
+        if let Some(registry) = registry {
+            let used = (entity.flags & 0x10 != 0).then_some(entity.use_ticks as f32);
+            crate::hand::third_person(out, hand, item, registry, sneaking, used);
+        } else if let Some(layer) = held_texture(item.id).map(|t| t as u32) {
             sprite(
                 out,
-                hand * Mat4::from_rotation_x(-PI / 2.0) * Mat4::from_rotation_y(PI),
+                hand * Mat4::from_scale(Vec3::splat(1.0 / 16.0))
+                    * Mat4::from_rotation_x(-PI / 2.0)
+                    * Mat4::from_rotation_y(PI),
                 layer,
             );
         }

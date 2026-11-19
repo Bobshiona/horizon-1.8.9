@@ -44,6 +44,8 @@ pub struct Entity {
     pub flags: u8,
     /// Held item, boots, leggings, chestplate, helmet.
     pub equipment: [Option<Item>; 5],
+    /// Ticks the using flag (0x10) has been set: how far a bow is drawn.
+    pub use_ticks: u32,
     /// `swingProgressInt` ticks of the six-tick arm swing, if swinging.
     pub swing: Option<u8>,
     pub age: u32,
@@ -203,6 +205,7 @@ impl Entity {
             previous_limb_amount: 0.0,
             flags: 0,
             equipment: Default::default(),
+            use_ticks: 0,
             swing: None,
             age: 0,
             hurt_time: 0,
@@ -345,6 +348,11 @@ impl Entity {
         self.previous_body_yaw = self.body_yaw;
         self.previous_limb_amount = self.limb_amount;
         self.age = self.age.wrapping_add(1);
+        self.use_ticks = if self.flags & 0x10 != 0 {
+            self.use_ticks.saturating_add(1)
+        } else {
+            0
+        };
         if self.steps > 0 {
             let steps = f64::from(self.steps);
             for axis in 0..3 {
