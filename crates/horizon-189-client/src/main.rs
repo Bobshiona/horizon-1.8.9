@@ -60,9 +60,15 @@ struct App {
     view_distance: u8,
     frames: u64,
     frame_stats: frame_stats::FrameStats,
+    /// Present-to-present times in smoke runs: the frame pacing.
+    frame_intervals: frame_stats::FrameStats,
+    last_present: Option<Instant>,
     smoke_frames: Option<u64>,
     started: Instant,
     next_frame: Instant,
+    /// Redraw cadence, just under the display's refresh period so the vsync
+    /// drawable queue sets the rate.
+    frame_period: Duration,
     failure: Option<String>,
     assets: Option<std::path::PathBuf>,
     capture: Option<std::path::PathBuf>,
@@ -375,6 +381,7 @@ impl ApplicationHandler for App {
                     renderer.window.focus_window();
                 }
                 renderer.window.request_redraw();
+                self.frame_period = frame_period(&renderer.window);
                 self.renderer = Some(renderer);
             }
             Err(error) => self.fail(event_loop, error),
@@ -387,6 +394,13 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size);
+                    self.frame_period = frame_period(&renderer.window);
+                }
+            }
+            // A move can change displays and with them the refresh rate.
+            WindowEvent::Moved(_) => {
+                if let Some(renderer) = &self.renderer {
+                    self.frame_period = frame_period(&renderer.window);
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -832,12 +846,24 @@ impl ApplicationHandler for App {
                         .is_some_and(|limit| self.frames + 1 >= limit)
                         && (self.network.is_none() || renderer.world_ready());
                     let capture = if last { self.capture.take() } else { None };
+                    let offscreen = renderer.offscreen_frames;
                     match renderer.render(capture.as_deref(), self.smoke_frames.is_some()) {
                         Ok(true) => {
                             if self.network.is_none() || renderer.world_ready() {
                                 self.frames += 1;
                                 if self.smoke_frames.is_some() && capture.is_none() {
                                     self.frame_stats.record(frame_started.elapsed());
+                                    // Pacing counts only frames the display took:
+                                    // macOS throttles a covered window.
+                                    let now = Instant::now();
+                                    let shown = renderer.offscreen_frames == offscreen;
+                                    let last = self.last_present.take();
+                                    if shown {
+                                        if let Some(last) = last {
+                                            self.frame_intervals.record(now - last);
+                                        }
+                                        self.last_present = Some(now);
+                                    }
                                 }
                             }
                         }
@@ -854,7 +880,8 @@ impl ApplicationHandler for App {
                     } else {
                         "METAL"
                     };
-                    self.frame_stats.report();
+                    self.frame_stats.report("FRAME_SUBMIT_US");
+                    self.frame_intervals.report("FRAME_INTERVAL_US");
                     eprintln!(
                         "{mode}_SMOKE_PASS frames={} elapsed_ms={} columns={} offscreen_frames={}",
                         self.frames,
@@ -964,7 +991,7 @@ impl ApplicationHandler for App {
             if let Some(renderer) = &self.renderer {
                 renderer.window.request_redraw();
             }
-            self.next_frame = now + Duration::from_millis(16);
+            self.next_frame = now + self.frame_period;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
     }
@@ -988,6 +1015,19 @@ fn hotbar_digit(key: KeyCode) -> Option<u8> {
         KeyCode::Digit8 => 7,
         KeyCode::Digit9 => 8,
         _ => return None,
+    })
+}
+
+/// 96% of the window's display refresh period (16 ms at 60 Hz, 8 ms at
+/// 120 Hz), or 16 ms when the display does not report a rate. Redrawing back
+/// to back instead starves CoreAnimation of its drawables on the main thread.
+fn frame_period(window: &Window) -> Duration {
+    let millihertz = window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .filter(|&rate| (20_000..=500_000).contains(&rate));
+    millihertz.map_or(Duration::from_millis(16), |rate| {
+        Duration::from_micros(960_000_000 / u64::from(rate))
     })
 }
 
@@ -1019,9 +1059,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         view_distance: options.view_distance,
         frames: 0,
         frame_stats: Default::default(),
+        frame_intervals: Default::default(),
+        last_present: None,
         smoke_frames,
         started: Instant::now(),
         next_frame: Instant::now(),
+        frame_period: Duration::from_millis(16),
         failure: None,
         assets: options.assets,
         capture: options.capture,

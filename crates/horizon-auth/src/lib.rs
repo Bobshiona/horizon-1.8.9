@@ -1,6 +1,10 @@
-//! Account credentials remain in memory. HTTP diagnostics include service and
-//! status only. Device codes are delivered explicitly to the caller's UI.
+//! Account credentials remain in memory unless the caller saves the Microsoft
+//! refresh token through [`saved`], which keeps it in the macOS Keychain. HTTP
+//! diagnostics include service and status only. Device codes are delivered
+//! explicitly to the caller's UI.
 #![forbid(unsafe_code)]
+
+pub mod saved;
 
 use horizon_protocol_47::login::{Profile, parse_uuid, start};
 use md5::{Digest, Md5};
@@ -18,6 +22,7 @@ const MAX_JSON: u64 = 1 << 20;
 pub struct Session {
     pub profile: Profile,
     access_token: Option<String>,
+    refresh_token: Option<String>,
 }
 
 impl fmt::Debug for Session {
@@ -26,6 +31,7 @@ impl fmt::Debug for Session {
             .debug_struct("Session")
             .field("profile", &self.profile)
             .field("online", &self.access_token.is_some())
+            .field("refreshable", &self.refresh_token.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -155,6 +161,21 @@ enum Poll {
     Complete,
 }
 
+/// Microsoft's answer to a refresh-token grant.
+fn refresh_result(status: u16, value: &Value) -> io::Result<()> {
+    match value.get("error").and_then(Value::as_str) {
+        Some("invalid_grant") => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Saved Microsoft sign-in is no longer valid",
+        )),
+        Some(_) => Err(io::Error::other("Microsoft rejected the saved sign-in")),
+        None if status == 200 => field(value, "access_token").map(drop),
+        None => Err(io::Error::other(format!(
+            "Microsoft authentication failed (HTTP {status})"
+        ))),
+    }
+}
+
 fn poll_result(status: u16, value: &Value) -> io::Result<Poll> {
     match value.get("error").and_then(Value::as_str) {
         Some("authorization_pending") => Ok(Poll::Pending),
@@ -182,7 +203,7 @@ fn poll_result(status: u16, value: &Value) -> io::Result<Poll> {
 
 pub fn finish(client_id: &str, mut code: DeviceCode) -> io::Result<Session> {
     let agent = agent();
-    let access = loop {
+    let microsoft = loop {
         let now = Instant::now();
         let remaining = code.expires.saturating_duration_since(now);
         if remaining <= code.interval {
@@ -210,16 +231,59 @@ pub fn finish(client_id: &str, mut code: DeviceCode) -> io::Result<Session> {
                     .checked_add(Duration::from_secs(5))
                     .ok_or_else(|| invalid("Invalid poll interval"))?;
             }
-            Poll::Complete => break field(&value, "access_token")?.to_owned(),
+            Poll::Complete => break value,
         }
     };
+    minecraft_session(&agent, client_id, &microsoft)
+}
+
+/// Sign in again from a Microsoft refresh token, without the device code.
+/// The returned session carries the rotated refresh token to save.
+pub fn refresh(client_id: &str, refresh_token: &str) -> io::Result<Session> {
+    if refresh_token.is_empty() {
+        return Err(invalid("Refresh token is empty"));
+    }
+    let agent = agent();
+    let (status, value) = response(
+        agent
+            .post("https://login.live.com/oauth20_token.srf")
+            .send_form(&[
+                ("client_id", client_id),
+                ("refresh_token", refresh_token),
+                ("grant_type", "refresh_token"),
+                ("scope", DEFAULT_SCOPE),
+            ]),
+        "Microsoft",
+    )?;
+    refresh_result(status, &value)?;
+    let mut session = minecraft_session(&agent, client_id, &value)?;
+    // Microsoft may keep the old token instead of rotating it.
+    session
+        .refresh_token
+        .get_or_insert_with(|| refresh_token.to_owned());
+    Ok(session)
+}
+
+/// The Xbox Live, XSTS and Minecraft Services chain from a Microsoft token
+/// response.
+fn minecraft_session(
+    agent: &ureq::Agent,
+    client_id: &str,
+    microsoft: &Value,
+) -> io::Result<Session> {
+    let access = field(microsoft, "access_token")?;
+    let refresh_token = microsoft
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned);
     let ticket = if client_id == DEFAULT_CLIENT_ID {
-        access
+        access.to_owned()
     } else {
         format!("d={access}")
     };
     let xbox = post_json(
-        &agent,
+        agent,
         "https://user.auth.xboxlive.com/user/authenticate",
         json!({
             "Properties": { "AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": ticket },
@@ -228,7 +292,7 @@ pub fn finish(client_id: &str, mut code: DeviceCode) -> io::Result<Session> {
         "Xbox Live",
     )?;
     let xsts = post_json(
-        &agent,
+        agent,
         "https://xsts.auth.xboxlive.com/xsts/authorize",
         json!({
             "Properties": { "SandboxId": "RETAIL", "UserTokens": [field(&xbox, "Token")?] },
@@ -241,7 +305,7 @@ pub fn finish(client_id: &str, mut code: DeviceCode) -> io::Result<Session> {
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("XSTS response is missing the user hash"))?;
     let minecraft = post_json(
-        &agent,
+        agent,
         "https://api.minecraftservices.com/authentication/login_with_xbox",
         json!({
             "identityToken": format!("XBL3.0 x={user_hash};{}", field(&xsts, "Token")?)
@@ -249,10 +313,11 @@ pub fn finish(client_id: &str, mut code: DeviceCode) -> io::Result<Session> {
         "Minecraft Services",
     )?;
     let access_token = field(&minecraft, "access_token")?.to_owned();
-    let profile = fetch_profile(&agent, &access_token)?;
+    let profile = fetch_profile(agent, &access_token)?;
     Ok(Session {
         profile,
         access_token: Some(access_token),
+        refresh_token,
     })
 }
 
@@ -294,6 +359,7 @@ impl Session {
                 username: username.to_owned(),
             },
             access_token: None,
+            refresh_token: None,
         })
     }
 
@@ -308,7 +374,14 @@ impl Session {
                 username: username.to_owned(),
             },
             access_token: Some(access_token),
+            refresh_token: None,
         })
+    }
+
+    /// The Microsoft refresh token from a device-code or refreshed sign-in,
+    /// for [`saved::store`]. Never log it.
+    pub fn refresh_token(&self) -> Option<&str> {
+        self.refresh_token.as_deref()
     }
 
     pub fn join(&self, server_hash: &str) -> io::Result<()> {
@@ -365,6 +438,20 @@ mod tests {
         assert!(
             Session::direct("Notch", "b50ad385829d3141a2167e7d7539ba7f", String::new()).is_err()
         );
+    }
+
+    #[test]
+    fn refresh_grant_errors_say_what_happened_without_secrets() {
+        let expired = refresh_result(400, &json!({"error":"invalid_grant"})).unwrap_err();
+        assert_eq!(expired.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refresh_result(400, &json!({"error":"invalid_client"})).is_err());
+        assert!(refresh_result(500, &Value::Null).is_err());
+        assert!(refresh_result(200, &json!({})).is_err());
+        refresh_result(200, &json!({"access_token":"private"})).unwrap();
+        assert!(refresh("client", "").is_err());
+        let offline = Session::offline("Notch", None).unwrap();
+        assert!(offline.refresh_token().is_none());
+        assert!(format!("{offline:?}").contains("refreshable: false"));
     }
 
     #[test]

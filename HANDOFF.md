@@ -146,11 +146,35 @@ approximate third-person transform (no `LayerHeldItem` port, so their block-hit 
 fishing line, no item pickup animation, no explosion/smoke/block-break particles, and the cast fishing
 rod model is not swapped in.
 
-Next (in order): Keychain-backed refresh-token caching; a release build measured under the 80-player lobby.
+Saved sign-in and release pacing checkpoint. A device-code sign-in now keeps Microsoft's refresh token
+in the macOS Keychain (generic password, service "Horizon 1.8.9 Microsoft sign-in", account = client
+ID) through `horizon_auth::saved`, using `security-framework`; nothing touches disk and errors carry the
+OSStatus only. Later `--server`/`--login` runs call `horizon_auth::refresh` (refresh grant, then the same
+Xbox Live, XSTS and Minecraft Services chain) and save the rotated token. An `invalid_grant` deletes the
+item and falls back to a device code; a network or service failure keeps it. `--sign-out` removes it,
+`--no-saved-login` skips the Keychain for one run. Markers: `MICROSOFT_SAVED_LOGIN_PASS`,
+`_EXPIRED`, `_UNAVAILABLE`, `MICROSOFT_LOGIN_SAVED`/`_NOT_SAVED`, `MICROSOFT_SIGNED_OUT`. Verified: a
+Keychain round trip (`HORIZON_KEYCHAIN_TEST=1 cargo test -p horizon-auth`), and a planted bogus token
+that live Microsoft rejected, which the client removed before offering a device code. Not yet verified:
+a real account's refresh. Each rebuilt binary has a new ad-hoc signature, so macOS asks once per build
+before it reads the item ("Always Allow").
+
+Redraws now follow the window's display: the timer runs at 96% of the reported refresh period (16 ms
+at 60 Hz, 8 ms at 120 Hz) and is recomputed on resize and move; FIFO vsync with two queued frames sets
+the actual rate. Back-to-back redraws were tried and rejected: requesting the next frame from inside
+the redraw starves CoreAnimation of drawables on the main thread and stalled `nextDrawable` for a full
+second. Smoke runs now also print `FRAME_INTERVAL_US` (present-to-present, only for frames the display
+took, since macOS throttles a covered window) with a count of intervals over twice the median. Release
+build (`cargo build --release`, thin LTO) in the 80-player synthetic lobby with the reference entities,
+1,200 frames on a 60 Hz panel: frame submission P50 2,005 us, P95 2,334, P99 2,579, max 3,407; frame
+interval P50 16,665 us, P95 17,097, P99 17,310, max 18,103, no interval over twice the median. A
+covered smoke window still drops to macOS's throttled cadence; the pacing runner shows one window only.
+
+Next (in order): other players' held items and block-hit (`LayerHeldItem`); live Hypixel PvP play test.
 
 ## 2. Verified State
 
-- 107 scoped tests pass with `--include-ignored` (client 34, login CLI 2, assets 1, auth 3, physics 16,
+- 111 scoped tests pass with `--include-ignored` (client 35, login CLI 2, assets 1, auth 6, physics 16,
   protocol 35, world 16 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -257,5 +281,6 @@ Manual play: run the canonical binary with `--offline --username <name> --server
 reference server. The cursor captures on join; Escape releases it; click recaptures. Keys are WASD, Space,
 Shift for sneak, Control or Left Option for sprint, and double-tap Space to fly where allowed. Left/right
 mouse drive attack/dig and interact/use. Number keys or the wheel select hotbar slots. E opens the player
-inventory; E or Escape closes it. Container slots accept normal left/right pickup clicks. Tokens remain
-memory-only and a later authenticated session requires another device-code login or direct token.
+inventory; E or Escape closes it. Container slots accept normal left/right pickup clicks. Minecraft
+access tokens stay in memory; only the Microsoft refresh token is kept, in the Keychain, so later
+`--server` launches sign in without a device code until `--sign-out`.

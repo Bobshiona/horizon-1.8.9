@@ -27,6 +27,9 @@ pub struct Options {
     pub view_bobbing: bool,
     pub help: bool,
     login: bool,
+    /// Keep the Microsoft sign-in in the Keychain between launches.
+    save_login: bool,
+    sign_out: bool,
     offline: bool,
     username: Option<String>,
     uuid: Option<String>,
@@ -47,6 +50,8 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --assets JAR                  Owned 1.8.9 jar for terrain or Metal smoke\n\
     --smoke-frames N              Render N Metal frames and exit\n\
     --login                       Verify Microsoft device-code authentication\n\
+    --no-saved-login              Sign in with a device code, without the Keychain\n\
+    --sign-out                    Remove the saved Microsoft sign-in and exit\n\
     --offline --username NAME     Use an offline testing identity\n\
     --username NAME --uuid UUID --access-token TOKEN\n\
                                   Use a Minecraft access token for testing\n\
@@ -64,12 +69,71 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --no-view-bobbing             Turn off view bobbing (vanilla has it on)\n\
     --help                        Show options";
 
+/// The Microsoft client ID (`HORIZON_MSA_CLIENT_ID` overrides the default).
+fn client_id() -> String {
+    std::env::var("HORIZON_MSA_CLIENT_ID")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| horizon_auth::DEFAULT_CLIENT_ID.to_owned())
+}
+
+/// Sign in from the Keychain's refresh token when there is a valid one,
+/// otherwise with a device code; then save the newest refresh token. Only
+/// fixed markers and status codes are printed, never a token.
+fn microsoft_session(client_id: &str, save: bool) -> Result<Session, Box<dyn Error>> {
+    if save {
+        match horizon_auth::saved::load(client_id) {
+            Ok(Some(token)) => match horizon_auth::refresh(client_id, &token) {
+                Ok(session) => {
+                    eprintln!("MICROSOFT_SAVED_LOGIN_PASS");
+                    remember(client_id, &session);
+                    return Ok(session);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    eprintln!("MICROSOFT_SAVED_LOGIN_EXPIRED");
+                    if let Err(error) = horizon_auth::saved::forget(client_id) {
+                        eprintln!("MICROSOFT_SAVED_LOGIN_UNAVAILABLE {error}");
+                    }
+                }
+                // A network or service failure keeps the saved sign-in for later.
+                Err(error) => return Err(error.into()),
+            },
+            Ok(None) => {}
+            Err(error) => eprintln!("MICROSOFT_SAVED_LOGIN_UNAVAILABLE {error}"),
+        }
+    }
+    let code = horizon_auth::begin(client_id)?;
+    eprintln!(
+        "MICROSOFT_DEVICE_CODE {} {}",
+        code.verification_uri, code.user_code
+    );
+    let session = horizon_auth::finish(client_id, code)?;
+    eprintln!("MICROSOFT_AUTH_PASS");
+    if save {
+        remember(client_id, &session);
+    }
+    Ok(session)
+}
+
+fn remember(client_id: &str, session: &Session) {
+    let Some(token) = session.refresh_token() else {
+        eprintln!("MICROSOFT_LOGIN_NOT_SAVED no refresh token was issued");
+        return;
+    };
+    match horizon_auth::saved::store(client_id, token) {
+        Ok(()) => eprintln!("MICROSOFT_LOGIN_SAVED"),
+        Err(error) => eprintln!("MICROSOFT_LOGIN_NOT_SAVED {error}"),
+    }
+}
+
 impl Options {
     pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Self, Box<dyn Error>> {
         let mut options = Self {
             sensitivity: 0.5,
             view_distance: 8,
             view_bobbing: true,
+            save_login: true,
             ..Self::default()
         };
         let mut arguments = arguments.into_iter();
@@ -79,6 +143,8 @@ impl Options {
                 "--help" | "-h" => options.help = true,
                 "--assets" => options.assets = Some(value()?.into()),
                 "--login" => options.login = true,
+                "--no-saved-login" => options.save_login = false,
+                "--sign-out" => options.sign_out = true,
                 "--offline" => options.offline = true,
                 "--username" => options.username = Some(value()?),
                 "--uuid" => options.uuid = Some(value()?),
@@ -126,6 +192,21 @@ impl Options {
         }
         if options.help {
             return Ok(options);
+        }
+        if options.sign_out
+            && (options.login
+                || options.offline
+                || !options.save_login
+                || options.username.is_some()
+                || options.access_token.is_some()
+                || options.server.is_some()
+                || options.login_check.is_some()
+                || options.smoke_frames.is_some())
+        {
+            return Err("--sign-out runs on its own".into());
+        }
+        if !options.save_login && (options.offline || options.access_token.is_some()) {
+            return Err("--no-saved-login applies to Microsoft sign-in only".into());
         }
         if options.smoke_chat.is_some()
             && (options.smoke_frames.is_none() || options.server.is_none())
@@ -181,6 +262,11 @@ impl Options {
 
     /// Prepare a terminal probe or a session owned by the connected viewport.
     pub fn authenticate(&mut self) -> Result<Startup, Box<dyn Error>> {
+        if self.sign_out {
+            let removed = horizon_auth::saved::forget(&client_id())?;
+            eprintln!("MICROSOFT_SIGNED_OUT removed={removed}");
+            return Ok(Startup::Complete);
+        }
         if !self.login
             && !self.offline
             && self.access_token.is_none()
@@ -201,18 +287,7 @@ impl Options {
                 token,
             )?
         } else {
-            let client_id = std::env::var("HORIZON_MSA_CLIENT_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| horizon_auth::DEFAULT_CLIENT_ID.to_owned());
-            let code = horizon_auth::begin(client_id.trim())?;
-            eprintln!(
-                "MICROSOFT_DEVICE_CODE {} {}",
-                code.verification_uri, code.user_code
-            );
-            let session = horizon_auth::finish(client_id.trim(), code)?;
-            eprintln!("MICROSOFT_AUTH_PASS");
-            session
+            microsoft_session(&client_id(), self.save_login)?
         };
         eprintln!(
             "IDENTITY_READY username={} uuid={:032x} offline={}",
@@ -327,5 +402,17 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().sensitivity, 0.5);
         assert!(parse(&["--offline", "--username", "Bob", "--autopilot"]).is_err());
         assert!(parse(&["--access-token"]).is_err());
+    }
+
+    #[test]
+    fn saved_sign_in_flags_stay_with_microsoft_sign_in() {
+        assert!(parse(&[]).unwrap().save_login);
+        assert!(parse(&["--sign-out"]).unwrap().sign_out);
+        assert!(parse(&["--sign-out", "--server", "localhost"]).is_err());
+        assert!(parse(&["--sign-out", "--login"]).is_err());
+        let fresh = parse(&["--login", "--no-saved-login"]).unwrap();
+        assert!(!fresh.save_login);
+        assert!(parse(&["--server", "localhost", "--no-saved-login"]).is_ok());
+        assert!(parse(&["--offline", "--username", "Bob", "--no-saved-login"]).is_err());
     }
 }
