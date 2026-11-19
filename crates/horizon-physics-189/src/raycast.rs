@@ -5,10 +5,7 @@ use crate::{
     shapes::{bb, collision_boxes, expand, hi, lo},
     trig,
 };
-use horizon_world_189::{
-    World,
-    entities::{Entities, Kind},
-};
+use horizon_world_189::{World, entities::Entities};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
@@ -142,18 +139,8 @@ impl Raycaster {
             if entity.health <= 0.0 {
                 continue;
             }
-            let (width, height) = match entity.kind {
-                Kind::Player { .. } => (0.6f32, 1.8f32),
-                Kind::Mob(51 | 54 | 57 | 66) => (0.6f32, 1.95f32),
-                Kind::Mob(50) => (0.6, 1.7),
-                Kind::Mob(90) => (0.9, 0.9),
-                Kind::Mob(91 | 92) => (0.9, 1.3),
-                Kind::Mob(120) => (0.6, 1.8),
-                Kind::Mob(_) => (0.6, 1.8),
-                Kind::Object(1) => (1.5, 0.6),
-                Kind::Object(10) => (0.98, 0.7),
-                Kind::Object(78) => (0.5, 1.975),
-                _ => continue,
+            let Some((width, height)) = entity.dimensions() else {
+                continue;
             };
             let [x, y, z] = entity.position;
             let half = f64::from(width / 2.0);

@@ -62,6 +62,7 @@ pub struct Shared {
     pub inventory: Arc<crate::inventory::View>,
     pub swing: Option<u8>,
     pub using_item: bool,
+    pub game_mode: u8,
     pub yaw: f32,
     pub pitch: f32,
     pub previous: [f64; 3],
@@ -749,10 +750,12 @@ fn run_actor(
                 state.inventory = Arc::new(inventory.view.clone());
                 state.swing = controller.swing;
                 state.using_item = controller.using;
+                state.game_mode = game_mode;
                 if state.input.actions.is_empty() {
                     state.input.actions = std::mem::take(&mut input.actions);
                 }
             }
+            player.no_clip = game_mode == 3;
             player.tick(&world_view, keys);
             // sendPlayerAbilities happens inside onLivingUpdate, before the
             // walking update's actions and movement.

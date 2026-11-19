@@ -136,6 +136,7 @@ pub struct Player {
     pub using_item: bool,
     /// `PlayerCapabilities`: flying, allowFlying and the fly speed (0.05F).
     pub flying: bool,
+    pub no_clip: bool,
     pub allow_flying: bool,
     pub fly_speed: f32,
     /// Set when the client toggled flight and owes a C13 abilities packet.
@@ -174,6 +175,7 @@ impl Default for Player {
             food: 20,
             using_item: false,
             flying: false,
+            no_clip: false,
             allow_flying: false,
             fly_speed: 0.05,
             abilities_changed: false,
@@ -376,6 +378,13 @@ impl Player {
     }
 
     pub fn tick(&mut self, world: &World, keys: Keys) {
+        if self.no_clip {
+            self.on_ground = false;
+            if !self.flying {
+                self.flying = true;
+                self.abilities_changed = true;
+            }
+        }
         self.handle_water(world);
         self.living_update(world, keys);
     }
@@ -449,6 +458,9 @@ impl Player {
 
     /// `EntityPlayerSP.pushOutOfBlocks`.
     fn push_out_of_blocks(&mut self, world: &World, x: f64, y: f64, z: f64) {
+        if self.no_clip {
+            return;
+        }
         let (bx, by, bz) = (floor(x), floor(y), floor(z));
         let dx = x - f64::from(bx);
         let dz = z - f64::from(bz);
@@ -560,7 +572,7 @@ impl Player {
             self.set_sprinting(false);
         }
         // Double-tap jump toggles flight within seven ticks.
-        if self.allow_flying && !was_jumping && keys.jump {
+        if self.allow_flying && !self.no_clip && !was_jumping && keys.jump {
             if self.fly_toggle_timer == 0 {
                 self.fly_toggle_timer = 7;
             } else {
@@ -621,7 +633,7 @@ impl Player {
             SPEED_IN_AIR
         };
         // Survival flight ends on landing.
-        if self.on_ground && self.flying {
+        if self.on_ground && self.flying && !self.no_clip {
             self.flying = false;
             self.abilities_changed = true;
         }
@@ -783,6 +795,12 @@ impl Player {
 
     /// `Entity.moveEntity` without entity collisions.
     pub fn move_entity(&mut self, world: &World, mut x: f64, mut y: f64, mut z: f64) {
+        if self.no_clip {
+            self.bounds = offset(self.bounds, x, y, z);
+            let (min, max) = (lo(self.bounds), hi(self.bounds));
+            self.position = [(min[0] + max[0]) / 2.0, min[1], (min[2] + max[2]) / 2.0];
+            return;
+        }
         if self.in_web {
             self.in_web = false;
             x *= 0.25;

@@ -257,3 +257,39 @@ fn depth_strider_raises_water_speed_toward_land_speed() {
     let (plain, strider) = (swim(0), swim(3));
     assert!(strider > plain * 2.0, "{plain} {strider}");
 }
+
+#[test]
+fn spectator_flight_crosses_solid_blocks_and_stays_flying() {
+    let world = world(&[([0, 4, 1], 16), ([0, 5, 1], 16)]);
+    let mut player = Player::default();
+    player.set_position(0.5, 4.0, 0.5);
+    player.no_clip = true;
+    player.allow_flying = true;
+    for _ in 0..20 {
+        player.tick(
+            &world,
+            Keys {
+                forward: true,
+                ..Keys::default()
+            },
+        );
+    }
+    assert!(player.position[2] > 2.0);
+    assert!(player.flying && !player.on_ground);
+    player.tick(
+        &world,
+        Keys {
+            jump: true,
+            ..Keys::default()
+        },
+    );
+    player.tick(&world, Keys::default());
+    player.tick(
+        &world,
+        Keys {
+            jump: true,
+            ..Keys::default()
+        },
+    );
+    assert!(player.flying);
+}

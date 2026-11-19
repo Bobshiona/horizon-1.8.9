@@ -8,6 +8,9 @@ use glam::{Mat4, Vec3};
 use horizon_world_189::entities::{Entity, Kind};
 use std::f32::consts::PI;
 
+#[path = "mob_models.rs"]
+mod mobs;
+
 pub const LAYER_SIZE: u32 = 128;
 
 /// Entity texture layers, in upload order.
@@ -49,10 +52,20 @@ pub enum Texture {
     Pig,
     Cow,
     Villager,
+    Sheep,
+    Wool,
+    Chicken,
+    Spider,
+    CaveSpider,
+    Slime,
+    Enderman,
+    Wolf,
+    WolfTame,
+    WolfAngry,
 }
 
 /// Owned-jar paths for every layer after the generated white one.
-pub const SOURCES: [&str; 34] = [
+pub const SOURCES: [&str; 44] = [
     "minecraft:entity/steve",
     "minecraft:entity/alex",
     "minecraft:entity/chest/normal",
@@ -87,6 +100,16 @@ pub const SOURCES: [&str; 34] = [
     "minecraft:entity/pig/pig",
     "minecraft:entity/cow/cow",
     "minecraft:entity/villager/villager",
+    "minecraft:entity/sheep/sheep",
+    "minecraft:entity/sheep/sheep_fur",
+    "minecraft:entity/chicken",
+    "minecraft:entity/spider/spider",
+    "minecraft:entity/spider/cave_spider",
+    "minecraft:entity/slime/slime",
+    "minecraft:entity/enderman/enderman",
+    "minecraft:entity/wolf/wolf",
+    "minecraft:entity/wolf/wolf_tame",
+    "minecraft:entity/wolf/wolf_angry",
 ];
 
 /// One box of a vanilla model: texture offset, origin, integer size, inflation.
@@ -267,7 +290,11 @@ fn player(
         * Mat4::from_scale(Vec3::splat(0.9375))
         * Mat4::from_translation(Vec3::new(0.0, -1.5078125, 0.0));
     let degrees = 180.0 / PI;
-    let mut head = [entity.pitch / degrees, head_yaw / degrees, 0.0];
+    let mut head = [
+        lerp(entity.previous_pitch, entity.pitch, partial) / degrees,
+        head_yaw / degrees,
+        0.0,
+    ];
     let mut body = [0.0f32; 3];
     let mut right_arm = [(swing * 0.6662 + PI).cos() * 2.0 * amount * 0.5, 0.0, 0.0];
     let mut left_arm = [(swing * 0.6662).cos() * 2.0 * amount * 0.5, 0.0, 0.0];
@@ -558,7 +585,9 @@ fn sprite(out: &mut Vec<Vertex>, matrix: Mat4, texture: u32) {
 /// Standard zombie and skeleton boxes with `ModelZombie` arm animation.
 fn humanoid_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i64; 3]) {
     let skeleton = entity.kind == Kind::Mob(51);
-    let texture = if skeleton {
+    let texture = if skeleton && entity.variant == 1 {
+        Texture::WitherSkeleton
+    } else if skeleton {
         Texture::Skeleton
     } else {
         Texture::Zombie
@@ -568,7 +597,22 @@ fn humanoid_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i
     let base = Mat4::from_translation(position(entity, partial, origin))
         * Mat4::from_rotation_y((180.0 - yaw).to_radians())
         * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+        * Mat4::from_scale(Vec3::splat(if skeleton && entity.variant == 1 {
+            1.2
+        } else {
+            1.0
+        }))
         * Mat4::from_translation(Vec3::new(0.0, -1.507_812_5, 0.0));
+    let head_base = if entity.child {
+        base * Mat4::from_scale(Vec3::splat(0.75)) * Mat4::from_translation(Vec3::Y)
+    } else {
+        base
+    };
+    let base = if entity.child {
+        base * Mat4::from_scale(Vec3::splat(0.5)) * Mat4::from_translation(Vec3::Y * 1.5)
+    } else {
+        base
+    };
     let amount = lerp(entity.previous_limb_amount, entity.limb_amount, partial).min(1.0);
     let limb = entity.limb_swing - entity.limb_amount * (1.0 - partial);
     let age = entity.age as f32 + partial;
@@ -582,9 +626,13 @@ fn humanoid_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i
     let idle_x = (age * 0.067).sin() * 0.05;
     let white = [1.0; 3];
     let head = part(
-        base,
+        head_base,
         [0.0; 3],
-        [entity.pitch.to_radians(), head_yaw.to_radians(), 0.0],
+        [
+            lerp(entity.previous_pitch, entity.pitch, partial).to_radians(),
+            head_yaw.to_radians(),
+            0.0,
+        ],
     );
     add(
         out,
@@ -673,7 +721,11 @@ fn common_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i64
         let head = part(
             base,
             [0.0; 3],
-            [entity.pitch.to_radians(), head_yaw.to_radians(), 0.0],
+            [
+                lerp(entity.previous_pitch, entity.pitch, partial).to_radians(),
+                head_yaw.to_radians(),
+                0.0,
+            ],
         );
         draw(head, cuboid(0.0, 0.0, [-4.0, -10.0, -4.0], [8, 10, 8]));
         draw(head, cuboid(24.0, 0.0, [-1.0, -3.0, -6.0], [2, 4, 2]));
@@ -709,10 +761,23 @@ fn common_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i64
     } else {
         [0.0, 12.0, -6.0]
     };
+    let head_base = if entity.child {
+        base * Mat4::from_translation(Vec3::new(
+            0.0,
+            if cow { 0.5 } else { 0.25 },
+            if cow { 0.375 } else { 0.25 },
+        ))
+    } else {
+        base
+    };
     let head = part(
-        base,
+        head_base,
         head_at,
-        [entity.pitch.to_radians(), head_yaw.to_radians(), 0.0],
+        [
+            lerp(entity.previous_pitch, entity.pitch, partial).to_radians(),
+            head_yaw.to_radians(),
+            0.0,
+        ],
     );
     let head_box = if creeper {
         cuboid(0.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8])
@@ -729,6 +794,11 @@ fn common_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i64
     } else if !creeper {
         draw(head, cuboid(16.0, 16.0, [-2.0, 0.0, -9.0], [4, 3, 1]));
     }
+    let base = if entity.child {
+        base * Mat4::from_scale(Vec3::splat(0.5)) * Mat4::from_translation(Vec3::Y * 1.5)
+    } else {
+        base
+    };
     let body = if creeper {
         part(base, [0.0, 6.0, 0.0], [0.0; 3])
     } else {
@@ -855,6 +925,9 @@ pub fn entities(
             Kind::Player { slim } => player(out, entity, slim, partial, origin, registry),
             Kind::Mob(51 | 54) => humanoid_mob(out, entity, partial, origin),
             Kind::Mob(50 | 90 | 92 | 120) => common_mob(out, entity, partial, origin),
+            Kind::Mob(52 | 55 | 58 | 59 | 91 | 93 | 95) => {
+                mobs::render(out, entity, partial, origin)
+            }
             kind => {
                 let ([width, height], tint) = placeholder(kind);
                 let at = position(entity, partial, origin);
@@ -1405,6 +1478,58 @@ pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_mob_meshes_use_owned_layers_and_shearing_removes_fleece() {
+        use horizon_protocol_47::{entities::EntityPacket, nbt::Meta};
+        use horizon_world_189::entities::Entities;
+        for (kind, texture) in [
+            (52, Texture::Spider),
+            (59, Texture::CaveSpider),
+            (55, Texture::Slime),
+            (58, Texture::Enderman),
+            (91, Texture::Sheep),
+            (93, Texture::Chicken),
+            (95, Texture::Wolf),
+        ] {
+            let mut tracked = Entities::default();
+            tracked.apply(EntityPacket::SpawnMob {
+                id: 1,
+                kind,
+                position: [0; 3],
+                yaw: 0,
+                pitch: 0,
+                head_yaw: 0,
+                metadata: vec![],
+            });
+            let mut out = Vec::new();
+            entities(
+                &mut out,
+                &[(1, tracked.get(1).unwrap().clone())],
+                0.5,
+                [0; 3],
+                None,
+            );
+            assert!(out.iter().any(|v| v.layer == texture as u32));
+            assert!(out.iter().flat_map(|v| v.position).all(f32::is_finite));
+            if kind == 91 {
+                assert!(out.iter().any(|v| v.layer == Texture::Wool as u32));
+                tracked.apply(EntityPacket::Metadata {
+                    id: 1,
+                    entries: vec![(16, Meta::Byte(16))],
+                });
+                out.clear();
+                entities(
+                    &mut out,
+                    &[(1, tracked.get(1).unwrap().clone())],
+                    0.5,
+                    [0; 3],
+                    None,
+                );
+                assert!(out.iter().all(|v| v.layer != Texture::Wool as u32));
+            }
+        }
+    }
 
     #[test]
     fn equipment_meshes_follow_slots_and_hidden_players_emit_nothing() {

@@ -46,12 +46,17 @@ selection retains scratch storage.
 The personal repository is now `origin`; the original project is `upstream`. The feature branch tracks
 `origin/main`. All new commits retain the configured GitHub noreply author. The backup branch stays local.
 
-Next: finish the parity gaps below, broaden entity variants, then validate a live Hypixel lobby.
+The next checkpoint broadens common-mob geometry and interpolates entity pitch between client ticks.
+Selection shares entity dimensions, including child/slime sizes. Spectator mode now forces flight,
+bypasses collision/push-out and preserves flight on ground contact. The managed server test confirms
+travel through a solid wall after switching to spectator mode. The expanded native mob/flight gate passes.
+
+Next: finish the parity gaps below, connect skin/cape rendering hooks, then validate a live Hypixel lobby.
 
 ## 2. Verified State
 
-- 78 scoped tests pass with `--include-ignored` (client 15, login CLI 2, assets 1, auth 2, physics 15,
-  protocol 29, world 14 — counts include the Metal readback and the owned-jar registry test).
+- 81 scoped tests pass with `--include-ignored` (client 16, login CLI 2, assets 1, auth 2, physics 16,
+  protocol 29, world 15 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata
@@ -101,8 +106,10 @@ Next: finish the parity gaps below, broaden entity variants, then validate a liv
    properties are preserved as skin/cape hooks. Remote texture loading, capes, team label rules, leather
    overlay/glint, first-person hands and exact item display transforms remain pending. Generated item sprites and held
    block geometry now reuse owned textures/models.
-3. Standard adult zombie, skeleton, creeper, pig, cow and villager meshes are present. Baby variants,
-   profession/subtype textures, additional mobs and special animation states remain pending.
+3. Standard zombie, skeleton, wither skeleton, creeper, pig, cow, villager, sheep, chicken, wolf, spider,
+   cave spider, slime and enderman meshes are present. Age, sheep shearing/color, slime size, wolf texture
+   flags and server ground state are retained. Child transforms cover zombies and several quadrupeds.
+   Remaining mobs, villager professions, collars/sitting and special animation states need further parity.
 4. Full client light engine (heightmap skylight covers open sky; covered cells use server light).
 5. Fluid flow textures and smooth lighting/AO.
 
@@ -135,11 +142,11 @@ The private `horizon-189-interaction-gate.py` runner starts the official referen
 local fixture, runs all scoped tests with `--include-ignored`, independently checks placement/mining, and
 always stops the server. It sets `HORIZON_189_REFERENCE_GATE`, `HORIZON_189_FIXTURE_READY` and the owned-jar
 path for the ignored interaction test. Run that test only through the managed fixture. The private
-`horizon-189-equipment-gate.py` runner covers the second player, armor, held items, names, common mobs,
+`horizon-189-mobs-gate.py` runner covers the second player, armor, held items, names, common mobs,
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest gate outcomes are 78 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest gate outcomes are 81 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.

@@ -27,8 +27,12 @@
   Java `HashSet` order.
 - **Draws 1.8.9.** All 198 block IDs and 2,557 blockstate variants from your own game jar, with neighbour
   states (stairs, fences, panes, walls, doors), biome tints, flat lighting with client skylight, cutout and
-  sorted translucency, mipmaps and fog. Players (Steve/Alex, limb swing, sneak, arm swing), mob placeholders,
-  chests, signs with text, skulls and banners.
+  sorted translucency, mipmaps and fog. Players with armor, held blocks/items, names and hurt feedback; thirteen common mob types;
+  chests, signs with text, skulls and banners. Additional entity variants remain in progress.
+- **Accepts real play input.** User-driven attacks and interactions, sword blocking, hotbar selection,
+  survival/creative digging, block placement, and basic inventory/container pickup transactions. The local
+  vanilla gate confirms attack hurt status, placement/mining, chest interaction and spectator wall traversal.
+  Exact item transforms, special-container rules and remaining selection shapes are still in progress.
 - **Feels native on a Mac.** winit + wgpu forced to the Metal backend on Apple Silicon, Retina-aware, raw
   mouse deltas with vanilla sensitivity, keyboard state reconciled against the window server, and meshing on
   its own thread so the 20 TPS simulation never waits.

@@ -676,6 +676,33 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         assert!(!network.shared.lock().unwrap().inventory.open);
         println!("REFERENCE_CONTAINER_CLICK_CONFIRMED");
+        println!("REFERENCE_SPECTATOR_REQUESTED");
+        loop {
+            if network.shared.lock().unwrap().game_mode == 3 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "spectator mode did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        {
+            let mut s = network.shared.lock().unwrap();
+            s.yaw = 0.0;
+            s.pitch = 0.0;
+            s.keys.forward = true;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        {
+            let mut s = network.shared.lock().unwrap();
+            s.keys.forward = false;
+            assert!(
+                s.current[2] > 3.0,
+                "spectator collided with the fixture wall"
+            );
+        }
+        println!("REFERENCE_SPECTATOR_WALL_PASS");
         drop(network);
     }
 }

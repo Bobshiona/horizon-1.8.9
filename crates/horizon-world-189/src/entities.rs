@@ -31,6 +31,7 @@ pub struct Entity {
     pub previous: [f64; 3],
     pub yaw: f32,
     pub pitch: f32,
+    pub previous_pitch: f32,
     pub head_yaw: f32,
     pub previous_head_yaw: f32,
     pub body_yaw: f32,
@@ -49,6 +50,9 @@ pub struct Entity {
     /// Remaining vanilla hurt-flash ticks, refreshed by entity status 2.
     pub hurt_time: u8,
     pub health: f32,
+    pub variant: u8,
+    pub child: bool,
+    pub on_ground: bool,
 }
 
 impl Entity {
@@ -68,6 +72,7 @@ impl Entity {
             previous: position,
             yaw,
             pitch,
+            previous_pitch: pitch,
             head_yaw: yaw,
             previous_head_yaw: yaw,
             body_yaw: yaw,
@@ -81,7 +86,55 @@ impl Entity {
             age: 0,
             hurt_time: 0,
             health: 20.0,
+            variant: 0,
+            child: false,
+            on_ground: false,
         }
+    }
+
+    /// Server-sized collision dimensions shared by selection and overlays.
+    pub fn dimensions(&self) -> Option<(f32, f32)> {
+        let (width, height) = match self.kind {
+            Kind::Player { .. } => (0.6, 1.8),
+            Kind::Mob(50) => (0.6, 1.7),
+            Kind::Mob(51) if self.variant == 1 => (0.72, 2.34),
+            Kind::Mob(51 | 54 | 57 | 66) => (0.6, 1.95),
+            Kind::Mob(52) => (1.4, 0.9),
+            Kind::Mob(53) => (3.6, 10.8),
+            Kind::Mob(55 | 62) => {
+                let size = f32::from(self.variant.max(1));
+                (0.51000005 * size, 0.51000005 * size)
+            }
+            Kind::Mob(56) => (4.0, 4.0),
+            Kind::Mob(58) => (0.6, 2.9),
+            Kind::Mob(59) => (0.7, 0.5),
+            Kind::Mob(60 | 67) => (0.4, 0.3),
+            Kind::Mob(61) => (0.6, 1.8),
+            Kind::Mob(63) => (16.0, 8.0),
+            Kind::Mob(64) => (0.9, 3.5),
+            Kind::Mob(65) => (0.5, 0.9),
+            Kind::Mob(68) => (0.85, 0.85),
+            Kind::Mob(90) => (0.9, 0.9),
+            Kind::Mob(91 | 92 | 96) => (0.9, 1.3),
+            Kind::Mob(93) => (0.4, 0.7),
+            Kind::Mob(94) => (0.95, 0.95),
+            Kind::Mob(95) => (0.6, 0.8),
+            Kind::Mob(97) => (0.7, 1.9),
+            Kind::Mob(98 | 101) => (0.6, 0.7),
+            Kind::Mob(99) => (1.4, 2.9),
+            Kind::Mob(100) => (1.4, 1.6),
+            Kind::Mob(120) => (0.6, 1.8),
+            Kind::Mob(_) => (0.6, 1.8),
+            Kind::Object(1) => (1.5, 0.6),
+            Kind::Object(10) => (0.98, 0.7),
+            Kind::Object(78) => (0.5, 1.975),
+            _ => return None,
+        };
+        Some(if self.child {
+            (width * 0.5, height * 0.5)
+        } else {
+            (width, height)
+        })
     }
 
     pub fn invisible(&self) -> bool {
@@ -101,6 +154,18 @@ impl Entity {
             match (index, value) {
                 (0, Meta::Byte(flags)) => self.flags = *flags as u8,
                 (6, Meta::Float(health)) if self.living() => self.health = *health,
+                (12, Meta::Byte(age)) if matches!(self.kind, Kind::Mob(54)) => {
+                    self.child = *age != 0
+                }
+                (12, Meta::Byte(age)) if matches!(self.kind, Kind::Mob(90..=101 | 120)) => {
+                    self.child = *age < 0
+                }
+                (13, Meta::Byte(value)) if self.kind == Kind::Mob(51) => {
+                    self.variant = *value as u8
+                }
+                (16, Meta::Byte(value)) if matches!(self.kind, Kind::Mob(55 | 62 | 91 | 95)) => {
+                    self.variant = *value as u8
+                }
                 (10, Meta::Byte(parts)) if matches!(self.kind, Kind::Player { .. }) => {
                     self.skin_parts = *parts as u8
                 }
@@ -133,6 +198,7 @@ impl Entity {
     fn tick(&mut self) {
         self.hurt_time = self.hurt_time.saturating_sub(1);
         self.previous = self.position;
+        self.previous_pitch = self.pitch;
         self.previous_head_yaw = self.head_yaw;
         self.previous_body_yaw = self.body_yaw;
         self.previous_limb_amount = self.limb_amount;
@@ -312,9 +378,13 @@ impl Entities {
                 }
             }
             EntityPacket::Move {
-                id, delta, look, ..
+                id,
+                delta,
+                look,
+                on_ground,
             } => {
                 if let Some(entity) = self.map.get_mut(&id) {
+                    entity.on_ground = on_ground;
                     if let Some(delta) = delta {
                         for (server, step) in entity.server.iter_mut().zip(delta) {
                             *server = server.wrapping_add(i32::from(step));
@@ -331,9 +401,10 @@ impl Entities {
                 position,
                 yaw,
                 pitch,
-                ..
+                on_ground,
             } => {
                 if let Some(entity) = self.map.get_mut(&id) {
+                    entity.on_ground = on_ground;
                     entity.server = position;
                     entity.move_to(Some(angle(yaw)), Some(angle(pitch)));
                 }
@@ -398,6 +469,33 @@ mod tests {
             held_item: 0,
             metadata: vec![],
         });
+    }
+
+    #[test]
+    fn mob_metadata_updates_shearing_size_and_child_collision_dimensions() {
+        let mut entities = Entities::default();
+        for (id, kind, metadata) in [
+            (1, 91, vec![(12, Meta::Byte(-1)), (16, Meta::Byte(30))]),
+            (2, 55, vec![(16, Meta::Byte(4))]),
+        ] {
+            entities.apply(EntityPacket::SpawnMob {
+                id,
+                kind,
+                position: [0; 3],
+                yaw: 0,
+                pitch: 0,
+                head_yaw: 0,
+                metadata,
+            });
+        }
+        let sheep = entities.get(1).unwrap();
+        assert!(sheep.child);
+        assert_eq!(sheep.variant, 30);
+        assert_eq!(sheep.dimensions(), Some((0.45, 0.65)));
+        assert_eq!(
+            entities.get(2).unwrap().dimensions(),
+            Some((0.51000005 * 4.0, 0.51000005 * 4.0))
+        );
     }
 
     #[test]
