@@ -91,15 +91,28 @@ completion (C14/S3A), `run_command`/`suggest_command` clicks and `show_text` too
 link instead of opening it. The reference gate sends chat through the chat screen (`--smoke-chat`) and
 requires the server to log it; a capture checked formatting, unicode, wrapping and the input line.
 
-Next (in order): scoreboard, teams, titles and the tab list; item counts, durability and tooltips with shift-click, number-key swaps and Q drop;
+Scoreboard checkpoint. Protocol `scoreboard.rs` decodes S3B/S3C/S3D/S3E/S45/S47 and `player_list` now
+keeps game mode, ping and display names. The client `scoreboard.rs` applies vanilla rules (unknown
+objectives ignored, empty-objective removal clears a holder everywhere, joining a team leaves the old one,
+removal clears display slots) with size bounds, and publishes to the window once per tick. `hud.rs` draws
+`renderScoreboard` (own team colour's sidebar slot first, 15 lines, `#` holders hidden, vanilla sort),
+titles and subtitles with fade times, and `GuiPlayerTabOverlay` (header/footer, up to 80 entries in
+columns of 20, team sort with spectators last, list-slot scores, ping bars, faces on encrypted logins from
+loaded skins or the default Steve/Alex). Nametags use team prefix/suffix colours, team visibility rules
+and the below-name objective; armour-stand and mob custom names (`CustomNameVisible`) render as labels.
+A capture against the reference server checked the sidebar, title, Tab overlay, team nametag and an
+invisible armour-stand hologram. `--smoke-tab` holds the list key for validation captures. Known gaps:
+world labels skip unicode glyphs and bold, lack vanilla's see-through background, and `hearts` list
+objectives show numbers.
+
+Next (in order): item counts, durability and tooltips with shift-click, number-key swaps and Q drop;
 dropped items and projectiles; 1.8.9 first-person hand/item transforms and block-hit; Keychain-backed
-refresh-token caching; a release build measured under the 80-player lobby. The death screen is still a
-plain panel (no full-screen gradient, score or title-screen button).
+refresh-token caching; a release build measured under the 80-player lobby.
 
 ## 2. Verified State
 
-- 96 scoped tests pass with `--include-ignored` (client 25, login CLI 2, assets 1, auth 3, physics 16,
-  protocol 34, world 15 — counts include the Metal readback and the owned-jar registry test).
+- 99 scoped tests pass with `--include-ignored` (client 27, login CLI 2, assets 1, auth 3, physics 16,
+  protocol 35, world 15 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata

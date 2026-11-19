@@ -17,6 +17,7 @@ mod renderer;
 mod scene;
 #[cfg(test)]
 mod scene_tests;
+mod scoreboard;
 mod skins;
 mod terrain;
 mod ui;
@@ -71,6 +72,25 @@ struct App {
     /// Trackpad pixels not yet worth a wheel notch.
     wheel_pixels: f64,
     smoke_chat: Option<String>,
+    /// The player-list key, held with no screen open.
+    tab_held: bool,
+    smoke_tab: bool,
+}
+
+/// What one frame reads from the simulation, under one lock.
+struct Snapshot {
+    view: Arc<inventory::View>,
+    swing: Option<u8>,
+    using_item: bool,
+    vitals: gameplay::Vitals,
+    game_mode: u8,
+    experience: (f32, i32),
+    hardcore: bool,
+    inbox: Vec<network::ChatEvent>,
+    scoreboard: Arc<scoreboard::Scoreboard>,
+    tab: Arc<scoreboard::TabList>,
+    username: String,
+    encrypted: bool,
 }
 
 impl App {
@@ -106,6 +126,7 @@ impl App {
         }
         self.captured = false;
         self.mouse = (0.0, 0.0);
+        self.tab_held = false;
         self.keyboard.clear();
         if let Some(network) = &self.network
             && let Ok(mut state) = network.shared.lock()
@@ -412,6 +433,9 @@ impl ApplicationHandler for App {
                         self.open_chat(if key == KeyCode::Slash { "/" } else { "" });
                         return;
                     }
+                    if key == KeyCode::Tab {
+                        self.tab_held = pressed && !screen;
+                    }
                     if event.state == ElementState::Pressed {
                         self.keyboard.press(key, event.repeat);
                     } else {
@@ -610,28 +634,33 @@ impl ApplicationHandler for App {
                 let tick = self.tick();
                 let mouse = self.mouse_gui();
                 let snapshot = self.network.as_ref().and_then(|n| {
-                    n.shared.lock().ok().map(|mut s| {
-                        (
-                            s.inventory.clone(),
-                            s.swing,
-                            s.using_item,
-                            s.vitals,
-                            s.game_mode,
-                            s.experience,
-                            s.hardcore,
-                            std::mem::take(&mut s.chat_inbox),
-                        )
+                    n.shared.lock().ok().map(|mut s| Snapshot {
+                        view: s.inventory.clone(),
+                        swing: s.swing,
+                        using_item: s.using_item,
+                        vitals: s.vitals,
+                        game_mode: s.game_mode,
+                        experience: s.experience,
+                        hardcore: s.hardcore,
+                        inbox: std::mem::take(&mut s.chat_inbox),
+                        scoreboard: s.scoreboard.clone(),
+                        tab: s.tab.clone(),
+                        username: s.username.clone(),
+                        encrypted: s.encrypted,
                     })
                 });
                 let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
                 if let (Some(snapshot), Some(registry)) = (&snapshot, &registry) {
-                    for event in &snapshot.7 {
+                    for event in &snapshot.inbox {
                         match event {
                             network::ChatEvent::Message(message) => {
                                 self.chat.receive(&registry.gui, message, tick);
                             }
                             network::ChatEvent::ActionBar(text) => {
                                 self.hud.set_action_bar(text.clone(), tick);
+                            }
+                            network::ChatEvent::Title(title) => {
+                                self.hud.set_title(title.clone(), tick);
                             }
                             network::ChatEvent::Completions(matches) => {
                                 if let Some(listing) = self.chat.completions(matches.clone()) {
@@ -644,27 +673,43 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = &mut self.renderer {
                     if let Some((pose, partial, entities)) = pose {
                         renderer.set_pose(pose);
-                        let ui = snapshot.as_ref().map(|s| (s.0.clone(), s.1, s.2, s.3));
-                        if let Err(error) = renderer.set_entities(&entities, partial, ui.as_ref()) {
+                        let ui = snapshot
+                            .as_ref()
+                            .map(|s| (s.view.clone(), s.swing, s.using_item, s.vitals));
+                        let empty = scoreboard::Scoreboard::default();
+                        let (board, own_name) = snapshot
+                            .as_ref()
+                            .map_or((&empty, ""), |s| (&*s.scoreboard, s.username.as_str()));
+                        if let Err(error) =
+                            renderer.set_entities(&entities, partial, ui.as_ref(), board, own_name)
+                        {
                             self.fail(event_loop, error);
                             return;
                         }
                         if let Some(snapshot) = &snapshot {
                             let (hud, chat) = (&mut self.hud, &mut self.chat);
-                            let result = renderer.draw_ui(tick, |canvas, registry| {
+                            let tab_held = self.tab_held || self.smoke_tab;
+                            let result = renderer.draw_ui(tick, |canvas, registry, skin| {
                                 let frame = hud::Frame {
-                                    view: &snapshot.0,
-                                    vitals: snapshot.3,
-                                    game_mode: snapshot.4,
-                                    hardcore: snapshot.6,
-                                    experience: snapshot.5,
+                                    view: &snapshot.view,
+                                    vitals: snapshot.vitals,
+                                    game_mode: snapshot.game_mode,
+                                    hardcore: snapshot.hardcore,
+                                    experience: snapshot.experience,
                                     mouse,
                                     tick,
+                                    scoreboard: &snapshot.scoreboard,
+                                    tab: &snapshot.tab,
+                                    own_name: &snapshot.username,
+                                    tab_held,
+                                    heads: snapshot.encrypted,
+                                    skin,
                                 };
                                 hud.draw(canvas, registry, &frame);
                                 chat.draw(canvas, tick, mouse);
-                                if snapshot.0.open && snapshot.3.health > 0.0 {
-                                    hud::inventory(canvas, registry, &snapshot.0, mouse);
+                                hud.draw_after_chat(canvas, &frame);
+                                if snapshot.view.open && snapshot.vitals.health > 0.0 {
+                                    hud::inventory(canvas, registry, &snapshot.view, mouse);
                                 }
                             });
                             if let Err(error) = result {
@@ -845,6 +890,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         gui_scale: options.gui_scale,
         wheel_pixels: 0.0,
         smoke_chat: options.smoke_chat,
+        tab_held: false,
+        smoke_tab: options.smoke_tab,
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {

@@ -3,9 +3,11 @@
 use crate::{
     gameplay::Vitals,
     inventory::View,
+    scoreboard::{Scoreboard, TabList},
     terrain::Registry,
     ui::{Canvas, ICONS, Layout, WIDGETS},
 };
+use horizon_protocol_47::scoreboard::Title;
 
 /// Potion effects the bars draw differently.
 pub const REGENERATION: u32 = 1 << 10;
@@ -24,6 +26,15 @@ pub struct Frame<'a> {
     pub mouse: (f32, f32),
     /// Client ticks since start, with the partial tick.
     pub tick: f64,
+    pub scoreboard: &'a Scoreboard,
+    pub tab: &'a TabList,
+    pub own_name: &'a str,
+    /// The player-list key is held.
+    pub tab_held: bool,
+    /// Online-mode connections show faces in the tab list.
+    pub heads: bool,
+    /// Entity-array layer of a player's loaded skin, if any.
+    pub skin: &'a dyn Fn(u128) -> Option<u32>,
 }
 
 /// Overlay state that outlives one frame.
@@ -39,6 +50,12 @@ pub struct Hud {
     action_bar: Option<(String, f64)>,
     /// When the death screen opened.
     died_at: Option<f64>,
+    title: String,
+    subtitle: String,
+    /// Fade-in, stay and fade-out ticks.
+    title_times: Option<(i32, i32, i32)>,
+    /// The tick `titlesTimer` reaches zero.
+    title_until: f64,
 }
 
 /// A `GuiGameOver` button.
@@ -60,6 +77,115 @@ impl Hud {
     /// `GuiIngame.setRecordPlaying`: shown for 60 ticks.
     pub fn set_action_bar(&mut self, text: String, tick: f64) {
         self.action_bar = Some((text, tick));
+    }
+
+    fn times(&self) -> (i32, i32, i32) {
+        self.title_times.unwrap_or((10, 70, 20))
+    }
+
+    /// `GuiIngame.displayTitle` as `handleTitle` drives it; text arrives
+    /// formatted.
+    pub fn set_title(&mut self, title: Title, tick: f64) {
+        match title {
+            Title::Times {
+                fade_in,
+                stay,
+                fade_out,
+            } => {
+                self.title_times = Some((fade_in.max(0), stay.max(0), fade_out.max(0)));
+                if self.title_until > tick {
+                    let (a, b, c) = self.times();
+                    self.title_until = tick + f64::from(a + b + c);
+                }
+            }
+            Title::Subtitle(text) => self.subtitle = text,
+            Title::Title(text) => {
+                self.title = text;
+                let (a, b, c) = self.times();
+                self.title_until = tick + f64::from(a + b + c);
+            }
+            Title::Clear => {
+                self.title.clear();
+                self.subtitle.clear();
+                self.title_until = tick;
+            }
+            Title::Reset => {
+                self.subtitle.clear();
+                self.title_times = None;
+            }
+        }
+    }
+
+    fn draw_titles(&self, canvas: &mut Canvas<'_>, tick: f64) {
+        let left = self.title_until - tick;
+        if left <= 0.0 {
+            return;
+        }
+        let (a, b, c) = self.times();
+        let (a, b, c) = (f64::from(a), f64::from(b), f64::from(c));
+        let mut alpha = 255.0;
+        if left > c + b && a > 0.0 {
+            alpha = (a + b + c - left) * 255.0 / a;
+        }
+        if left <= c && c > 0.0 {
+            alpha = left * 255.0 / c;
+        }
+        let alpha = alpha.clamp(0.0, 255.0) as u32;
+        if alpha <= 8 {
+            return;
+        }
+        let (cx, cy) = (
+            (canvas.layout.width / 2.0).floor(),
+            (canvas.layout.height / 2.0).floor(),
+        );
+        let color = 0x00FF_FFFF | alpha << 24;
+        canvas.scale = 4.0;
+        let x = cx / 4.0 - (canvas.res.width(&self.title) / 2) as f32;
+        canvas.text(&self.title, x, cy / 4.0 - 10.0, color, true);
+        canvas.scale = 2.0;
+        let x = cx / 2.0 - (canvas.res.width(&self.subtitle) / 2) as f32;
+        canvas.text(&self.subtitle, x, cy / 2.0 + 5.0, color, true);
+        canvas.scale = 1.0;
+    }
+
+    /// `renderScoreboard`. Vanilla draws the text with blending off, so
+    /// its `0x20FFFFFF` colour shows opaque.
+    fn draw_sidebar(canvas: &mut Canvas<'_>, frame: &Frame<'_>) {
+        let Some((title, lines)) = frame.scoreboard.sidebar(frame.own_name) else {
+            return;
+        };
+        let res = canvas.res;
+        let mut width = res.width(&title);
+        for (name, points) in &lines {
+            width = width.max(res.width(&format!("{name}: §c{points}")));
+        }
+        let (w, h) = (canvas.layout.width, canvas.layout.height);
+        let height = (lines.len() * 9) as f32;
+        let bottom = (h / 2.0).floor() + (height / 3.0).floor();
+        let left = w - width as f32 - 3.0;
+        let right = w - 3.0 + 2.0;
+        let count = lines.len();
+        for (index, (name, points)) in lines.iter().enumerate() {
+            let y = bottom - (index + 1) as f32 * 9.0;
+            canvas.rect(left - 2.0, y, right, y + 9.0, 0x5000_0000);
+            canvas.text(name, left, y, 0xFFFF_FFFF, false);
+            let value = format!("§c{points}");
+            let value_x = right - res.width(&value) as f32;
+            canvas.text(&value, value_x, y, 0xFFFF_FFFF, false);
+            if index + 1 == count {
+                canvas.rect(left - 2.0, y - 10.0, right, y - 1.0, 0x6000_0000);
+                canvas.rect(left - 2.0, y - 1.0, right, y, 0x5000_0000);
+                let title_x = left + (width / 2) as f32 - (res.width(&title) / 2) as f32;
+                canvas.text(&title, title_x, y - 9.0, 0xFFFF_FFFF, false);
+            }
+        }
+    }
+
+    /// Overlays drawn after chat: the tab list while its key is held.
+    pub fn draw_after_chat(&self, canvas: &mut Canvas<'_>, frame: &Frame<'_>) {
+        if frame.tab_held && self.died_at.is_none() {
+            tab_list(canvas, frame);
+        }
     }
 
     fn death_buttons(layout: Layout) -> [(DeathButton, [f32; 4]); 2] {
@@ -118,6 +244,8 @@ impl Hud {
             Self::experience(canvas, frame);
         }
         self.draw_action_bar(canvas, frame.tick);
+        self.draw_titles(canvas, frame.tick);
+        Self::draw_sidebar(canvas, frame);
         if let Some(died_at) = self.died_at {
             Self::death_screen(canvas, frame, frame.tick - died_at);
         }
@@ -458,5 +586,160 @@ pub fn inventory(canvas: &mut Canvas<'_>, registry: &Registry, view: &View, mous
     }
     if let Some(item) = &view.cursor {
         item_slot(canvas, registry, item, mouse.0 - 8.0, mouse.1 - 8.0);
+    }
+}
+
+/// `GuiPlayerTabOverlay.renderPlayerlist`: header, columns of at most 20
+/// players with faces, list-slot scores and ping bars, then the footer.
+fn tab_list(canvas: &mut Canvas<'_>, frame: &Frame<'_>) {
+    let res = canvas.res;
+    let board = frame.scoreboard;
+    let objective = board.slot(0);
+    let mut entries = frame.tab.sorted(board);
+    let mut name_width = 0;
+    let mut score_width = 0;
+    for (_, entry) in &entries {
+        name_width = name_width.max(res.width(&TabList::name(entry, board)));
+        if let Some((name, info)) = objective
+            && !info.hearts
+        {
+            let points = board.points(name, &entry.name).unwrap_or(0);
+            score_width = score_width.max(res.width(&format!(" {points}")));
+        }
+    }
+    entries.truncate(80);
+    let count = entries.len();
+    let mut columns = 1;
+    let mut rows = count;
+    while rows > 20 {
+        columns += 1;
+        rows = count.div_ceil(columns);
+    }
+    let w = canvas.layout.width as i32;
+    let score_space = match objective {
+        Some((_, info)) if info.hearts => 90,
+        Some(_) => score_width,
+        None => 0,
+    };
+    let head = if frame.heads { 9 } else { 0 };
+    let column =
+        (columns as i32 * (head + name_width + score_space + 13)).min(w - 50) / columns as i32;
+    let left = w / 2 - (column * columns as i32 + (columns as i32 - 1) * 5) / 2;
+    let mut y = 10;
+    let mut span = column * columns as i32 + (columns as i32 - 1) * 5;
+    let wrap = |text: &Option<String>| {
+        text.as_ref().map(|text| {
+            res.wrap(text, &[], w - 50)
+                .into_iter()
+                .map(|(line, _)| line)
+                .collect::<Vec<_>>()
+        })
+    };
+    let header = wrap(&frame.tab.header);
+    let footer = wrap(&frame.tab.footer);
+    for line in header.iter().chain(footer.iter()).flatten() {
+        span = span.max(res.width(line));
+    }
+    let band = |canvas: &mut Canvas<'_>, top: i32, lines: i32| {
+        canvas.rect(
+            (w / 2 - span / 2 - 1) as f32,
+            (top - 1) as f32,
+            (w / 2 + span / 2 + 1) as f32,
+            (top + lines * 9) as f32,
+            0x8000_0000,
+        );
+    };
+    if let Some(header) = &header {
+        band(canvas, y, header.len() as i32);
+        for line in header {
+            canvas.text(
+                line,
+                (w / 2 - res.width(line) / 2) as f32,
+                y as f32,
+                0xFFFF_FFFF,
+                true,
+            );
+            y += 9;
+        }
+        y += 1;
+    }
+    band(canvas, y, rows as i32);
+    for index in 0..count {
+        let (col, row) = ((index / rows) as i32, (index % rows) as i32);
+        let mut x = left + col * column + col * 5;
+        let top = y + row * 9;
+        canvas.rect(
+            x as f32,
+            top as f32,
+            (x + column) as f32,
+            (top + 8) as f32,
+            0x20FF_FFFF,
+        );
+        let (uuid, entry) = entries[index];
+        if frame.heads {
+            let layer = (frame.skin)(uuid).unwrap_or_else(|| {
+                if horizon_world_189::entities::slim_skin(uuid) {
+                    crate::models::Texture::Alex.into()
+                } else {
+                    crate::models::Texture::Steve.into()
+                }
+            });
+            canvas.skin_face(layer, x as f32, top as f32);
+            x += 9;
+        }
+        let name = TabList::name(entry, board);
+        if entry.game_mode == 3 {
+            canvas.text(
+                &format!("§o{name}"),
+                x as f32,
+                top as f32,
+                0x90FF_FFFF,
+                true,
+            );
+        } else {
+            canvas.text(&name, x as f32, top as f32, 0xFFFF_FFFF, true);
+            if let Some((objective, _)) = objective {
+                let start = x + name_width + 1;
+                if score_space > 5 {
+                    let points = board.points(objective, &entry.name).unwrap_or(0);
+                    let value = format!("§e{points}");
+                    let value_x = start + score_space - res.width(&value);
+                    canvas.text(&value, value_x as f32, top as f32, 0xFFFF_FFFF, true);
+                }
+            }
+        }
+        let bars = match entry.ping {
+            ping if ping < 0 => 5.0,
+            0..150 => 0.0,
+            150..300 => 1.0,
+            300..600 => 2.0,
+            600..1000 => 3.0,
+            _ => 4.0,
+        };
+        let ping_x = x - head + column - 11;
+        canvas.sprite(
+            ICONS,
+            ping_x as f32,
+            top as f32,
+            0.0,
+            176.0 + bars * 8.0,
+            10.0,
+            8.0,
+            [1.0; 4],
+        );
+    }
+    if let Some(footer) = &footer {
+        let mut y = y + rows as i32 * 9 + 1;
+        band(canvas, y, footer.len() as i32);
+        for line in footer {
+            canvas.text(
+                line,
+                (w / 2 - res.width(line) / 2) as f32,
+                y as f32,
+                0xFFFF_FFFF,
+                true,
+            );
+            y += 9;
+        }
     }
 }

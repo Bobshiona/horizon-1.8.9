@@ -1013,31 +1013,74 @@ pub fn nametags(
     origin: [i64; 3],
     camera: horizon_protocol_47::play::PositionLook,
     widths: &[u8; 256],
+    board: &crate::scoreboard::Scoreboard,
+    own_name: &str,
 ) {
+    // `RendererLivingEntity.canRenderName` with team name-tag visibility.
+    let own_team = board.team_of(own_name).map(|(name, _)| name);
+    let below = board.slot(2);
+    let label = |out: &mut Vec<Vertex>, at: Vec3, text: &str, row: f32| {
+        let f = 0.016_666_668 * 1.6;
+        let matrix = Mat4::from_translation(at)
+            * Mat4::from_rotation_y((-camera.yaw).to_radians())
+            * Mat4::from_rotation_x(camera.pitch.to_radians())
+            * Mat4::from_scale(Vec3::new(-f, -f, f));
+        text_line(out, matrix, text, row, widths, [1.0; 3]);
+    };
     for (_, entity) in entities {
-        if entity.invisible() || !matches!(entity.kind, Kind::Player { .. }) {
-            continue;
-        }
-        let Some(profile) = &entity.profile else {
-            continue;
-        };
         let distance: f64 = entity
             .position
             .iter()
             .zip(camera.position)
             .map(|(a, b)| (a - b) * (a - b))
             .sum();
-        let range = if entity.sneaking() { 32.0 } else { 64.0 };
-        if distance > range * range {
-            continue;
+        match (&entity.kind, &entity.profile) {
+            (Kind::Player { .. }, Some(profile)) => {
+                if entity.invisible() {
+                    continue;
+                }
+                if let Some((team, info)) = board.team_of(&profile.name) {
+                    let same = own_team == Some(team);
+                    let shown = match info.name_tags.as_str() {
+                        "never" => false,
+                        "hideForOtherTeams" => own_team.is_none() || same,
+                        "hideForOwnTeam" => own_team.is_none() || !same,
+                        _ => true,
+                    };
+                    if !shown {
+                        continue;
+                    }
+                }
+                let range = if entity.sneaking() { 32.0 } else { 64.0 };
+                if distance > range * range {
+                    continue;
+                }
+                let mut at = position(entity, partial, origin)
+                    + Vec3::new(0.0, if entity.sneaking() { 2.05 } else { 2.3 }, 0.0);
+                // `renderOffsetLivingLabel`: the below-name score within ten
+                // blocks, with the name raised one line.
+                if let Some((objective, info)) = below
+                    && distance < 100.0
+                {
+                    let points = board.points(objective, &profile.name).unwrap_or(0);
+                    label(out, at, &format!("{points} {}", info.display), 0.0);
+                    at += Vec3::new(0.0, 9.0 * 1.15 * 0.016_666_668 * 1.6, 0.0);
+                }
+                label(out, at, &board.format(&profile.name), 0.0);
+            }
+            (Kind::Mob(_) | Kind::Object(78), _) => {
+                let Some(name) = &entity.custom_name else {
+                    continue;
+                };
+                if !entity.name_visible || distance > 64.0 * 64.0 {
+                    continue;
+                }
+                let at = position(entity, partial, origin)
+                    + Vec3::new(0.0, entity.label_height() as f32, 0.0);
+                label(out, at, name, 0.0);
+            }
+            _ => {}
         }
-        let at = position(entity, partial, origin)
-            + Vec3::new(0.0, if entity.sneaking() { 2.05 } else { 2.3 }, 0.0);
-        let matrix = Mat4::from_translation(at)
-            * Mat4::from_rotation_y((-camera.yaw).to_radians())
-            * Mat4::from_rotation_x(camera.pitch.to_radians())
-            * Mat4::from_scale(Vec3::new(-0.025, -0.025, 0.025));
-        text_line(out, matrix, &profile.name, 0.0, widths, [1.0; 3]);
     }
 }
 
@@ -1181,14 +1224,38 @@ fn text_line(
     widths: &[u8; 256],
     colour: [f32; 3],
 ) {
-    let total: f32 = text
-        .chars()
-        .map(|c| f32::from(widths[(c as u32).min(255) as usize]))
+    // `§` colour codes recolour, other codes are skipped; glyphs outside
+    // ascii.png (unicode pages) are left out of world text.
+    let base = colour;
+    let glyphs: Vec<(usize, [f32; 3])> = {
+        let mut colour = base;
+        let mut glyphs = Vec::with_capacity(text.len());
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '§' {
+                match chars.next().map(|c| c.to_ascii_lowercase()) {
+                    Some(code @ ('0'..='9' | 'a'..='f')) => {
+                        let index = code.to_digit(16).unwrap_or(15) as usize;
+                        colour = crate::ui::color_code(index);
+                    }
+                    Some('r') => colour = base,
+                    _ => {}
+                }
+                continue;
+            }
+            if let Some(index) = crate::ui::ascii_index(c) {
+                glyphs.push((index, colour));
+            }
+        }
+        glyphs
+    };
+    let total: f32 = glyphs
+        .iter()
+        .map(|(code, _)| f32::from(widths[*code]))
         .sum();
-    let mut x = -total / 2.0;
+    let mut x = (-total / 2.0).trunc();
     let scale = 1.0 / LAYER_SIZE as f32;
-    for c in text.chars() {
-        let code = (c as u32).min(255) as usize;
+    for (code, colour) in glyphs {
         let advance = f32::from(widths[code]);
         if code != 32 && advance > 1.0 {
             let (u, v) = ((code % 16 * 8) as f32, (code / 16 * 8) as f32);

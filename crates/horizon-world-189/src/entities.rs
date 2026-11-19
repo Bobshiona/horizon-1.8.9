@@ -53,9 +53,27 @@ pub struct Entity {
     pub variant: u8,
     pub child: bool,
     pub on_ground: bool,
+    /// Watcher index 2 `CustomName` and index 3 `AlwaysShowNameTag`.
+    pub custom_name: Option<String>,
+    pub name_visible: bool,
+    /// Armour-stand flags, index 10: small 0x01, marker 0x10.
+    pub stand_flags: u8,
 }
 
 impl Entity {
+    /// Where `renderLivingLabel` starts: the entity height plus half a block.
+    pub fn label_height(&self) -> f64 {
+        let height = match self.kind {
+            Kind::Object(78) if self.stand_flags & 0x10 != 0 => 0.0,
+            Kind::Object(78) if self.stand_flags & 0x01 != 0 => 0.9875,
+            Kind::Object(78) => 1.975,
+            Kind::Player { .. } => 1.8,
+            _ => 1.8,
+        };
+        let height = if self.child { height / 2.0 } else { height };
+        height + 0.5
+    }
+
     fn new(kind: Kind, uuid: u128, server: [i32; 3], yaw: f32, pitch: f32) -> Self {
         let position = server.map(|value| f64::from(value) / 32.0);
         Self {
@@ -89,6 +107,9 @@ impl Entity {
             variant: 0,
             child: false,
             on_ground: false,
+            custom_name: None,
+            name_visible: false,
+            stand_flags: 0,
         }
     }
 
@@ -169,6 +190,13 @@ impl Entity {
                 (10, Meta::Byte(parts)) if matches!(self.kind, Kind::Player { .. }) => {
                     self.skin_parts = *parts as u8
                 }
+                (10, Meta::Byte(flags)) if self.kind == Kind::Object(78) => {
+                    self.stand_flags = *flags as u8
+                }
+                (2, Meta::String(name)) => {
+                    self.custom_name = (!name.is_empty()).then(|| name.clone());
+                }
+                (3, Meta::Byte(visible)) => self.name_visible = *visible != 0,
                 _ => {}
             }
         }
@@ -302,7 +330,7 @@ impl Entities {
         use horizon_protocol_47::player_list::Update;
         for update in updates {
             match update {
-                Update::Add { uuid, profile } => {
+                Update::Add { uuid, profile, .. } => {
                     let profile = std::sync::Arc::new(profile);
                     for entity in self.map.values_mut().filter(|entity| entity.uuid == uuid) {
                         entity.profile = Some(profile.clone());
@@ -312,6 +340,7 @@ impl Entities {
                 Update::Remove(uuid) => {
                     self.profiles.remove(&uuid);
                 }
+                _ => {}
             }
         }
     }

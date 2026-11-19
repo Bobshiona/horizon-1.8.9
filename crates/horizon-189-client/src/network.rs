@@ -80,6 +80,12 @@ pub struct Shared {
     /// Experience bar fill and level (S1F).
     pub experience: (f32, i32),
     pub hardcore: bool,
+    pub scoreboard: Arc<crate::scoreboard::Scoreboard>,
+    pub tab: Arc<crate::scoreboard::TabList>,
+    /// The session's player name and whether the login was encrypted
+    /// (online mode, so the tab list shows faces).
+    pub username: String,
+    pub encrypted: bool,
 }
 
 /// A server message for the window: chat, the action bar or completions.
@@ -87,6 +93,8 @@ pub enum ChatEvent {
     Message(horizon_protocol_47::text::Formatted),
     ActionBar(String),
     Completions(Vec<String>),
+    /// S45 with any text already formatted.
+    Title(horizon_protocol_47::scoreboard::Title),
 }
 
 /// What the window asks the actor to send.
@@ -277,13 +285,22 @@ fn run(
         return Ok(());
     }
     let mut connection = Connection::new(socket);
+    let mut encrypted = false;
     let profile = login::connect(
         &mut connection,
         &config.host,
         config.port,
         &config.session.profile.username,
-        |hash| config.session.join(hash),
+        |hash| {
+            encrypted = true;
+            config.session.join(hash)
+        },
     )?;
+    {
+        let mut state = lock(shared)?;
+        state.username = profile.username.clone();
+        state.encrypted = encrypted;
+    }
     if !config.offline && profile != config.session.profile {
         return Err(io::Error::other(
             "Server profile differs from the authenticated profile",
@@ -448,6 +465,10 @@ fn run_actor(
     language: &std::collections::BTreeMap<String, String>,
 ) -> io::Result<()> {
     let translate = |key: &str| language.get(key).cloned();
+    let formatted = |json: &str| horizon_protocol_47::text::format(json, &translate).text;
+    let mut board = crate::scoreboard::Scoreboard::default();
+    let mut tab = crate::scoreboard::TabList::default();
+    let (mut board_dirty, mut tab_dirty) = (false, false);
     let scripted = config.autopilot || config.autopilot_fly;
     let mut mesh_origin: Option<[i64; 3]> = None;
     let dirty = |keys: Vec<(i32, i32)>| {
@@ -485,6 +506,9 @@ fn run_actor(
                         entity_id = join.entity_id;
                         game_mode = join.game_mode & 7;
                         lock(shared)?.hardcore = join.game_mode & 8 != 0;
+                        // A new WorldClient brings a new scoreboard.
+                        board = crate::scoreboard::Scoreboard::default();
+                        board_dirty = true;
                         entities.clear();
                         sky_light = Some(join.dimension == 0);
                         write(world)?.set_sky(join.dimension == 0);
@@ -635,7 +659,47 @@ fn run_actor(
                         lock(shared)?.positioned = false;
                     }
                     play::Packet::Other { id: 0x38, fields } => {
-                        entities.update_profiles(horizon_protocol_47::player_list::decode(fields)?);
+                        let updates = horizon_protocol_47::player_list::decode(fields)?;
+                        tab.apply(&updates, &formatted);
+                        tab_dirty = true;
+                        entities.update_profiles(updates);
+                    }
+                    play::Packet::Other { id: 0x47, fields } => {
+                        let (header, footer) =
+                            horizon_protocol_47::scoreboard::decode_header_footer(fields)?;
+                        let shown = |json: &str| {
+                            let text = formatted(json);
+                            (!horizon_protocol_47::text::strip(&text).is_empty()).then_some(text)
+                        };
+                        tab.header = shown(&header);
+                        tab.footer = shown(&footer);
+                        tab_dirty = true;
+                    }
+                    play::Packet::Other { id: 0x3b, fields } => {
+                        board.objective(horizon_protocol_47::scoreboard::decode_objective(fields)?);
+                        board_dirty = true;
+                    }
+                    play::Packet::Other { id: 0x3c, fields } => {
+                        board.score(horizon_protocol_47::scoreboard::decode_score(fields)?);
+                        board_dirty = true;
+                    }
+                    play::Packet::Other { id: 0x3d, fields } => {
+                        let (slot, name) = horizon_protocol_47::scoreboard::decode_display(fields)?;
+                        board.display(slot, name);
+                        board_dirty = true;
+                    }
+                    play::Packet::Other { id: 0x3e, fields } => {
+                        board.team(horizon_protocol_47::scoreboard::decode_team(fields)?);
+                        board_dirty = true;
+                    }
+                    play::Packet::Other { id: 0x45, fields } => {
+                        use horizon_protocol_47::scoreboard::Title;
+                        let title = match horizon_protocol_47::scoreboard::decode_title(fields)? {
+                            Title::Title(json) => Title::Title(formatted(&json)),
+                            Title::Subtitle(json) => Title::Subtitle(formatted(&json)),
+                            other => other,
+                        };
+                        push_chat(shared, ChatEvent::Title(title))?;
                     }
                     play::Packet::Other { id: 0x39, fields } => {
                         let abilities = entity_packets::decode_abilities(fields)?;
@@ -831,6 +895,16 @@ fn run_actor(
         let now = Instant::now();
         if now < next_tick {
             continue;
+        }
+        // Publish scoreboard and tab changes once per tick, not per packet.
+        if board_dirty || tab_dirty {
+            let mut state = lock(shared)?;
+            if std::mem::take(&mut board_dirty) {
+                state.scoreboard = Arc::new(board.clone());
+            }
+            if std::mem::take(&mut tab_dirty) {
+                state.tab = Arc::new(tab.clone());
+            }
         }
         let late = now.duration_since(next_tick).as_nanos();
         let due = late / tick.as_nanos() + 1;

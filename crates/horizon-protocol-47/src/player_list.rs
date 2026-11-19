@@ -18,7 +18,17 @@ pub struct Profile {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
-    Add { uuid: u128, profile: Profile },
+    Add {
+        uuid: u128,
+        profile: Profile,
+        game_mode: i32,
+        ping: i32,
+        /// Tab-list name as a chat component (JSON), if the server set one.
+        display: Option<String>,
+    },
+    GameMode(u128, i32),
+    Latency(u128, i32),
+    DisplayName(u128, Option<String>),
     Remove(u128),
 }
 
@@ -66,23 +76,30 @@ pub fn decode(fields: &[u8]) -> io::Result<Vec<Update>> {
                         signature,
                     });
                 }
-                read_varint(input)?; // Game mode.
-                read_varint(input)?; // Ping.
-                if byte(input)? != 0 {
-                    read_string(input, 32767)?;
-                }
+                let game_mode = read_varint(input)?;
+                let ping = read_varint(input)?;
+                let display = if byte(input)? != 0 {
+                    Some(read_string(input, 32767)?)
+                } else {
+                    None
+                };
                 updates.push(Update::Add {
                     uuid,
                     profile: Profile { name, properties },
+                    game_mode,
+                    ping,
+                    display,
                 });
             }
-            1 | 2 => {
-                read_varint(input)?;
-            }
+            1 => updates.push(Update::GameMode(uuid, read_varint(input)?)),
+            2 => updates.push(Update::Latency(uuid, read_varint(input)?)),
             3 => {
-                if byte(input)? != 0 {
-                    read_string(input, 32767)?;
-                }
+                let display = if byte(input)? != 0 {
+                    Some(read_string(input, 32767)?)
+                } else {
+                    None
+                };
+                updates.push(Update::DisplayName(uuid, display));
             }
             4 => updates.push(Update::Remove(uuid)),
             _ => unreachable!(),
@@ -110,7 +127,7 @@ mod tests {
         write_string(&mut bytes, "signature", 32767).unwrap();
         bytes.extend([0, 0, 0]);
         let updates = decode(&bytes).unwrap();
-        let Update::Add { uuid, profile } = &updates[0] else {
+        let Update::Add { uuid, profile, .. } = &updates[0] else {
             panic!()
         };
         assert_eq!(*uuid, 7);

@@ -174,7 +174,7 @@ impl Renderer {
     pub fn draw_ui(
         &mut self,
         tick: f64,
-        draw: impl FnOnce(&mut crate::ui::Canvas<'_>, &Registry),
+        draw: impl FnOnce(&mut crate::ui::Canvas<'_>, &Registry, &dyn Fn(u128) -> Option<u32>),
     ) -> Result<(), Box<dyn Error>> {
         let (Some(registry), Some(pass), Some(scene)) =
             (self.registry.clone(), self.ui.as_mut(), self.scene.as_ref())
@@ -183,7 +183,9 @@ impl Renderer {
         };
         let mut canvas =
             crate::ui::Canvas::new(&registry.gui, self.layout, tick as u64, &pass.pages);
-        draw(&mut canvas, &registry);
+        let skins = &self.skins;
+        let skin = |uuid: u128| skins.get(&uuid).map(|binding| binding.skin);
+        draw(&mut canvas, &registry, &skin);
         let (vertices, inverted, missing) = canvas.finish();
         pass.upload(
             &self.device,
@@ -227,6 +229,8 @@ impl Renderer {
             bool,
             crate::gameplay::Vitals,
         )>,
+        board: &crate::scoreboard::Scoreboard,
+        own_name: &str,
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
             return Ok(());
@@ -296,6 +300,8 @@ impl Renderer {
                 scene.origin(),
                 self.pose,
                 &registry.glyphs,
+                board,
+                own_name,
             );
         }
         if let Some((view, swing, using_item, vitals)) = ui

@@ -37,7 +37,7 @@ pub struct Vertex {
 /// `FontRenderer`'s ascii.png order; NULs are unused cells.
 const ASCII_CHARS: &str = "ÀÁÂÈÊËÍÓÔÕÚßãõğİıŒœŞşŴŵžȇ\0\0\0\0\0\0\0 !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\0ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜø£Ø×ƒáíóúñÑªº¿®¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αβΓπΣσμτΦΘΩδ∞∅∈∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\0";
 
-fn ascii_index(c: char) -> Option<usize> {
+pub(crate) fn ascii_index(c: char) -> Option<usize> {
     let code = c as u32;
     if (32..127).contains(&code) {
         return Some(code as usize);
@@ -49,7 +49,7 @@ fn ascii_index(c: char) -> Option<usize> {
 }
 
 /// `FontRenderer.colorCode`: sixteen colours, then their shadows.
-fn color_code(index: usize) -> [f32; 3] {
+pub(crate) fn color_code(index: usize) -> [f32; 3] {
     let i = index as u32;
     let j = (i >> 3 & 1) * 85;
     let mut r = (i >> 2 & 1) * 170 + j;
@@ -491,6 +491,26 @@ impl<'a> Canvas<'a> {
             ENTITY | layer,
             [1.0; 4],
         );
+    }
+
+    /// A player face (and hat layer) from a 64-pixel skin in the entity
+    /// array, as `Gui.drawScaledCustomSizeModalRect`.
+    pub fn skin_face(&mut self, layer: u32, x: f32, y: f32) {
+        let s = 1.0 / crate::models::LAYER_SIZE as f32;
+        for u in [8.0, 40.0] {
+            self.quad(
+                false,
+                [[x, y], [x + 8.0, y], [x + 8.0, y + 8.0], [x, y + 8.0]],
+                [
+                    [u * s, 8.0 * s],
+                    [(u + 8.0) * s, 8.0 * s],
+                    [(u + 8.0) * s, 16.0 * s],
+                    [u * s, 16.0 * s],
+                ],
+                ENTITY | layer,
+                [1.0; 4],
+            );
+        }
     }
 
     /// `FontRenderer.drawString`/`drawStringWithShadow`; returns the end x.

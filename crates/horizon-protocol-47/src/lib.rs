@@ -13,6 +13,7 @@ pub mod packet;
 pub mod play;
 pub mod player;
 pub mod player_list;
+pub mod scoreboard;
 #[cfg(test)]
 mod tests;
 pub mod text;
