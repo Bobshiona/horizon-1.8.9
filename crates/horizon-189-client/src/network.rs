@@ -73,7 +73,30 @@ pub struct Shared {
     pub sneaking: bool,
     /// Tracked entities as of the last tick, for interpolated drawing.
     pub entities: Arc<Vec<(i32, Entity)>>,
+    /// Chat the window has not taken yet, oldest first.
+    pub chat_inbox: Vec<ChatEvent>,
+    /// Chat and completion requests the actor has not sent yet.
+    pub chat_outbox: Vec<Outgoing>,
+    /// Experience bar fill and level (S1F).
+    pub experience: (f32, i32),
+    pub hardcore: bool,
 }
+
+/// A server message for the window: chat, the action bar or completions.
+pub enum ChatEvent {
+    Message(horizon_protocol_47::text::Formatted),
+    ActionBar(String),
+    Completions(Vec<String>),
+}
+
+/// What the window asks the actor to send.
+pub enum Outgoing {
+    Message(String),
+    Complete(String),
+}
+
+/// Messages beyond this are dropped oldest-first if the window stalls.
+const INBOX_LIMIT: usize = 512;
 
 pub struct Network {
     pub meshes: Receiver<MeshUpdate>,
@@ -97,6 +120,7 @@ impl Network {
         let active = socket.clone();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let state = shared.clone();
+        let language = registry.gui.language.clone();
         let mesher = {
             let (world, stop) = (world.clone(), stop.clone());
             thread::Builder::new()
@@ -106,8 +130,9 @@ impl Network {
         let worker = thread::Builder::new()
             .name("Protocol 47".into())
             .spawn(move || {
-                if let Err(error) = run(config, &world, commands, &state, &cancel, &active)
-                    && !cancel.load(Ordering::Acquire)
+                if let Err(error) = run(
+                    config, &world, commands, &state, &cancel, &active, &language,
+                ) && !cancel.load(Ordering::Acquire)
                 {
                     let _ = failed.try_send(error.to_string());
                 }
@@ -223,6 +248,7 @@ fn run(
     shared: &Mutex<Shared>,
     stop: &AtomicBool,
     active: &Mutex<Option<TcpStream>>,
+    language: &std::collections::BTreeMap<String, String>,
 ) -> io::Result<()> {
     let mut socket = None;
     let mut last_error = None;
@@ -282,7 +308,16 @@ fn run(
                 }
             }
         })?;
-    let result = run_actor(world, &mesher, shared, &config, stop, &packets, &mut writer);
+    let result = run_actor(
+        world,
+        &mesher,
+        shared,
+        &config,
+        stop,
+        &packets,
+        &mut writer,
+        language,
+    );
     drop(packets);
     let _ = writer.shutdown();
     let _ = incoming.join();
@@ -392,6 +427,16 @@ fn autopilot(tick: u64, fly: bool, shared: &mut Shared) {
     }
 }
 
+fn push_chat(shared: &Mutex<Shared>, event: ChatEvent) -> io::Result<()> {
+    let mut state = lock(shared)?;
+    if state.chat_inbox.len() >= INBOX_LIMIT {
+        state.chat_inbox.remove(0);
+    }
+    state.chat_inbox.push(event);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_actor(
     world: &RwLock<World>,
     mesher: &Sender<MeshCommand>,
@@ -400,7 +445,9 @@ fn run_actor(
     stop: &AtomicBool,
     packets: &Receiver<io::Result<Vec<u8>>>,
     writer: &mut PacketWriter<TcpStream>,
+    language: &std::collections::BTreeMap<String, String>,
 ) -> io::Result<()> {
+    let translate = |key: &str| language.get(key).cloned();
     let scripted = config.autopilot || config.autopilot_fly;
     let mut mesh_origin: Option<[i64; 3]> = None;
     let dirty = |keys: Vec<(i32, i32)>| {
@@ -437,6 +484,7 @@ fn run_actor(
                     play::Packet::Join(join) => {
                         entity_id = join.entity_id;
                         game_mode = join.game_mode & 7;
+                        lock(shared)?.hardcore = join.game_mode & 8 != 0;
                         entities.clear();
                         sky_light = Some(join.dimension == 0);
                         write(world)?.set_sky(join.dimension == 0);
@@ -558,6 +606,7 @@ fn run_actor(
                         player.food = health.food;
                         vitals.health = health.health;
                         vitals.food = health.food;
+                        vitals.saturation = health.saturation;
                     }
                     play::Packet::Other { id: 0x07, fields } => {
                         // Respawn: a new dimension or a server switch behind a
@@ -653,10 +702,14 @@ fn run_actor(
                                 && *id == entity_id
                             {
                                 for (index, value) in entries {
-                                    if let (17, horizon_protocol_47::nbt::Meta::Float(amount)) =
-                                        (index, value)
-                                    {
-                                        vitals.absorption = *amount;
+                                    match (index, value) {
+                                        (17, horizon_protocol_47::nbt::Meta::Float(amount)) => {
+                                            vitals.absorption = *amount;
+                                        }
+                                        (18, horizon_protocol_47::nbt::Meta::Int(score)) => {
+                                            vitals.score = *score;
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -707,6 +760,9 @@ fn run_actor(
                     play::Packet::Other { id: 0x1d, fields } => {
                         let effect = fields::decode_effect(fields)?;
                         if effect.entity == entity_id {
+                            if effect.effect < 32 {
+                                vitals.effects |= 1 << effect.effect;
+                            }
                             match effect.effect {
                                 3 => controller.haste = Some(effect.amplifier),
                                 4 => controller.fatigue = Some(effect.amplifier),
@@ -718,6 +774,9 @@ fn run_actor(
                     play::Packet::Other { id: 0x1e, fields } => {
                         let (entity, effect) = fields::decode_remove_effect(fields)?;
                         if entity == entity_id {
+                            if effect < 32 {
+                                vitals.effects &= !(1 << effect);
+                            }
                             match effect {
                                 3 => controller.haste = None,
                                 4 => controller.fatigue = None,
@@ -725,6 +784,27 @@ fn run_actor(
                             }
                             apply_effect(&mut player, effect, None);
                         }
+                    }
+                    play::Packet::Other { id: 0x02, fields } => {
+                        let (json, position) = horizon_protocol_47::chat::decode_message(fields)?;
+                        let message = horizon_protocol_47::text::format(&json, &translate);
+                        let event = if position == horizon_protocol_47::chat::Position::ActionBar {
+                            ChatEvent::ActionBar(message.unformatted)
+                        } else {
+                            ChatEvent::Message(message)
+                        };
+                        push_chat(shared, event)?;
+                    }
+                    play::Packet::Other { id: 0x3a, fields } => {
+                        let matches = horizon_protocol_47::chat::decode_tab_complete(fields)?;
+                        push_chat(shared, ChatEvent::Completions(matches))?;
+                    }
+                    play::Packet::Other { id: 0x1f, fields } => {
+                        let input = &mut io::Cursor::new(fields);
+                        let mut bar = [0; 4];
+                        io::Read::read_exact(input, &mut bar)?;
+                        let level = horizon_protocol_47::read_varint(input)?;
+                        lock(shared)?.experience = (f32::from_be_bytes(bar), level);
                     }
                     _ => {}
                 }
@@ -735,6 +815,17 @@ fn run_actor(
                     io::ErrorKind::UnexpectedEof,
                     "Packet reader stopped",
                 ));
+            }
+        }
+        let outgoing = std::mem::take(&mut lock(shared)?.chat_outbox);
+        for request in outgoing {
+            match request {
+                Outgoing::Message(text) => {
+                    writer.send(&horizon_protocol_47::chat::message(&text)?)?;
+                }
+                Outgoing::Complete(text) => {
+                    writer.send(&horizon_protocol_47::chat::tab_complete(&text)?)?;
+                }
             }
         }
         let now = Instant::now();

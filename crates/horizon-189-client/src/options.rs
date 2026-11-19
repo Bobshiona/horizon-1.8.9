@@ -14,6 +14,11 @@ pub struct Options {
     pub sensitivity: f32,
     /// Requested view distance in chunks (vanilla default 8 here, 2..=16).
     pub view_distance: u8,
+    /// Vanilla `guiScale`: 0 automatic, otherwise the largest allowed scale.
+    pub gui_scale: u32,
+    /// Validation only: type and send this through the chat screen once in
+    /// the world, then reopen the chat so a capture shows it.
+    pub smoke_chat: Option<String>,
     pub help: bool,
     login: bool,
     offline: bool,
@@ -44,8 +49,10 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --autopilot                   Drive a scripted walk/sprint/jump/sneak path\n\
     --autopilot-fly               Drive a scripted flight (needs allowFlying)\n\
     --capture PNG                 With --smoke-frames, save the final frame\n\
+    --smoke-chat TEXT             With --smoke-frames, send TEXT through the chat screen\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
     --render-distance N           View distance in chunks, 2-16 (default 8)\n\
+    --gui-scale N                 Interface scale 0-4 (0 automatic, as vanilla)\n\
     --help                        Show options";
 
 impl Options {
@@ -86,6 +93,14 @@ impl Options {
                     }
                     options.view_distance = chunks;
                 }
+                "--smoke-chat" => options.smoke_chat = Some(value()?),
+                "--gui-scale" => {
+                    let scale: u32 = value()?.parse()?;
+                    if scale > 4 {
+                        return Err("--gui-scale must be between 0 and 4".into());
+                    }
+                    options.gui_scale = scale;
+                }
                 "--smoke-frames" => {
                     let frames = value()?.parse()?;
                     if frames == 0 {
@@ -98,6 +113,11 @@ impl Options {
         }
         if options.help {
             return Ok(options);
+        }
+        if options.smoke_chat.is_some()
+            && (options.smoke_frames.is_none() || options.server.is_none())
+        {
+            return Err("--smoke-chat requires --smoke-frames and --server".into());
         }
         if options.capture.is_some() && options.smoke_frames.is_none() {
             return Err("--capture requires --smoke-frames".into());

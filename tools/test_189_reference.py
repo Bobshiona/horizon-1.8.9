@@ -166,10 +166,12 @@ def main() -> None:
             subprocess.run(build, cwd=REPO, env=env, check=True, timeout=300, stdout=subprocess.DEVNULL)
             binary = TARGET / "aarch64-apple-darwin/debug/horizon-189-client"
             with (ROOT / "reference-gate-metal.log").open("w") as output:
-                child = subprocess.Popen([str(binary), "--offline", "--username", "NativeMetal", "--server", "127.0.0.1", "--smoke-frames", "120"], cwd=ROOT, env=env, stdout=output, stderr=subprocess.STDOUT)
+                child = subprocess.Popen([str(binary), "--offline", "--username", "NativeMetal", "--server", "127.0.0.1", "--smoke-frames", "120", "--smoke-chat", "native chat check"], cwd=ROOT, env=env, stdout=output, stderr=subprocess.STDOUT)
                 child.wait(timeout=60)
             if child.returncode:
                 raise RuntimeError("Native Metal smoke failed")
+            if "<NativeMetal> native chat check" not in server_log.read_text(errors="replace"):
+                raise AssertionError("Server did not receive the chat sent through the chat screen")
             flags = [line for line in server_log.read_text(errors="replace").splitlines() if "moved wrongly" in line or "moved too quickly" in line]
             if flags:
                 raise AssertionError("Reference movement flags detected")

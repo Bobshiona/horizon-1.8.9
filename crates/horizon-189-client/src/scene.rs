@@ -548,6 +548,15 @@ impl Scene {
         self.origin
     }
 
+    /// The entity/item array the interface samples icons from.
+    pub fn entity_texture(&self) -> &wgpu::Texture {
+        &self.entity_texture
+    }
+
+    pub fn entity_layers(&self) -> u32 {
+        self.skin_capacity
+    }
+
     /// Keep another scene's geometry after a surface format change.
     pub fn adopt(&mut self, old: Scene) {
         self.columns = old.columns;

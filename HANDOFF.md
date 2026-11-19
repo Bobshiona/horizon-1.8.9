@@ -74,16 +74,32 @@ the jar's `en_US.lang` (`deathScreen.title`, `deathScreen.respawn`); Enter or th
 `ClientStatus` action 0. The managed reference gate kills the test player and confirms the respawn. A
 local capture checked a 14-point armour row, a partial absorption heart and an empty food bar.
 
-Next (in order): chat with JSON/§ formatting and chat/command input; scoreboard, teams, titles/action bar
-and the tab list; item counts, durability and tooltips with shift-click, number-key swaps and Q drop;
+Interface and chat checkpoint. The 2D HUD moved off world-space geometry onto its own screen-space pass
+(`ui.rs`, `ui.wgsl`): vanilla `ScaledResolution` on the logical size (`--gui-scale`, 0 automatic), integer
+device pixels per GUI pixel, a 256-pixel atlas (`ascii`, `gui/icons`, `gui/widgets`, lazily uploaded
+`unicode_page_XX`), and a non-sRGB view of the drawable so translucency blends in gamma space as 1.8.9
+does. `FontRenderer` is ported (colour/shadow tables, bold, italic, underline, strikethrough, obfuscated,
+unicode glyph sizes, `getStringWidth` quirks, `wrapFormattedStringToWidth`). `hud.rs` draws `GuiIngame`
+from the real sheets: inverted crosshair, widgets hotbar and selection, stack counts, armour, hearts
+(absorption rows, hurt blink, low-health shake, regeneration wave, poison/wither/hardcore rows), food
+(hunger, saturation shake), the experience bar and level, the action bar, and `GuiGameOver` with its
+gradient, score and widgets buttons. Chat (`chat.rs`, protocol `text.rs`/`chat.rs`): JSON components with
+inheritance, translations (`en_US.lang`), click/hover events per character, 320-pixel wrapping, 100 lines,
+the 10-second fade, focused 20-line view with scroll bar and wheel/PageUp scrolling; `GuiChat` input on T
+or `/` with history, macOS editing (Option word, Command line), clipboard via `arboard`, server tab
+completion (C14/S3A), `run_command`/`suggest_command` clicks and `show_text` tooltips. `open_url` copies the
+link instead of opening it. The reference gate sends chat through the chat screen (`--smoke-chat`) and
+requires the server to log it; a capture checked formatting, unicode, wrapping and the input line.
+
+Next (in order): scoreboard, teams, titles and the tab list; item counts, durability and tooltips with shift-click, number-key swaps and Q drop;
 dropped items and projectiles; 1.8.9 first-person hand/item transforms and block-hit; Keychain-backed
 refresh-token caching; a release build measured under the 80-player lobby. The death screen is still a
 plain panel (no full-screen gradient, score or title-screen button).
 
 ## 2. Verified State
 
-- 84 scoped tests pass with `--include-ignored` (client 18, login CLI 2, assets 1, auth 3, physics 16,
-  protocol 29, world 15 — counts include the Metal readback and the owned-jar registry test).
+- 96 scoped tests pass with `--include-ignored` (client 25, login CLI 2, assets 1, auth 3, physics 16,
+  protocol 34, world 15 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata

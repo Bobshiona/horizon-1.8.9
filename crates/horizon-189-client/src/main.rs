@@ -2,9 +2,11 @@
 //! transport and platform gates recorded in HANDOFF.md.
 #![forbid(unsafe_code)]
 
+mod chat;
 mod frame_stats;
 mod gameplay;
 mod hardness;
+mod hud;
 mod inventory;
 mod items;
 mod keyboard;
@@ -17,6 +19,7 @@ mod scene;
 mod scene_tests;
 mod skins;
 mod terrain;
+mod ui;
 
 use horizon_client_platform::is_quit_shortcut_down;
 use horizon_physics_189::player::{EYE_HEIGHT, Keys};
@@ -33,7 +36,7 @@ use winit::{
     dpi::LogicalSize,
     event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
 
@@ -60,6 +63,14 @@ struct App {
     capture: Option<std::path::PathBuf>,
     server: Option<network::Config>,
     network: Option<network::Network>,
+    chat: chat::Chat,
+    hud: hud::Hud,
+    modifiers: ModifiersState,
+    clipboard: Option<arboard::Clipboard>,
+    gui_scale: u32,
+    /// Trackpad pixels not yet worth a wheel notch.
+    wheel_pixels: f64,
+    smoke_chat: Option<String>,
 }
 
 impl App {
@@ -103,6 +114,108 @@ impl App {
             state.input.using = false;
         }
         self.publish_keys();
+    }
+
+    /// `Minecraft.updateCounter` as a continuous tick count.
+    fn tick(&self) -> f64 {
+        self.started.elapsed().as_secs_f64() * 20.0
+    }
+
+    /// Wheel motion in vanilla notches; trackpads report pixels.
+    fn notches(&mut self, delta: winit::event::MouseScrollDelta) -> i32 {
+        match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => y.signum() as i32,
+            winit::event::MouseScrollDelta::PixelDelta(p) => {
+                self.wheel_pixels += p.y;
+                let notches = (self.wheel_pixels / 24.0).trunc();
+                self.wheel_pixels -= notches * 24.0;
+                notches as i32
+            }
+        }
+    }
+
+    fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        self.clipboard.as_mut()
+    }
+
+    fn mouse_gui(&self) -> (f32, f32) {
+        self.renderer
+            .as_ref()
+            .map_or((0.0, 0.0), |r| r.layout.gui(self.cursor))
+    }
+
+    fn open_chat(&mut self, text: &str) {
+        let tick = self.tick();
+        self.chat.open_with(text, tick);
+        self.release_cursor();
+    }
+
+    fn chat_request(&mut self, request: chat::Request) {
+        let outgoing = match request {
+            chat::Request::Send { text, .. } => Some(network::Outgoing::Message(text)),
+            chat::Request::Complete(text) => Some(network::Outgoing::Complete(text)),
+            chat::Request::Copy(url) => {
+                if let Some(clipboard) = self.clipboard() {
+                    let _ = clipboard.set_text(url.clone());
+                }
+                if let Some(registry) = self.renderer.as_ref().and_then(|r| r.registry.clone()) {
+                    let tick = self.tick();
+                    self.chat.notice(
+                        &registry.gui,
+                        &format!("§7Link copied to the clipboard: {url}"),
+                        tick,
+                    );
+                }
+                None
+            }
+            chat::Request::Closed | chat::Request::None => None,
+        };
+        if let Some(outgoing) = outgoing
+            && let Some(network) = &self.network
+            && let Ok(mut state) = network.shared.lock()
+            && state.chat_outbox.len() < 64
+        {
+            state.chat_outbox.push(outgoing);
+        }
+    }
+
+    /// A key while `GuiChat` is open: Command shortcuts, then the editor.
+    fn chat_key(&mut self, key: KeyCode, typed: Option<&str>) {
+        let m = self.modifiers;
+        if m.super_key() && !m.alt_key() && !m.control_key() {
+            match key {
+                KeyCode::KeyA => self.chat.select_all(),
+                KeyCode::KeyC | KeyCode::KeyX => {
+                    let selected = self.chat.selected_text();
+                    if !selected.is_empty() {
+                        if let Some(clipboard) = self.clipboard() {
+                            let _ = clipboard.set_text(selected);
+                        }
+                        if key == KeyCode::KeyX {
+                            self.chat.insert("");
+                        }
+                    }
+                }
+                KeyCode::KeyV => {
+                    let pasted = self.clipboard().and_then(|c| c.get_text().ok());
+                    if let Some(text) = pasted {
+                        self.chat.insert(&text);
+                    }
+                }
+                _ => {}
+            }
+            if matches!(
+                key,
+                KeyCode::KeyA | KeyCode::KeyC | KeyCode::KeyX | KeyCode::KeyV
+            ) {
+                return;
+            }
+        }
+        let request = self.chat.key(key, typed, m);
+        self.chat_request(request);
     }
 
     /// Movement keys act only while the cursor is captured (no screen open).
@@ -207,6 +320,7 @@ impl ApplicationHandler for App {
                     self.assets.clone(),
                     self.server.is_some(),
                     self.view_distance,
+                    self.gui_scale,
                 ))
                 .map_err(|error| error.to_string())
             });
@@ -255,6 +369,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Occluded(true) => self.release_cursor(),
             WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
                 self.keyboard.modifiers(modifiers.state());
                 self.publish_keys();
             }
@@ -267,6 +382,36 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let PhysicalKey::Code(key) = event.physical_key {
+                    let pressed = event.state == ElementState::Pressed;
+                    if self.chat.open {
+                        if !pressed {
+                            self.keyboard.release(key);
+                        } else if key == KeyCode::KeyQ
+                            && self.modifiers.super_key()
+                            && !self.modifiers.shift_key()
+                        {
+                            event_loop.exit();
+                        } else {
+                            self.chat_key(key, event.text.as_deref());
+                        }
+                        return;
+                    }
+                    let screen = self.network.as_ref().is_some_and(|network| {
+                        network
+                            .shared
+                            .lock()
+                            .is_ok_and(|s| s.inventory.open || s.vitals.health <= 0.0)
+                    });
+                    if pressed
+                        && !event.repeat
+                        && !screen
+                        && self.network.is_some()
+                        && matches!(key, KeyCode::KeyT | KeyCode::Slash)
+                        && !self.modifiers.super_key()
+                    {
+                        self.open_chat(if key == KeyCode::Slash { "/" } else { "" });
+                        return;
+                    }
                     if event.state == ElementState::Pressed {
                         self.keyboard.press(key, event.repeat);
                     } else {
@@ -321,11 +466,15 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => self.cursor = (position.x, position.y),
+            WindowEvent::MouseWheel { delta, .. } if self.chat.open => {
+                let notches = self.notches(delta);
+                if notches != 0 {
+                    self.chat
+                        .wheel(f64::from(notches), self.modifiers.shift_key());
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } if self.captured => {
-                let amount = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y),
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
-                };
+                let amount = f64::from(self.notches(delta));
                 if let Some(network) = &self.network
                     && let Ok(mut state) = network.shared.lock()
                     && amount != 0.0
@@ -356,26 +505,46 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let pressed = button_state == ElementState::Pressed;
+                let mouse = self.mouse_gui();
+                if self.chat.open {
+                    if pressed
+                        && button == MouseButton::Left
+                        && let Some(registry) =
+                            self.renderer.as_ref().and_then(|r| r.registry.clone())
+                    {
+                        let height = self.renderer.as_ref().map_or(0.0, |r| r.layout.height);
+                        let request = self.chat.click(&registry.gui, height, mouse);
+                        self.chat_request(request);
+                    }
+                    return;
+                }
+                let layout = self.renderer.as_ref().map(|r| r.layout);
+                let tick = self.tick();
+                let death = layout.and_then(|layout| self.hud.death_button_at(layout, mouse, tick));
+                if pressed
+                    && button == MouseButton::Left
+                    && death == Some(hud::DeathButton::TitleScreen)
+                {
+                    event_loop.exit();
+                    return;
+                }
                 let mut open = false;
                 if let Some(network) = &self.network
                     && let Ok(mut state) = network.shared.lock()
                 {
                     open = state.inventory.open || state.vitals.health <= 0.0;
                     if open && pressed {
-                        if let Some(renderer) = &self.renderer {
-                            let size = renderer.window.inner_size();
-                            let scale = 300.0 / f64::from(size.height.max(1));
-                            let x = (self.cursor.0 - f64::from(size.width) / 2.0) * scale;
-                            let y = (self.cursor.1 - f64::from(size.height) / 2.0) * scale;
+                        if let Some(layout) = layout {
+                            let x = mouse.0 - (layout.width / 2.0).floor();
+                            let y = mouse.1 - (layout.height / 2.0).floor();
                             if state.vitals.health <= 0.0 {
                                 if button == MouseButton::Left
-                                    && (-45.0..45.0).contains(&(x as f32))
-                                    && (-10.0..10.0).contains(&(y as f32))
+                                    && death == Some(hud::DeathButton::Respawn)
                                     && state.input.actions.len() < 128
                                 {
                                     state.input.actions.push_back(gameplay::Action::Respawn);
                                 }
-                            } else if let Some(slot) = state.inventory.slot_at(x as f32, y as f32)
+                            } else if let Some(slot) = state.inventory.slot_at(x, y)
                                 && state.input.actions.len() < 128
                             {
                                 state.input.actions.push_back(gameplay::Action::Click {
@@ -427,7 +596,8 @@ impl ApplicationHandler for App {
                             .ok()
                             .map(|s| s.inventory.open || s.vitals.health <= 0.0)
                     })
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    || self.chat.open;
                 if menu && self.captured {
                     self.release_cursor();
                 }
@@ -437,19 +607,70 @@ impl ApplicationHandler for App {
                 self.menu_open = menu;
                 self.apply_look();
                 let pose = self.camera_pose();
+                let tick = self.tick();
+                let mouse = self.mouse_gui();
+                let snapshot = self.network.as_ref().and_then(|n| {
+                    n.shared.lock().ok().map(|mut s| {
+                        (
+                            s.inventory.clone(),
+                            s.swing,
+                            s.using_item,
+                            s.vitals,
+                            s.game_mode,
+                            s.experience,
+                            s.hardcore,
+                            std::mem::take(&mut s.chat_inbox),
+                        )
+                    })
+                });
+                let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
+                if let (Some(snapshot), Some(registry)) = (&snapshot, &registry) {
+                    for event in &snapshot.7 {
+                        match event {
+                            network::ChatEvent::Message(message) => {
+                                self.chat.receive(&registry.gui, message, tick);
+                            }
+                            network::ChatEvent::ActionBar(text) => {
+                                self.hud.set_action_bar(text.clone(), tick);
+                            }
+                            network::ChatEvent::Completions(matches) => {
+                                if let Some(listing) = self.chat.completions(matches.clone()) {
+                                    self.chat.notice(&registry.gui, &listing, tick);
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(renderer) = &mut self.renderer {
                     if let Some((pose, partial, entities)) = pose {
                         renderer.set_pose(pose);
-                        renderer.set_cursor(self.cursor);
-                        let ui = self.network.as_ref().and_then(|n| {
-                            n.shared
-                                .lock()
-                                .ok()
-                                .map(|s| (s.inventory.clone(), s.swing, s.using_item, s.vitals))
-                        });
+                        let ui = snapshot.as_ref().map(|s| (s.0.clone(), s.1, s.2, s.3));
                         if let Err(error) = renderer.set_entities(&entities, partial, ui.as_ref()) {
                             self.fail(event_loop, error);
                             return;
+                        }
+                        if let Some(snapshot) = &snapshot {
+                            let (hud, chat) = (&mut self.hud, &mut self.chat);
+                            let result = renderer.draw_ui(tick, |canvas, registry| {
+                                let frame = hud::Frame {
+                                    view: &snapshot.0,
+                                    vitals: snapshot.3,
+                                    game_mode: snapshot.4,
+                                    hardcore: snapshot.6,
+                                    experience: snapshot.5,
+                                    mouse,
+                                    tick,
+                                };
+                                hud.draw(canvas, registry, &frame);
+                                chat.draw(canvas, tick, mouse);
+                                if snapshot.0.open && snapshot.3.health > 0.0 {
+                                    hud::inventory(canvas, registry, &snapshot.0, mouse);
+                                }
+                            });
+                            if let Err(error) = result {
+                                self.fail(event_loop, error);
+                                return;
+                            }
                         }
                     }
                     let last = self
@@ -538,6 +759,15 @@ impl ApplicationHandler for App {
             self.auto_captured = true;
             self.capture_cursor();
         }
+        if positioned && let Some(text) = self.smoke_chat.take() {
+            self.open_chat("");
+            for c in text.chars() {
+                self.chat_key(KeyCode::KeyA, Some(&c.to_string()));
+            }
+            self.chat_key(KeyCode::Enter, None);
+            self.open_chat("/");
+            eprintln!("SMOKE_CHAT_SENT chars={}", text.chars().count());
+        }
         if let Some(error) = self
             .network
             .as_ref()
@@ -608,6 +838,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         capture: options.capture,
         server,
         network: None,
+        chat: chat::Chat::default(),
+        hud: hud::Hud::default(),
+        modifiers: ModifiersState::empty(),
+        clipboard: None,
+        gui_scale: options.gui_scale,
+        wheel_pixels: 0.0,
+        smoke_chat: options.smoke_chat,
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {

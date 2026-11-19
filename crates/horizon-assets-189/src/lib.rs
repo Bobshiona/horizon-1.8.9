@@ -69,6 +69,13 @@ impl Assets {
         Ok(bake_model(&self.models.resolve(&name)?)?)
     }
 
+    /// Raw bytes of one jar resource, such as `font/glyph_sizes.bin`.
+    pub fn read(&self, path: &str, limit: u64) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(self
+            .source
+            .read_limited(&format!("assets/minecraft/{path}"), limit)?)
+    }
+
     pub fn language(&self) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
         let bytes = self
             .source

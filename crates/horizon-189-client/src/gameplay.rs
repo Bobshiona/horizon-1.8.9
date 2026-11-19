@@ -16,8 +16,13 @@ pub struct Vitals {
     pub health: f32,
     pub max_health: f32,
     pub food: i32,
+    pub saturation: f32,
     pub armor: u8,
     pub absorption: f32,
+    /// Active potion effects as a bit per effect ID (`hud::POISON` etc.).
+    pub effects: u32,
+    /// `EntityPlayer.getScore`, metadata index 18.
+    pub score: i32,
 }
 impl Default for Vitals {
     fn default() -> Self {
@@ -25,8 +30,11 @@ impl Default for Vitals {
             health: 20.0,
             max_health: 20.0,
             food: 20,
+            saturation: 5.0,
             armor: 0,
             absorption: 0.0,
+            effects: 0,
+            score: 0,
         }
     }
 }

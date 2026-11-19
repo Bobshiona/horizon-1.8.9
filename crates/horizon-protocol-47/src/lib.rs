@@ -2,6 +2,7 @@
 //! Modern Horizon registries and packet layouts stay outside this crate.
 #![forbid(unsafe_code)]
 
+pub mod chat;
 mod cipher;
 pub mod entities;
 mod frame;
@@ -14,6 +15,7 @@ pub mod player;
 pub mod player_list;
 #[cfg(test)]
 mod tests;
+pub mod text;
 
 pub use frame::{Connection, MAX_FRAME, MAX_UNCOMPRESSED, PacketReader, PacketWriter};
 use std::io::{self, Read};

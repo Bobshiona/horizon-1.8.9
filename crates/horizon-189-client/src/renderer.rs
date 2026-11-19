@@ -24,7 +24,9 @@ pub struct Renderer {
     view_distance: u8,
     pose: PositionLook,
     entity_vertices: Vec<crate::terrain::Vertex>,
-    cursor: [f32; 2],
+    ui: Option<crate::ui::Pass>,
+    pub layout: crate::ui::Layout,
+    gui_scale: u32,
     offscreen: Option<wgpu::Texture>,
     pub offscreen_frames: u64,
     skin_loader: crate::skins::Loader,
@@ -38,6 +40,7 @@ impl Renderer {
         assets: Option<PathBuf>,
         world_view: bool,
         view_distance: u8,
+        gui_scale: u32,
     ) -> Result<Self, Box<dyn Error>> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         // Enforce Metal explicitly. Environment backend overrides cannot select
@@ -88,6 +91,7 @@ impl Renderer {
         }
         config.present_mode = wgpu::PresentMode::Fifo;
         config.desired_maximum_frame_latency = 2;
+        Self::add_interface_view(&mut config);
         let registry = assets
             .as_ref()
             .map(|jar| Registry::open(jar).map(Arc::new))
@@ -105,6 +109,13 @@ impl Renderer {
                 )
             })
             .transpose()?;
+        let ui = Self::interface(
+            &device,
+            &queue,
+            &config,
+            registry.as_deref(),
+            scene.as_ref(),
+        );
         let mut renderer = Self {
             window,
             instance,
@@ -120,7 +131,9 @@ impl Renderer {
             view_distance,
             pose: PositionLook::default(),
             entity_vertices: Vec::new(),
-            cursor: [0.0; 2],
+            ui,
+            layout: crate::ui::Layout::new((size.width, size.height), 1.0, gui_scale),
+            gui_scale,
             offscreen: None,
             offscreen_frames: 0,
             skin_loader: crate::skins::Loader::new()?,
@@ -129,6 +142,59 @@ impl Renderer {
         };
         renderer.resize(size);
         Ok(renderer)
+    }
+
+    /// The interface draws in gamma space through a non-sRGB view.
+    fn add_interface_view(config: &mut wgpu::SurfaceConfiguration) {
+        let plain = config.format.remove_srgb_suffix();
+        config.view_formats = if plain == config.format {
+            Vec::new()
+        } else {
+            vec![plain]
+        };
+    }
+
+    fn interface(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+        registry: Option<&Registry>,
+        scene: Option<&Scene>,
+    ) -> Option<crate::ui::Pass> {
+        Some(crate::ui::Pass::new(
+            device,
+            queue,
+            config.format.remove_srgb_suffix(),
+            &registry?.gui,
+            scene?.entity_texture(),
+        ))
+    }
+
+    /// Build and upload this frame's interface.
+    pub fn draw_ui(
+        &mut self,
+        tick: f64,
+        draw: impl FnOnce(&mut crate::ui::Canvas<'_>, &Registry),
+    ) -> Result<(), Box<dyn Error>> {
+        let (Some(registry), Some(pass), Some(scene)) =
+            (self.registry.clone(), self.ui.as_mut(), self.scene.as_ref())
+        else {
+            return Ok(());
+        };
+        let mut canvas =
+            crate::ui::Canvas::new(&registry.gui, self.layout, tick as u64, &pass.pages);
+        draw(&mut canvas, &registry);
+        let (vertices, inverted, missing) = canvas.finish();
+        pass.upload(
+            &self.device,
+            &self.queue,
+            self.layout,
+            scene.entity_layers(),
+            &inverted,
+            &vertices,
+        )?;
+        pass.load_pages(&self.queue, &registry.gui, &missing);
+        Ok(())
     }
 
     /// Upload one rebuilt column from the mesher thread.
@@ -148,14 +214,6 @@ impl Renderer {
         if let Some(scene) = &mut self.scene {
             scene.set_camera(&self.queue, &self.config, pose);
         }
-    }
-
-    pub fn set_cursor(&mut self, position: (f64, f64)) {
-        let scale = 300.0 / self.config.height.max(1) as f64;
-        self.cursor = [
-            ((position.0 - self.config.width as f64 / 2.0) * scale) as f32,
-            ((position.1 - self.config.height as f64 / 2.0) * scale) as f32,
-        ];
     }
 
     /// Rebuild moving-entity geometry at this frame's partial tick.
@@ -242,8 +300,9 @@ impl Renderer {
         }
         if let Some((view, swing, using_item, vitals)) = ui
             && let Some(registry) = &self.registry
+            && vitals.health > 0.0
         {
-            crate::models::hud(
+            crate::models::first_person(
                 &mut vertices,
                 view,
                 *swing,
@@ -253,8 +312,6 @@ impl Renderer {
                 scene.origin(),
                 registry,
                 self.config.width as f32 / self.config.height.max(1) as f32,
-                self.cursor,
-                *vitals,
             );
         }
         let result = scene.set_entities(&self.device, &self.queue, &vertices);
@@ -277,6 +334,11 @@ impl Renderer {
         if self.drawable {
             self.config.width = size.width;
             self.config.height = size.height;
+            self.layout = crate::ui::Layout::new(
+                (size.width, size.height),
+                self.window.scale_factor(),
+                self.gui_scale,
+            );
             self.surface.configure(&self.device, &self.config);
             if let Some(scene) = &mut self.scene {
                 scene.resize(&self.device, &self.queue, &self.config);
@@ -384,6 +446,7 @@ impl Renderer {
                     .ok_or("Recreated surface has no supported configuration")?;
                 self.config.present_mode = wgpu::PresentMode::Fifo;
                 self.config.desired_maximum_frame_latency = 2;
+                Self::add_interface_view(&mut self.config);
                 if self.config.format != previous_format
                     && let Some(registry) = self.registry.clone()
                 {
@@ -407,6 +470,13 @@ impl Renderer {
                         }
                     }
                     self.scene = Some(scene);
+                    self.ui = Self::interface(
+                        &self.device,
+                        &self.queue,
+                        &self.config,
+                        self.registry.as_deref(),
+                        self.scene.as_ref(),
+                    );
                 }
                 self.resize(self.window.inner_size());
                 return Ok(false);
@@ -435,7 +505,7 @@ impl Renderer {
                     dimension: wgpu::TextureDimension::D2,
                     format: self.config.format,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
+                    view_formats: &self.config.view_formats,
                 })
             });
             self.offscreen
@@ -481,6 +551,26 @@ impl Renderer {
             if let Some(scene) = &self.scene {
                 scene.draw(&mut pass, &self.config);
             }
+        }
+        if let Some(ui) = &self.ui {
+            let plain = texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(self.config.format.remove_srgb_suffix()),
+                ..Default::default()
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Legacy interface"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &plain,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            ui.draw(&mut pass);
         }
         self.queue.submit([encoder.finish()]);
         if let Some(path) = capture {
