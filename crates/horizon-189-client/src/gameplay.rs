@@ -45,9 +45,18 @@ pub enum Action {
     Attack,
     Use,
     Select(u8),
+    /// Q in the world: drop one, or the stack with Control.
+    Drop {
+        all: bool,
+    },
     OpenInventory,
     CloseInventory,
-    Click { slot: i16, right: bool },
+    /// C0E: mode 0 pick up, 1 shift-click, 2 number key, 4 drop.
+    Click {
+        slot: i16,
+        mode: u8,
+        button: u8,
+    },
 }
 
 #[derive(Default)]
@@ -143,9 +152,16 @@ impl Controller {
                     writer.send(&[0x16, 2])?;
                 }
                 Action::CloseInventory => writer.send(&inventory.close())?,
-                Action::Click { slot, right } => {
-                    if let Some(packet) = inventory.click(slot, right)? {
+                Action::Click { slot, mode, button } => {
+                    if let Some(packet) = inventory.click_mode(slot, mode, button)? {
                         writer.send(&packet)?;
+                    }
+                }
+                Action::Drop { all } if !inventory.view.open && game_mode != 3 => {
+                    // EntityPlayerSP.dropOneItem: DROP_ALL_ITEMS or DROP_ITEM
+                    // at the origin, facing down.
+                    if inventory.drop_held(all) {
+                        writer.send(&packet::dig(if all { 3 } else { 4 }, [0; 3], 0)?)?;
                     }
                 }
                 Action::Attack if !inventory.view.open && self.miss_delay == 0 && !self.using => {
@@ -691,7 +707,8 @@ mod tests {
             assert!(s.inventory.open);
             s.input.actions.push_back(Action::Click {
                 slot: 0,
-                right: false,
+                mode: 0,
+                button: 0,
             });
         }
         std::thread::sleep(Duration::from_millis(250));

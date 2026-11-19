@@ -21,6 +21,8 @@ pub struct Options {
     pub smoke_chat: Option<String>,
     /// Validation only: hold the player-list key for the whole smoke run.
     pub smoke_tab: bool,
+    /// Validation only: open the inventory and hover the first hotbar slot.
+    pub smoke_inventory: bool,
     pub help: bool,
     login: bool,
     offline: bool,
@@ -53,6 +55,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --capture PNG                 With --smoke-frames, save the final frame\n\
     --smoke-chat TEXT             With --smoke-frames, send TEXT through the chat screen\n\
     --smoke-tab                   With --smoke-frames, hold the player-list key\n\
+    --smoke-inventory             With --smoke-frames, open the inventory over a slot\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
     --render-distance N           View distance in chunks, 2-16 (default 8)\n\
     --gui-scale N                 Interface scale 0-4 (0 automatic, as vanilla)\n\
@@ -98,6 +101,7 @@ impl Options {
                 }
                 "--smoke-chat" => options.smoke_chat = Some(value()?),
                 "--smoke-tab" => options.smoke_tab = true,
+                "--smoke-inventory" => options.smoke_inventory = true,
                 "--gui-scale" => {
                     let scale: u32 = value()?.parse()?;
                     if scale > 4 {
@@ -123,8 +127,8 @@ impl Options {
         {
             return Err("--smoke-chat requires --smoke-frames and --server".into());
         }
-        if options.smoke_tab && options.smoke_frames.is_none() {
-            return Err("--smoke-tab requires --smoke-frames".into());
+        if (options.smoke_tab || options.smoke_inventory) && options.smoke_frames.is_none() {
+            return Err("--smoke-tab and --smoke-inventory require --smoke-frames".into());
         }
         if options.capture.is_some() && options.smoke_frames.is_none() {
             return Err("--capture requires --smoke-frames".into());

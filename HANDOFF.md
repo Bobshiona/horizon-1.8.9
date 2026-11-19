@@ -105,13 +105,28 @@ invisible armour-stand hologram. `--smoke-tab` holds the list key for validation
 world labels skip unicode glyphs and bold, lack vanilla's see-through background, and `hearts` list
 objectives show numbers.
 
-Next (in order): item counts, durability and tooltips with shift-click, number-key swaps and Q drop;
-dropped items and projectiles; 1.8.9 first-person hand/item transforms and block-hit; Keychain-backed
+Inventory checkpoint. Windows know their `GuiContainer` (player, chest of any rows, hopper,
+dispenser/dropper, crafting table, furnace, and a chest-style fallback) with vanilla sheets, slot
+coordinates, `getSlotAtPosition` hit areas, titles (`getUnformattedText`) and labels. Clicks follow
+`slotClick`: pick up, shift-click (`ContainerPlayer`/`ContainerChest.transferStackInSlot` with
+`mergeItemStack` and the retry loop), number keys over a slot, Q/Control+Q drop over a slot, and -999
+outside the window; each is predicted locally because accepted clicks are not resent. Windows without a
+predictor send no clicked item so the server resends them. Q in the world sends C07 drop actions. Item
+data comes from `item_data.rs` (translation keys, durability, stack sizes queried from the official
+registry; names translate from the owned jar); `stack_limit` now reads it, which fixed records stacking
+to 64. `tooltip.rs` ports `getDisplayName`, rarity colours and `getTooltip` (enchantments, stored
+enchantments, custom potion effects, dyed, lore, attack damage with Sharpness, attribute modifiers,
+unbreakable, `HideFlags`). Slots draw durability bars and two-layer potion and leather icons; the hotbar
+shows the 40-tick item name. `--smoke-inventory` opens the inventory for a capture. Known gaps: block
+items draw their first face flat, no player model in the inventory, no drag-splitting or double-click
+collect, furnace/brewing progress not drawn, and other window types have no shift-click prediction.
+
+Next (in order): dropped items and projectiles; 1.8.9 first-person hand/item transforms and block-hit; Keychain-backed
 refresh-token caching; a release build measured under the 80-player lobby.
 
 ## 2. Verified State
 
-- 99 scoped tests pass with `--include-ignored` (client 27, login CLI 2, assets 1, auth 3, physics 16,
+- 102 scoped tests pass with `--include-ignored` (client 30, login CLI 2, assets 1, auth 3, physics 16,
   protocol 35, world 15 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.

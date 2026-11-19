@@ -717,7 +717,10 @@ fn run_actor(
                         inventory.view.selected = crate::inventory::server_hotbar(fields)?;
                     }
                     play::Packet::Other { id: 0x2d, fields } => {
-                        inventory.open_packet(fields)?;
+                        let title = |json: &str| {
+                            horizon_protocol_47::text::format(json, &translate).unformatted
+                        };
+                        inventory.open_packet(fields, &title)?;
                     }
                     play::Packet::Other { id: 0x2e, fields } => {
                         if fields.first() == Some(&inventory.view.window) {

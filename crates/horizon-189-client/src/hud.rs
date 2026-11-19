@@ -56,6 +56,9 @@ pub struct Hud {
     title_times: Option<(i32, i32, i32)>,
     /// The tick `titlesTimer` reaches zero.
     title_until: f64,
+    /// `highlightingItemStack` (as id, damage, name) and when its name
+    /// started showing above the hotbar.
+    highlight: Option<((i16, i16, String), f64)>,
 }
 
 /// A `GuiGameOver` button.
@@ -238,6 +241,7 @@ impl Hud {
         }
         if frame.game_mode != 3 {
             self.hotbar(canvas, registry, frame);
+            self.draw_highlight(canvas, frame, survival);
         }
         if survival {
             self.stats(canvas, frame, tick);
@@ -286,6 +290,50 @@ impl Hud {
             if let Some(item) = frame.view.slots.get(base + slot).and_then(Option::as_ref) {
                 item_slot(canvas, registry, item, x, y);
             }
+        }
+    }
+
+    /// `GuiIngame.updateTick`'s highlighted stack and the name it shows for
+    /// 40 ticks above the hotbar, fading over the last ten.
+    fn draw_highlight(&mut self, canvas: &mut Canvas<'_>, frame: &Frame<'_>, survival: bool) {
+        let base = if frame.view.window == 0 {
+            36
+        } else {
+            frame.view.slots.len().saturating_sub(9)
+        };
+        let held = frame
+            .view
+            .slots
+            .get(base + usize::from(frame.view.selected))
+            .and_then(Option::as_ref);
+        let Some(item) = held else {
+            self.highlight = None;
+            return;
+        };
+        let mut name = crate::tooltip::display_name(item, canvas.res);
+        if crate::tooltip::custom_name(item).is_some() {
+            name = format!("§o{name}");
+        }
+        let damageable = crate::tooltip::max_damage(item) > 0;
+        let key = (item.id, if damageable { 0 } else { item.damage }, name);
+        let same = self
+            .highlight
+            .as_ref()
+            .is_some_and(|(previous, _)| *previous == key);
+        if !same {
+            self.highlight = Some((key, frame.tick));
+        }
+        let Some(((_, _, name), since)) = &self.highlight else {
+            return;
+        };
+        let left = 40.0 - (frame.tick - since);
+        let alpha = ((left * 256.0 / 10.0) as i32).min(255);
+        if alpha > 0 {
+            let (w, h) = (canvas.layout.width, canvas.layout.height);
+            let x = ((w as i32 - canvas.res.width(name)) / 2) as f32;
+            let y = h - 59.0 + if survival { 0.0 } else { 14.0 };
+            let name = name.clone();
+            canvas.text(&name, x, y, 0x00FF_FFFF | (alpha as u32) << 24, true);
         }
     }
 
@@ -548,11 +596,56 @@ pub fn item_slot(
     x: f32,
     y: f32,
 ) {
-    match registry.item_layer(item) {
-        Some(layer) => canvas.item_icon(layer, x, y),
-        None => {
-            let id = item.id.to_string();
-            canvas.text(&id, x + 1.0, y + 4.0, 0xFFFF_FFFF, true);
+    // Two-layer sprites: the potion liquid and leather dye are tinted.
+    let tint = |color: u32| crate::ui::argb(color | 0xFF00_0000);
+    let layered = match item.id {
+        373 => {
+            let bottle = if item.damage & 16384 != 0 {
+                "potion_bottle_splash"
+            } else {
+                "potion_bottle_drinkable"
+            };
+            Some((
+                "potion_overlay",
+                tint(crate::tooltip::potion_color(item)),
+                bottle,
+            ))
+        }
+        298..=301 => {
+            let index = (item.id - 298) as usize;
+            Some((
+                [
+                    "leather_helmet",
+                    "leather_chestplate",
+                    "leather_leggings",
+                    "leather_boots",
+                ][index],
+                tint(crate::tooltip::leather_color(item)),
+                [
+                    "leather_helmet_overlay",
+                    "leather_chestplate_overlay",
+                    "leather_leggings_overlay",
+                    "leather_boots_overlay",
+                ][index],
+            ))
+        }
+        _ => None,
+    };
+    let drawn = layered.is_some_and(|(under, under_tint, over)| {
+        let (Some(under), Some(over)) = (registry.sprite(under), registry.sprite(over)) else {
+            return false;
+        };
+        canvas.item_icon_tinted(under, x, y, under_tint);
+        canvas.item_icon(over, x, y);
+        true
+    });
+    if !drawn {
+        match registry.item_layer(item) {
+            Some(layer) => canvas.item_icon(layer, x, y),
+            None => {
+                let id = item.id.to_string();
+                canvas.text(&id, x + 1.0, y + 4.0, 0xFFFF_FFFF, true);
+            }
         }
     }
     if item.count != 1 {
@@ -564,28 +657,108 @@ pub fn item_slot(
         let width = canvas.res.width(&count) as f32;
         canvas.text(&count, x + 17.0 - width, y + 9.0, 0xFFFF_FFFF, true);
     }
+    // The durability bar: green to red, black behind.
+    let max = crate::tooltip::max_damage(item);
+    if max > 0 && item.damage > 0 {
+        let health = f64::from(item.damage) / f64::from(max);
+        let length = (13.0 - health * 13.0).round().max(0.0) as f32;
+        let green = (255.0 - health * 255.0).round().clamp(0.0, 255.0) as u32;
+        canvas.rect(x + 2.0, y + 13.0, x + 15.0, y + 15.0, 0xFF00_0000);
+        canvas.rect(
+            x + 2.0,
+            y + 13.0,
+            x + 14.0,
+            y + 14.0,
+            0xFF00_0000 | ((255 - green) / 4) << 16 | 64 << 8,
+        );
+        canvas.rect(
+            x + 2.0,
+            y + 13.0,
+            x + 2.0 + length,
+            y + 14.0,
+            0xFF00_0000 | (255 - green) << 16 | green << 8,
+        );
+    }
 }
 
-/// The open window: `drawDefaultBackground`, slots, hover highlight and the
-/// carried stack. Slot positions are `View::layout` offsets from the centre.
+/// `GuiContainer.guiLeft`/`guiTop` for the open window.
+fn origin(view: &View, layout: Layout) -> (f32, f32, crate::inventory::Screen) {
+    let screen = view.screen();
+    let left = ((layout.width as i32 - screen.size.0 as i32) / 2) as f32;
+    let top = ((layout.height as i32 - screen.size.1 as i32) / 2) as f32;
+    (left, top, screen)
+}
+
+/// The slot under the mouse in the open window.
+pub fn hovered_slot(view: &View, layout: Layout, mouse: (f32, f32)) -> Option<i16> {
+    if !view.open {
+        return None;
+    }
+    let (left, top, _) = origin(view, layout);
+    view.slot_at(mouse.0 - left, mouse.1 - top)
+}
+
+/// Whether the mouse is over the window's background, where clicks do not
+/// drop the carried stack.
+pub fn inside_window(view: &View, layout: Layout, mouse: (f32, f32)) -> bool {
+    let (left, top, screen) = origin(view, layout);
+    mouse.0 >= left
+        && mouse.1 >= top
+        && mouse.0 < left + screen.size.0
+        && mouse.1 < top + screen.size.1
+}
+
+/// `GuiContainer.drawScreen`: background, sheet, slots with the hover
+/// highlight, labels, the carried stack, then the hovered item's tooltip.
 pub fn inventory(canvas: &mut Canvas<'_>, registry: &Registry, view: &View, mouse: (f32, f32)) {
     let (w, h) = (canvas.layout.width, canvas.layout.height);
     canvas.gradient(0.0, 0.0, w, h, 0xC010_1010, 0xD010_1010);
-    let (cx, cy) = ((w / 2.0).floor(), (h / 2.0).floor());
-    for (slot, x, y) in view.layout() {
-        let (x, y) = (cx + x, cy + y);
-        canvas.rect(x - 1.0, y - 1.0, x + 17.0, y + 17.0, 0xFF37_3737);
-        canvas.rect(x, y, x + 17.0, y + 17.0, 0xFFFF_FFFF);
-        canvas.rect(x, y, x + 16.0, y + 16.0, 0xFF8B_8B8B);
+    let (left, top, screen) = origin(view, canvas.layout);
+    for [x, y, u, v, pw, ph] in &screen.parts {
+        canvas.sprite(screen.sheet, left + x, top + y, *u, *v, *pw, *ph, [1.0; 4]);
+    }
+    let hovered = view.slot_at(mouse.0 - left, mouse.1 - top);
+    for &(slot, x, y) in &screen.slots {
+        let (x, y) = (left + x, top + y);
         if let Some(item) = view.slots.get(slot as usize).and_then(Option::as_ref) {
             item_slot(canvas, registry, item, x, y);
         }
-        if mouse.0 >= x - 1.0 && mouse.1 >= y - 1.0 && mouse.0 < x + 17.0 && mouse.1 < y + 17.0 {
+        if hovered == Some(slot) {
             canvas.rect(x, y, x + 16.0, y + 16.0, 0x80FF_FFFF);
         }
     }
-    if let Some(item) = &view.cursor {
-        item_slot(canvas, registry, item, mouse.0 - 8.0, mouse.1 - 8.0);
+    let res = canvas.res;
+    let title = if view.window == 0 {
+        res.translate("container.crafting").to_owned()
+    } else {
+        view.title.clone()
+    };
+    let title_x = screen
+        .title
+        .0
+        .unwrap_or_else(|| ((screen.size.0 as i32) / 2 - res.width(&title) / 2) as f32);
+    canvas.text(
+        &title,
+        left + title_x,
+        top + screen.title.1,
+        0xFF40_4040,
+        false,
+    );
+    if let Some((x, y)) = screen.inventory_label {
+        let label = res.translate("container.inventory").to_owned();
+        canvas.text(&label, left + x, top + y, 0xFF40_4040, false);
+    }
+    match &view.cursor {
+        Some(item) => item_slot(canvas, registry, item, mouse.0 - 8.0, mouse.1 - 8.0),
+        None => {
+            if let Some(item) = hovered
+                .and_then(|slot| view.slots.get(slot as usize))
+                .and_then(Option::as_ref)
+            {
+                let lines = crate::tooltip::lines(item, res);
+                canvas.tooltip(&lines, mouse);
+            }
+        }
     }
 }
 

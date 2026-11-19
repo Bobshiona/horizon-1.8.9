@@ -97,12 +97,28 @@ pub fn click(
     transaction: i16,
     original: Option<&Item>,
 ) -> io::Result<Vec<u8>> {
+    click_mode(window, slot, u8::from(right), 0, transaction, original)
+}
+
+/// C0E Click Window with any mode: 0 pick up, 1 shift-click, 2 number key,
+/// 4 drop; `clicked` is what the client's own `slotClick` returned.
+pub fn click_mode(
+    window: u8,
+    slot: i16,
+    button: u8,
+    mode: u8,
+    transaction: i16,
+    clicked: Option<&Item>,
+) -> io::Result<Vec<u8>> {
+    if mode > 6 {
+        return Err(invalid("Invalid click mode"));
+    }
     let mut out = vec![0x0e, window];
     out.extend(slot.to_be_bytes());
-    out.push(u8::from(right));
+    out.push(button);
     out.extend(transaction.to_be_bytes());
-    out.push(0);
-    write_slot(&mut out, original)?;
+    out.push(mode);
+    write_slot(&mut out, clicked)?;
     Ok(out)
 }
 

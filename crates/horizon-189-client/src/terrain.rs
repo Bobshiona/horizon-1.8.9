@@ -70,8 +70,24 @@ pub struct Registry {
     /// Interface sheets, fonts and language.
     pub gui: crate::ui::Resources,
     item_layers: HashMap<i16, u32>,
+    overlays: HashMap<&'static str, u32>,
     block_layers: Vec<u32>,
 }
+
+/// Item sprites drawn in two tinted layers.
+const OVERLAY_SPRITES: [&str; 11] = [
+    "potion_bottle_drinkable",
+    "potion_bottle_splash",
+    "potion_overlay",
+    "leather_helmet",
+    "leather_chestplate",
+    "leather_leggings",
+    "leather_boots",
+    "leather_helmet_overlay",
+    "leather_chestplate_overlay",
+    "leather_leggings_overlay",
+    "leather_boots_overlay",
+];
 
 fn direction(name: &str) -> [i32; 3] {
     match name {
@@ -353,6 +369,26 @@ impl Registry {
                 });
             }
         }
+        // Two-layer item sprites the interface tints: potions and leather.
+        let mut overlays = HashMap::new();
+        for name in OVERLAY_SPRITES {
+            if let Ok(image) = assets.texture(&format!("minecraft:items/{name}")) {
+                let w = image.width.min(size as u32) as usize;
+                let h = image.height.min(size as u32) as usize;
+                let mut canvas = vec![0u8; size * size * 4];
+                for y in 0..h {
+                    let start = y * image.width as usize * 4;
+                    canvas[y * size * 4..y * size * 4 + w * 4]
+                        .copy_from_slice(&image.rgba[start..start + w * 4]);
+                }
+                overlays.insert(name, entity_textures.len() as u32);
+                entity_textures.push(Texture {
+                    width: size as u32,
+                    height: size as u32,
+                    rgba: canvas,
+                });
+            }
+        }
         let grass = colormap("minecraft:colormap/grass")?;
         let foliage = colormap("minecraft:colormap/foliage")?;
         let water = layer_for("minecraft:blocks/water_still", &mut textures);
@@ -375,6 +411,7 @@ impl Registry {
             glyphs,
             gui,
             item_layers,
+            overlays,
             block_layers,
         };
         let empty = World::default();
@@ -429,6 +466,11 @@ impl Registry {
             return self.static_states[usize::from(state.0)];
         }
         variant(world, pos, state).map(|found| self.lookup(&found))
+    }
+
+    /// A named item sprite for layered icons (see `OVERLAY_SPRITES`).
+    pub fn sprite(&self, name: &str) -> Option<u32> {
+        self.overlays.get(name).copied()
     }
 
     pub fn item_layer(&self, item: &horizon_protocol_47::nbt::Item) -> Option<u32> {

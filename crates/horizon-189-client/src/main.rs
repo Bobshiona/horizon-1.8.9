@@ -8,6 +8,7 @@ mod gameplay;
 mod hardness;
 mod hud;
 mod inventory;
+mod item_data;
 mod items;
 mod keyboard;
 mod models;
@@ -20,6 +21,7 @@ mod scene_tests;
 mod scoreboard;
 mod skins;
 mod terrain;
+mod tooltip;
 mod ui;
 
 use horizon_client_platform::is_quit_shortcut_down;
@@ -75,6 +77,7 @@ struct App {
     /// The player-list key, held with no screen open.
     tab_held: bool,
     smoke_tab: bool,
+    smoke_inventory: bool,
 }
 
 /// What one frame reads from the simulation, under one lock.
@@ -456,8 +459,38 @@ impl ApplicationHandler for App {
                                 } else {
                                     None
                                 }
+                            } else if state.inventory.open {
+                                // GuiContainer.keyTyped: hotbar keys and Q act
+                                // on the hovered slot.
+                                let hovered = self.renderer.as_ref().and_then(|r| {
+                                    hud::hovered_slot(&state.inventory, r.layout, self.mouse_gui())
+                                });
+                                let digit = hotbar_digit(key);
+                                match (key, hovered, digit) {
+                                    (KeyCode::KeyE | KeyCode::Escape, _, _) => {
+                                        Some(Action::CloseInventory)
+                                    }
+                                    (_, Some(slot), Some(button))
+                                        if state.inventory.cursor.is_none() =>
+                                    {
+                                        Some(Action::Click {
+                                            slot,
+                                            mode: 2,
+                                            button,
+                                        })
+                                    }
+                                    (KeyCode::KeyQ, Some(slot), _) => Some(Action::Click {
+                                        slot,
+                                        mode: 4,
+                                        button: u8::from(self.modifiers.control_key()),
+                                    }),
+                                    _ => None,
+                                }
                             } else {
                                 match key {
+                                    KeyCode::KeyQ => Some(Action::Drop {
+                                        all: self.modifiers.control_key(),
+                                    }),
                                     KeyCode::Digit1 => Some(Action::Select(0)),
                                     KeyCode::Digit2 => Some(Action::Select(1)),
                                     KeyCode::Digit3 => Some(Action::Select(2)),
@@ -559,8 +592,6 @@ impl ApplicationHandler for App {
                     open = state.inventory.open || state.vitals.health <= 0.0;
                     if open && pressed {
                         if let Some(layout) = layout {
-                            let x = mouse.0 - (layout.width / 2.0).floor();
-                            let y = mouse.1 - (layout.height / 2.0).floor();
                             if state.vitals.health <= 0.0 {
                                 if button == MouseButton::Left
                                     && death == Some(hud::DeathButton::Respawn)
@@ -568,13 +599,24 @@ impl ApplicationHandler for App {
                                 {
                                     state.input.actions.push_back(gameplay::Action::Respawn);
                                 }
-                            } else if let Some(slot) = state.inventory.slot_at(x, y)
+                            } else if matches!(button, MouseButton::Left | MouseButton::Right)
                                 && state.input.actions.len() < 128
                             {
-                                state.input.actions.push_back(gameplay::Action::Click {
-                                    slot,
-                                    right: button == MouseButton::Right,
-                                });
+                                // GuiContainer.mouseClicked: a slot, or -999
+                                // outside the window to drop the carried stack.
+                                let slot = hud::hovered_slot(&state.inventory, layout, mouse)
+                                    .or_else(|| {
+                                        (!hud::inside_window(&state.inventory, layout, mouse))
+                                            .then_some(-999)
+                                    });
+                                if let Some(slot) = slot {
+                                    let shift = self.modifiers.shift_key() && slot != -999;
+                                    state.input.actions.push_back(gameplay::Action::Click {
+                                        slot,
+                                        mode: u8::from(shift),
+                                        button: u8::from(button == MouseButton::Right),
+                                    });
+                                }
                             }
                         }
                     } else if self.captured {
@@ -804,6 +846,25 @@ impl ApplicationHandler for App {
             self.auto_captured = true;
             self.capture_cursor();
         }
+        if positioned && std::mem::take(&mut self.smoke_inventory) {
+            if let Some(network) = &self.network
+                && let Ok(mut state) = network.shared.lock()
+            {
+                state
+                    .input
+                    .actions
+                    .push_back(gameplay::Action::OpenInventory);
+            }
+            if let Some(renderer) = &self.renderer {
+                let layout = renderer.layout;
+                let (left, top) = (
+                    ((layout.width as i32 - 176) / 2) as f64,
+                    ((layout.height as i32 - 166) / 2) as f64,
+                );
+                self.cursor = ((left + 16.0) * layout.factor, (top + 150.0) * layout.factor);
+            }
+            eprintln!("SMOKE_INVENTORY_OPENED");
+        }
         if positioned && let Some(text) = self.smoke_chat.take() {
             self.open_chat("");
             for c in text.chars() {
@@ -845,6 +906,22 @@ impl ApplicationHandler for App {
         self.release_cursor();
         self.network.take();
     }
+}
+
+/// The hotbar slot a number key selects.
+fn hotbar_digit(key: KeyCode) -> Option<u8> {
+    Some(match key {
+        KeyCode::Digit1 => 0,
+        KeyCode::Digit2 => 1,
+        KeyCode::Digit3 => 2,
+        KeyCode::Digit4 => 3,
+        KeyCode::Digit5 => 4,
+        KeyCode::Digit6 => 5,
+        KeyCode::Digit7 => 6,
+        KeyCode::Digit8 => 7,
+        KeyCode::Digit9 => 8,
+        _ => return None,
+    })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -892,6 +969,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_chat: options.smoke_chat,
         tab_held: false,
         smoke_tab: options.smoke_tab,
+        smoke_inventory: options.smoke_inventory,
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {

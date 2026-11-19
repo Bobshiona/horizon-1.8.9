@@ -10,12 +10,24 @@ pub const ATLAS: u32 = 256;
 pub const ASCII: u32 = 0;
 pub const ICONS: u32 = 1;
 pub const WIDGETS: u32 = 2;
-const SHEETS: [(&str, u32); 3] = [
+pub const INVENTORY: u32 = 3;
+pub const CHEST: u32 = 4;
+pub const HOPPER: u32 = 5;
+pub const DISPENSER: u32 = 6;
+pub const CRAFTING: u32 = 7;
+pub const FURNACE: u32 = 8;
+const SHEETS: [(&str, u32); 9] = [
     ("minecraft:font/ascii", ASCII),
     ("minecraft:gui/icons", ICONS),
     ("minecraft:gui/widgets", WIDGETS),
+    ("minecraft:gui/container/inventory", INVENTORY),
+    ("minecraft:gui/container/generic_54", CHEST),
+    ("minecraft:gui/container/hopper", HOPPER),
+    ("minecraft:gui/container/dispenser", DISPENSER),
+    ("minecraft:gui/container/crafting_table", CRAFTING),
+    ("minecraft:gui/container/furnace", FURNACE),
 ];
-const FIXED_LAYERS: u32 = 8;
+const FIXED_LAYERS: u32 = 16;
 /// A fixed layer nothing writes: glyphs of absent pages sample transparency.
 const EMPTY_LAYER: u32 = FIXED_LAYERS - 1;
 const PAGE_LAYERS: u32 = 64;
@@ -483,13 +495,18 @@ impl<'a> Canvas<'a> {
 
     /// A 16-pixel item icon from the entity/item array.
     pub fn item_icon(&mut self, layer: u32, x: f32, y: f32) {
+        self.item_icon_tinted(layer, x, y, [1.0; 4]);
+    }
+
+    /// An item layer multiplied by a gamma-space colour.
+    pub fn item_icon_tinted(&mut self, layer: u32, x: f32, y: f32, color: [f32; 4]) {
         let s = 16.0 / crate::models::LAYER_SIZE as f32;
         self.quad(
             false,
             [[x, y], [x + 16.0, y], [x + 16.0, y + 16.0], [x, y + 16.0]],
             [[0.0, 0.0], [s, 0.0], [s, s], [0.0, s]],
             ENTITY | layer,
-            [1.0; 4],
+            color,
         );
     }
 
