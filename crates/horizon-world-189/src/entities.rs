@@ -58,9 +58,112 @@ pub struct Entity {
     pub name_visible: bool,
     /// Armour-stand flags, index 10: small 0x01, marker 0x10.
     pub stand_flags: u8,
+    /// Client-side motion of simulated objects, blocks per tick.
+    pub motion: [f64; 3],
+    /// A dropped item's stack (index 10).
+    pub item: Option<Item>,
+    /// An arrow's critical flag (index 16).
+    pub critical: bool,
+    /// An arrow or throwable that hit a block.
+    pub stuck: bool,
+    /// S0E object data: a falling block's `id | meta << 12`, a shooter...
+    pub data: i32,
+}
+
+fn solid(world: &crate::World, at: [f64; 3]) -> bool {
+    let [x, y, z] = at.map(|v| v.floor() as i32);
+    world.block(x, y, z).is_some_and(|state| {
+        let id = state.block_id();
+        id != 0 && crate::blocks::block(id).layer == crate::blocks::Layer::Solid
+    })
 }
 
 impl Entity {
+    /// The client half of `onUpdate` for objects whose server updates are
+    /// sparse: gravity, drag, and stopping at solid blocks.
+    fn simulate(&mut self, world: &crate::World) {
+        let Kind::Object(kind) = self.kind else {
+            return;
+        };
+        let step = |position: [f64; 3], motion: [f64; 3]| {
+            [
+                position[0] + motion[0],
+                position[1] + motion[1],
+                position[2] + motion[2],
+            ]
+        };
+        match kind {
+            // EntityArrow and EntityThrowable: fly until a block, then stop.
+            60 | 61 | 62 | 65 | 73 | 75 => {
+                if self.stuck {
+                    return;
+                }
+                let next = step(self.position, self.motion);
+                if solid(world, next) {
+                    self.stuck = true;
+                    self.motion = [0.0; 3];
+                    return;
+                }
+                self.position = next;
+                if kind == 60 {
+                    // EntityArrow faces along its motion while flying.
+                    let [x, y, z] = self.motion;
+                    self.yaw = x.atan2(z).to_degrees() as f32;
+                    self.pitch = y.atan2((x * x + z * z).sqrt()).to_degrees() as f32;
+                }
+                let (drag, gravity) = match kind {
+                    60 => (0.99, 0.05),
+                    73 => (0.99, 0.05),
+                    75 => (0.99, 0.07),
+                    _ => (0.99, 0.03),
+                };
+                self.motion = self.motion.map(|v| v * drag);
+                self.motion[1] -= gravity;
+            }
+            // EntityItem, EntityTNTPrimed, EntityFallingBlock: fall, land, slide.
+            2 | 50 | 70 => {
+                self.motion[1] -= 0.04;
+                let mut move_by = self.motion;
+                let down = [
+                    self.position[0],
+                    self.position[1] + move_by[1],
+                    self.position[2],
+                ];
+                self.on_ground = false;
+                if move_by[1] < 0.0 && solid(world, down) {
+                    move_by[1] = (down[1].floor() + 1.0) - self.position[1];
+                    self.on_ground = true;
+                }
+                let side = [
+                    self.position[0] + move_by[0],
+                    self.position[1] + move_by[1] + 0.01,
+                    self.position[2] + move_by[2],
+                ];
+                if solid(world, side) {
+                    move_by[0] = 0.0;
+                    move_by[2] = 0.0;
+                }
+                self.position = step(self.position, move_by);
+                if self.on_ground {
+                    self.motion[1] = 0.0;
+                }
+                let ground = match (kind, self.on_ground) {
+                    (2, true) => 0.6 * 0.98,
+                    (50, true) => 0.98 * 0.7,
+                    _ => 0.98,
+                };
+                self.motion = [
+                    self.motion[0] * ground,
+                    self.motion[1] * 0.98,
+                    self.motion[2] * ground,
+                ];
+            }
+            // Fireballs keep their heading between sparse updates.
+            63 | 64 | 66 => self.position = step(self.position, self.motion),
+            _ => {}
+        }
+    }
+
     /// Where `renderLivingLabel` starts: the entity height plus half a block.
     pub fn label_height(&self) -> f64 {
         let height = match self.kind {
@@ -110,6 +213,11 @@ impl Entity {
             custom_name: None,
             name_visible: false,
             stand_flags: 0,
+            motion: [0.0; 3],
+            item: None,
+            critical: false,
+            stuck: false,
+            data: 0,
         }
     }
 
@@ -192,6 +300,12 @@ impl Entity {
                 }
                 (10, Meta::Byte(flags)) if self.kind == Kind::Object(78) => {
                     self.stand_flags = *flags as u8
+                }
+                (10, Meta::Item(item)) if self.kind == Kind::Object(2) => {
+                    self.item = item.clone();
+                }
+                (16, Meta::Byte(flags)) if self.kind == Kind::Object(60) => {
+                    self.critical = flags & 1 != 0;
                 }
                 (2, Meta::String(name)) => {
                     self.custom_name = (!name.is_empty()).then(|| name.clone());
@@ -320,9 +434,21 @@ impl Entities {
         self.profiles.clear();
     }
 
-    pub fn tick(&mut self) {
+    /// One client tick; objects the client simulates move against `world`.
+    pub fn tick(&mut self, world: &crate::World) {
         for entity in self.map.values_mut() {
             entity.tick();
+            entity.simulate(world);
+        }
+    }
+
+    /// S12 for another entity: objects take it as their motion.
+    pub fn set_velocity(&mut self, id: i32, velocity: [i16; 3]) {
+        if let Some(entity) = self.map.get_mut(&id)
+            && !entity.living()
+        {
+            entity.motion = velocity.map(|v| f64::from(v) / 8000.0);
+            entity.stuck = false;
         }
     }
 
@@ -390,12 +516,16 @@ impl Entities {
                 position,
                 pitch,
                 yaw,
-                ..
+                data,
+                velocity,
             } => {
-                self.map.insert(
-                    id,
-                    Entity::new(Kind::Object(kind), 0, position, angle(yaw), angle(pitch)),
-                );
+                let mut entity =
+                    Entity::new(Kind::Object(kind), 0, position, angle(yaw), angle(pitch));
+                entity.data = data;
+                if let Some(velocity) = velocity {
+                    entity.motion = velocity.map(|v| f64::from(v) / 8000.0);
+                }
+                self.map.insert(id, entity);
             }
             EntityPacket::SpawnOrb { id, position } => {
                 self.map
@@ -539,7 +669,7 @@ mod tests {
         });
         let mut xs = Vec::new();
         for _ in 0..4 {
-            entities.tick();
+            entities.tick(&crate::World::default());
             xs.push(entities.get(5).unwrap().position[0]);
         }
         assert_eq!(xs, [1.0, 2.0, 3.0, 3.0]);
@@ -565,13 +695,13 @@ mod tests {
         entities.apply(packet);
         assert_eq!(entities.get(5).unwrap().hurt_time, 10);
         for _ in 0..9 {
-            entities.tick();
+            entities.tick(&crate::World::default());
         }
         assert_eq!(entities.get(5).unwrap().hurt_time, 1);
         entities.apply(EntityPacket::Status { id: 5, status: 2 });
         assert_eq!(entities.get(5).unwrap().hurt_time, 10);
         for _ in 0..10 {
-            entities.tick();
+            entities.tick(&crate::World::default());
         }
         assert_eq!(entities.get(5).unwrap().hurt_time, 0);
         assert!(horizon_protocol_47::entities::decode(0x1a, &[5, 2]).is_err());
@@ -587,13 +717,46 @@ mod tests {
             animation: 0,
         });
         for _ in 0..5 {
-            entities.tick();
+            entities.tick(&crate::World::default());
         }
         assert!(entities.get(5).unwrap().swing.is_some());
-        entities.tick();
+        entities.tick(&crate::World::default());
         assert!(entities.get(5).unwrap().swing.is_none());
         assert!(!slim_skin(0));
         assert!(slim_skin(1));
         assert!(!slim_skin(1 | 1 << 64));
+    }
+
+    #[test]
+    fn dropped_items_fall_and_land_while_arrows_fly_and_stick() {
+        let world = crate::World::default();
+        let mut entities = Entities::default();
+        entities.apply(EntityPacket::SpawnObject {
+            id: 1,
+            kind: 2,
+            position: [16, 10 * 32, 16],
+            pitch: 0,
+            yaw: 0,
+            data: 1,
+            velocity: Some([0, 1600, 0]),
+        });
+        entities.tick(&world);
+        let item = entities.get(1).unwrap();
+        // Gravity first, then the move: 0.2 - 0.04 blocks up.
+        assert!((item.position[1] - (10.0 + 0.16)).abs() < 1e-9);
+        entities.apply(EntityPacket::SpawnObject {
+            id: 2,
+            kind: 60,
+            position: [0, 0, 0],
+            pitch: 0,
+            yaw: 0,
+            data: 1,
+            velocity: Some([8000, 0, 0]),
+        });
+        entities.tick(&world);
+        let arrow = entities.get(2).unwrap();
+        assert_eq!(arrow.position, [1.0, 0.0, 0.0]);
+        assert!((arrow.yaw - 90.0).abs() < 1e-4);
+        assert!((arrow.motion[1] + 0.05).abs() < 1e-9);
     }
 }

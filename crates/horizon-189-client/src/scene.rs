@@ -50,6 +50,14 @@ pub struct Scene {
     entities: wgpu::Buffer,
     entity_capacity: u64,
     entity_count: u32,
+    /// The first-person hand: view-space vertices with their own camera.
+    hand: wgpu::Buffer,
+    hand_capacity: u64,
+    hand_count: u32,
+    hand_camera: wgpu::Buffer,
+    hand_bindings: wgpu::BindGroup,
+    /// `hurtCameraEffect` and view bobbing, before the camera orientation.
+    effects: Mat4,
     camera: wgpu::Buffer,
     view: Mat4,
     eye: Vec3,
@@ -369,6 +377,37 @@ impl Scene {
                 },
             ],
         });
+        let hand_camera = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("First-person camera uniform"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let hand_bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("First-person resources"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: hand_camera.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&entity_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&entity_sampler),
+                },
+            ],
+        });
+        let hand_capacity = 64 * 1024;
+        let hand = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("First-person vertices"),
+            size: hand_capacity,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let entity_capacity = 64 * 1024;
         let entities = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Entity vertices"),
@@ -391,6 +430,12 @@ impl Scene {
             entities,
             entity_capacity,
             entity_count: 0,
+            hand,
+            hand_capacity,
+            hand_count: 0,
+            hand_camera,
+            hand_bindings,
+            effects: Mat4::IDENTITY,
             camera,
             view: Mat4::look_at_rh(eye, Vec3::splat(0.5), Vec3::Y),
             eye,
@@ -544,6 +589,63 @@ impl Scene {
         Ok(())
     }
 
+    /// Camera effects for the next `set_camera`.
+    pub fn set_effects(&mut self, effects: Mat4) {
+        self.effects = effects;
+    }
+
+    /// Replace the first-person hand: view-space vertices drawn with a
+    /// 70-degree projection, as `renderHand` uses whatever the FOV setting.
+    pub fn set_hand(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+        vertices: &[Vertex],
+    ) -> Result<(), Box<dyn Error>> {
+        let projection = Mat4::perspective_infinite_reverse_rh(
+            70f32.to_radians(),
+            config.width as f32 / config.height.max(1) as f32,
+            0.05,
+        );
+        let uniforms = Uniforms {
+            view_projection: projection.to_cols_array(),
+            eye: [0.0, 0.0, 0.0, 1.0e6],
+            fog: [0.0, 0.0, 0.0, 1.0e6],
+        };
+        queue.write_buffer(&self.hand_camera, 0, bytemuck::bytes_of(&uniforms));
+        let bytes: &[u8] = bytemuck::cast_slice(vertices);
+        if bytes.len() as u64 > self.hand_capacity {
+            self.hand_capacity = (bytes.len() as u64)
+                .next_power_of_two()
+                .min(device.limits().max_buffer_size);
+            if bytes.len() as u64 > self.hand_capacity {
+                return Err("Hand mesh exceeds device buffer limit".into());
+            }
+            self.hand = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("First-person vertices"),
+                size: self.hand_capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        if !bytes.is_empty() {
+            queue.write_buffer(&self.hand, 0, bytes);
+        }
+        self.hand_count = u32::try_from(vertices.len())?;
+        Ok(())
+    }
+
+    /// The hand, in a pass whose depth was cleared.
+    pub fn draw_hand(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if self.hand_count > 0 {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.hand_bindings, &[]);
+            pass.set_vertex_buffer(0, self.hand.slice(..));
+            pass.draw(0..self.hand_count, 0..1);
+        }
+    }
+
     pub fn origin(&self) -> [i64; 3] {
         self.origin
     }
@@ -629,7 +731,8 @@ impl Scene {
         );
         let (sy, cy) = pose.yaw.to_radians().sin_cos();
         let (sp, cp) = pose.pitch.to_radians().sin_cos();
-        self.view = Mat4::look_at_rh(eye, eye + Vec3::new(-sy * cp, -sp, cy * cp), Vec3::Y);
+        self.view =
+            self.effects * Mat4::look_at_rh(eye, eye + Vec3::new(-sy * cp, -sp, cy * cp), Vec3::Y);
         self.eye = eye;
         self.fov = 70.0;
         self.write_camera(queue, config);

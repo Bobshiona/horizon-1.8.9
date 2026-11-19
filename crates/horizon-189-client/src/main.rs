@@ -5,6 +5,7 @@
 mod chat;
 mod frame_stats;
 mod gameplay;
+mod hand;
 mod hardness;
 mod hud;
 mod inventory;
@@ -14,6 +15,7 @@ mod keyboard;
 mod models;
 mod network;
 mod options;
+mod particles;
 mod renderer;
 mod scene;
 #[cfg(test)]
@@ -78,13 +80,16 @@ struct App {
     tab_held: bool,
     smoke_tab: bool,
     smoke_inventory: bool,
+    particles: particles::Particles,
+    /// The last client tick particles advanced to.
+    particle_tick: u64,
+    view_bobbing: bool,
 }
 
 /// What one frame reads from the simulation, under one lock.
 struct Snapshot {
     view: Arc<inventory::View>,
     swing: Option<u8>,
-    using_item: bool,
     vitals: gameplay::Vitals,
     game_mode: u8,
     experience: (f32, i32),
@@ -94,6 +99,9 @@ struct Snapshot {
     tab: Arc<scoreboard::TabList>,
     username: String,
     encrypted: bool,
+    hand: hand::Tracked,
+    effects: Vec<(i32, bool)>,
+    own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
 }
 
 impl App {
@@ -679,7 +687,6 @@ impl ApplicationHandler for App {
                     n.shared.lock().ok().map(|mut s| Snapshot {
                         view: s.inventory.clone(),
                         swing: s.swing,
-                        using_item: s.using_item,
                         vitals: s.vitals,
                         game_mode: s.game_mode,
                         experience: s.experience,
@@ -689,6 +696,9 @@ impl ApplicationHandler for App {
                         tab: s.tab.clone(),
                         username: s.username.clone(),
                         encrypted: s.encrypted,
+                        hand: s.hand.clone(),
+                        effects: std::mem::take(&mut s.effects),
+                        own: s.own.clone(),
                     })
                 });
                 let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
@@ -712,18 +722,75 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                if let Some(snapshot) = &snapshot {
+                    for &(entity, magic) in &snapshot.effects {
+                        self.particles.emit(entity, magic);
+                    }
+                }
+                if let Some((_, _, entities)) = &pose {
+                    let now = tick.floor() as u64;
+                    for _ in 0..now.saturating_sub(self.particle_tick).min(10) {
+                        self.particles.tick(entities);
+                    }
+                    self.particle_tick = now;
+                }
                 if let Some(renderer) = &mut self.renderer {
                     if let Some((pose, partial, entities)) = pose {
+                        if let Some(snapshot) = &snapshot {
+                            let effects =
+                                hand::camera_effects(&snapshot.hand, partial, self.view_bobbing);
+                            renderer.set_camera_effects(effects);
+                        }
                         renderer.set_pose(pose);
-                        let ui = snapshot
-                            .as_ref()
-                            .map(|s| (s.view.clone(), s.swing, s.using_item, s.vitals));
                         let empty = scoreboard::Scoreboard::default();
                         let (board, own_name) = snapshot
                             .as_ref()
                             .map_or((&empty, ""), |s| (&*s.scoreboard, s.username.as_str()));
+                        let mut extra = Vec::new();
+                        if let Some(scene_origin) = renderer.origin() {
+                            self.particles.draw(
+                                &mut extra,
+                                partial,
+                                scene_origin,
+                                pose.yaw,
+                                pose.pitch,
+                            );
+                        }
+                        let own = snapshot.as_ref().and_then(|s| s.own.as_ref());
+                        let hand_frame = snapshot.as_ref().filter(|s| s.game_mode != 3).map(|s| {
+                            let own_uuid = s.own.as_ref().map(|(uuid, _)| *uuid);
+                            let (skin, slim) = own_uuid
+                                .and_then(|uuid| renderer.skin_of(uuid))
+                                .unwrap_or_else(|| {
+                                    let slim = own_uuid
+                                        .is_some_and(horizon_world_189::entities::slim_skin);
+                                    let default = if slim {
+                                        models::Texture::Alex
+                                    } else {
+                                        models::Texture::Steve
+                                    };
+                                    (default as u32, slim)
+                                });
+                            hand::Frame {
+                                state: &s.hand,
+                                partial,
+                                swing: s
+                                    .swing
+                                    .map_or(0.0, |v| ((f32::from(v) + partial) / 6.0).min(1.0)),
+                                skin,
+                                slim,
+                                sleeve: true,
+                                invisible: s.vitals.effects & (1 << 14) != 0,
+                                bobbing: self.view_bobbing,
+                                look: [pose.pitch, pose.yaw],
+                            }
+                        });
+                        if let Err(error) = renderer.set_hand(hand_frame.as_ref()) {
+                            self.fail(event_loop, error);
+                            return;
+                        }
                         if let Err(error) =
-                            renderer.set_entities(&entities, partial, ui.as_ref(), board, own_name)
+                            renderer.set_entities(&entities, partial, board, own_name, own, &extra)
                         {
                             self.fail(event_loop, error);
                             return;
@@ -970,6 +1037,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         tab_held: false,
         smoke_tab: options.smoke_tab,
         smoke_inventory: options.smoke_inventory,
+        particles: particles::Particles::default(),
+        particle_tick: 0,
+        view_bobbing: options.view_bobbing,
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {

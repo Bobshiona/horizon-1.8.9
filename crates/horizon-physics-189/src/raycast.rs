@@ -223,7 +223,7 @@ mod tests {
             on_ground: true,
         });
         for _ in 0..3 {
-            entities.tick();
+            entities.tick(&horizon_world_189::World::default());
         }
         assert_eq!(
             Raycaster::default().select(&world, &entities, [0.5, 1.6, 0.5], 0.0, 0.0, false),

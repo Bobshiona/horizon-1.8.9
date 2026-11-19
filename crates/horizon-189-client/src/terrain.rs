@@ -71,11 +71,43 @@ pub struct Registry {
     pub gui: crate::ui::Resources,
     item_layers: HashMap<i16, u32>,
     overlays: HashMap<&'static str, u32>,
+    /// Opaque-pixel edges of each item sprite layer (`x`, `y`, side: 0 left,
+    /// 1 right, 2 top, 3 bottom), for the extruded item mesh.
+    item_edges: HashMap<u32, Vec<[u8; 3]>>,
     block_layers: Vec<u32>,
 }
 
+/// Edges between opaque and transparent pixels of a 16-pixel sprite at the
+/// top-left of a `size`-pixel layer.
+fn sprite_edges(rgba: &[u8], size: usize) -> Vec<[u8; 3]> {
+    let opaque = |x: i32, y: i32| {
+        (0..16).contains(&x)
+            && (0..16).contains(&y)
+            && rgba
+                .get(((y as usize) * size + x as usize) * 4 + 3)
+                .is_some_and(|&a| a > 0)
+    };
+    let mut edges = Vec::new();
+    for y in 0..16 {
+        for x in 0..16 {
+            if !opaque(x, y) {
+                continue;
+            }
+            for (side, (dx, dy)) in [(-1, 0), (1, 0), (0, -1), (0, 1)].into_iter().enumerate() {
+                if !opaque(x + dx, y + dy) {
+                    edges.push([x as u8, y as u8, side as u8]);
+                }
+            }
+        }
+    }
+    edges
+}
+
 /// Item sprites drawn in two tinted layers.
-const OVERLAY_SPRITES: [&str; 11] = [
+const OVERLAY_SPRITES: [&str; 14] = [
+    "bow_pulling_0",
+    "bow_pulling_1",
+    "bow_pulling_2",
     "potion_bottle_drinkable",
     "potion_bottle_splash",
     "potion_overlay",
@@ -389,6 +421,13 @@ impl Registry {
                 });
             }
         }
+        let mut item_edges = HashMap::new();
+        for &layer in item_layers.values().chain(overlays.values()) {
+            item_edges.insert(
+                layer,
+                sprite_edges(&entity_textures[layer as usize].rgba, size),
+            );
+        }
         let grass = colormap("minecraft:colormap/grass")?;
         let foliage = colormap("minecraft:colormap/foliage")?;
         let water = layer_for("minecraft:blocks/water_still", &mut textures);
@@ -410,6 +449,7 @@ impl Registry {
             entity_textures,
             glyphs,
             gui,
+            item_edges,
             item_layers,
             overlays,
             block_layers,
@@ -493,14 +533,38 @@ impl Registry {
         item: &horizon_protocol_47::nbt::Item,
         matrix: glam::Mat4,
     ) {
-        if !(1..198).contains(&item.id) {
-            return;
+        if (1..198).contains(&item.id) {
+            let state = BlockState(((item.id as u16) << 4) | (item.damage as u16 & 15));
+            self.block_model(out, state, matrix, 1.0);
         }
-        let state = BlockState(((item.id as u16) << 4) | (item.damage as u16 & 15));
+    }
+
+    /// A block state's inventory model centred on the origin (one block
+    /// wide), with item tints: the default grass and leaf colours.
+    pub fn block_model(
+        &self,
+        out: &mut Vec<Vertex>,
+        state: BlockState,
+        matrix: glam::Mat4,
+        light: f32,
+    ) -> bool {
         let Some(model) = self.resolve(&World::default(), [0; 3], state) else {
-            return;
+            return false;
         };
+        let tint = match (state.block_id(), state.metadata() & 3) {
+            (18, 1) => [0x61, 0x99, 0x61],
+            (18, 2) => [0x80, 0xA7, 0x55],
+            (18 | 161, _) => [0x48, 0xB5, 0x18],
+            // ColorizerGrass.getGrassColor(0.5, 1.0).
+            _ => self.grass[127 * 256 + 127],
+        }
+        .map(|c| f32::from(c) / 255.0);
         for face in &self.models[model as usize].alternatives[0].0 {
+            let color = if face.tint {
+                tint.map(|c| c * face.shade * light)
+            } else {
+                [face.shade * light; 3]
+            };
             for i in [0, 1, 2, 0, 2, 3] {
                 out.push(Vertex {
                     position: matrix
@@ -510,10 +574,99 @@ impl Registry {
                         .to_array(),
                     uv: face.uv[i].map(|v| v * 16.0 / crate::models::LAYER_SIZE as f32),
                     layer: self.block_layers[face.layer as usize],
-                    color: [face.shade; 3],
+                    color,
                     hurt: 0.0,
                 });
             }
+        }
+        true
+    }
+
+    /// `ItemModelGenerator`'s extruded sprite in a unit cube: front at
+    /// z = 8.5/16, back at 7.5/16, and a one-pixel side wherever an opaque
+    /// pixel meets a transparent one. Both windings, as items draw unculled.
+    pub fn item_mesh(
+        &self,
+        out: &mut Vec<Vertex>,
+        layer: u32,
+        matrix: glam::Mat4,
+        color: [f32; 3],
+    ) {
+        let scale = 1.0 / crate::models::LAYER_SIZE as f32;
+        let mut quad = |corners: [[f32; 3]; 4], uv: [[f32; 2]; 4], shade: f32| {
+            let corners = corners.map(|p| matrix.transform_point3(glam::Vec3::from(p)).to_array());
+            for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+                out.push(Vertex {
+                    position: corners[i],
+                    uv: uv[i].map(|v| v * scale),
+                    layer,
+                    color: color.map(|c| c * shade),
+                    hurt: 0.0,
+                });
+            }
+        };
+        let (front, back) = (8.5 / 16.0, 7.5 / 16.0);
+        for z in [front, back] {
+            quad(
+                [[0.0, 0.0, z], [1.0, 0.0, z], [1.0, 1.0, z], [0.0, 1.0, z]],
+                [[0.0, 16.0], [16.0, 16.0], [16.0, 0.0], [0.0, 0.0]],
+                1.0,
+            );
+        }
+        for &[x, y, side] in self
+            .item_edges
+            .get(&layer)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let (px, py) = (f32::from(x), f32::from(y));
+            let (x0, x1) = (px / 16.0, (px + 1.0) / 16.0);
+            let (y0, y1) = (1.0 - (py + 1.0) / 16.0, 1.0 - py / 16.0);
+            let uv = [
+                [px + 0.01, py + 0.99],
+                [px + 0.99, py + 0.99],
+                [px + 0.99, py + 0.01],
+                [px + 0.01, py + 0.01],
+            ];
+            let (corners, shade) = match side {
+                0 => (
+                    [
+                        [x0, y0, back],
+                        [x0, y0, front],
+                        [x0, y1, front],
+                        [x0, y1, back],
+                    ],
+                    0.6,
+                ),
+                1 => (
+                    [
+                        [x1, y0, front],
+                        [x1, y0, back],
+                        [x1, y1, back],
+                        [x1, y1, front],
+                    ],
+                    0.6,
+                ),
+                2 => (
+                    [
+                        [x0, y1, front],
+                        [x1, y1, front],
+                        [x1, y1, back],
+                        [x0, y1, back],
+                    ],
+                    1.0,
+                ),
+                _ => (
+                    [
+                        [x0, y0, back],
+                        [x1, y0, back],
+                        [x1, y0, front],
+                        [x0, y0, front],
+                    ],
+                    0.5,
+                ),
+            };
+            quad(corners, uv, shade);
         }
     }
 

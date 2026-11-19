@@ -86,6 +86,12 @@ pub struct Shared {
     /// (online mode, so the tab list shows faces).
     pub username: String,
     pub encrypted: bool,
+    /// The local player's first-person and camera state, per tick.
+    pub hand: crate::hand::Tracked,
+    /// Critical-hit particles to start: entity and whether magic.
+    pub effects: Vec<(i32, bool)>,
+    /// The local player's UUID and tab-list profile (for the hand's skin).
+    pub own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
 }
 
 /// A server message for the window: chat, the action bar or completions.
@@ -481,6 +487,7 @@ fn run_actor(
     let mut controller = crate::gameplay::Controller::default();
     let mut game_mode = 0;
     let mut vitals = crate::gameplay::Vitals::default();
+    let mut hand = crate::hand::Tracked::default();
     let mut capabilities = entity_packets::Abilities {
         invulnerable: false,
         flying: false,
@@ -627,6 +634,10 @@ fn run_actor(
                     }
                     play::Packet::Other { id: 0x06, fields } => {
                         let health = fields::decode_health(fields)?;
+                        // EntityPlayerSP.setPlayerSPHealth: a loss is a hurt.
+                        if health.health < vitals.health {
+                            hand.hurt();
+                        }
                         player.food = health.food;
                         vitals.health = health.health;
                         vitals.food = health.food;
@@ -660,6 +671,18 @@ fn run_actor(
                     }
                     play::Packet::Other { id: 0x38, fields } => {
                         let updates = horizon_protocol_47::player_list::decode(fields)?;
+                        let own = config.session.profile.uuid;
+                        for update in &updates {
+                            if let horizon_protocol_47::player_list::Update::Add {
+                                uuid,
+                                profile,
+                                ..
+                            } = update
+                                && *uuid == own
+                            {
+                                lock(shared)?.own = Some((own, Arc::new(profile.clone())));
+                            }
+                        }
                         tab.apply(&updates, &formatted);
                         tab_dirty = true;
                         entities.update_profiles(updates);
@@ -765,6 +788,23 @@ fn run_actor(
                         ) =>
                     {
                         if let Some(packet) = entity_packets::decode(id, fields)? {
+                            match &packet {
+                                entity_packets::EntityPacket::Status { id, status: 2 }
+                                    if *id == entity_id =>
+                                {
+                                    hand.hurt();
+                                }
+                                entity_packets::EntityPacket::Animation {
+                                    id,
+                                    animation: animation @ (4 | 5),
+                                } => {
+                                    let mut state = lock(shared)?;
+                                    if state.effects.len() < 64 {
+                                        state.effects.push((*id, *animation == 5));
+                                    }
+                                }
+                                _ => {}
+                            }
                             if let entity_packets::EntityPacket::Metadata { id, entries } = &packet
                                 && *id == entity_id
                             {
@@ -787,6 +827,8 @@ fn run_actor(
                         let (entity, [x, y, z]) = fields::decode_velocity(fields)?;
                         if entity == entity_id {
                             player.set_velocity(x, y, z);
+                        } else {
+                            entities.set_velocity(entity, [x, y, z]);
                         }
                     }
                     play::Packet::Other { id: 0x27, fields } => {
@@ -1020,6 +1062,17 @@ fn run_actor(
                 state.current = player.position;
                 state.ticked_at = Some(Instant::now());
                 state.sneaking = player.sneaking;
+                hand.tick(
+                    inventory.held(),
+                    &player,
+                    controller.using.then_some(controller.use_ticks),
+                    vitals.health > 0.0,
+                );
+                state.hand = hand.clone();
+                if state.effects.len() < 64 {
+                    state.effects.append(&mut controller.effects);
+                }
+                controller.effects.clear();
             }
             reports += 1;
             if reports.is_multiple_of(20) {
@@ -1037,9 +1090,11 @@ fn run_actor(
         }
         drop(world_view);
         if positioned && due > 0 {
+            let world_view = read(world)?;
             for _ in 0..due.min(10) {
-                entities.tick();
+                entities.tick(&world_view);
             }
+            drop(world_view);
             let mut state = lock(shared)?;
             let snapshot = Arc::make_mut(&mut state.entities);
             snapshot.clear();

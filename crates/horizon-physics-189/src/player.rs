@@ -143,6 +143,14 @@ pub struct Player {
     pub abilities_changed: bool,
     /// Highest Depth Strider level on worn armour.
     pub depth_strider: i32,
+    /// `fallDistance`, for critical hits.
+    pub fall_distance: f32,
+    /// `distanceWalkedModified` and its previous tick, for view bobbing.
+    pub distance_walked: f32,
+    pub previous_distance_walked: f32,
+    /// `cameraYaw` and `cameraPitch`, and their previous tick.
+    pub camera: [f32; 2],
+    pub previous_camera: [f32; 2],
     fly_toggle_timer: i32,
     previous_jump: bool,
     boxes: Vec<Aabb>,
@@ -180,6 +188,11 @@ impl Default for Player {
             fly_speed: 0.05,
             abilities_changed: false,
             depth_strider: 0,
+            fall_distance: 0.0,
+            distance_walked: 0.0,
+            previous_distance_walked: 0.0,
+            camera: [0.0; 2],
+            previous_camera: [0.0; 2],
             fly_toggle_timer: 0,
             previous_jump: false,
             boxes: Vec::with_capacity(64),
@@ -378,6 +391,8 @@ impl Player {
     }
 
     pub fn tick(&mut self, world: &World, keys: Keys) {
+        self.previous_distance_walked = self.distance_walked;
+        self.previous_camera = self.camera;
         if self.no_clip {
             self.on_ground = false;
             if !self.flying {
@@ -386,7 +401,23 @@ impl Player {
             }
         }
         self.handle_water(world);
+        if self.in_water {
+            self.fall_distance = 0.0;
+        }
         self.living_update(world, keys);
+        // EntityPlayer.onLivingUpdate's camera yaw and pitch for bobbing.
+        let mut bob =
+            (self.motion[0] * self.motion[0] + self.motion[2] * self.motion[2]).sqrt() as f32;
+        let mut tilt = ((-self.motion[1] * 0.20000000298023224).atan() * 15.0) as f32;
+        bob = bob.min(0.1);
+        if !self.on_ground {
+            bob = 0.0;
+        }
+        if self.on_ground {
+            tilt = 0.0;
+        }
+        self.camera[0] += (bob - self.camera[0]) * 0.4;
+        self.camera[1] += (tilt - self.camera[1]) * 0.8;
     }
 
     fn handle_water(&mut self, world: &World) {
@@ -890,6 +921,17 @@ impl Player {
         self.collided_horizontally = d3 != x || d5 != z;
         self.collided_vertically = d4 != y;
         self.on_ground = self.collided_vertically && d4 < 0.0;
+        // Entity.updateFallState and the walked distance view bobbing reads;
+        // sneaking on the ground and flying do not count as walking.
+        if self.on_ground {
+            self.fall_distance = 0.0;
+        } else if y < 0.0 {
+            self.fall_distance = (f64::from(self.fall_distance) - y) as f32;
+        }
+        if !edge && !self.flying {
+            self.distance_walked =
+                (f64::from(self.distance_walked) + (x * x + z * z).sqrt() * 0.6) as f32;
+        }
         let (bx, by, bz) = (
             floor(self.position[0]),
             floor(self.position[1] - 0.20000000298023224),

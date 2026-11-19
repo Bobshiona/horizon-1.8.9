@@ -62,10 +62,13 @@ pub enum Texture {
     Wolf,
     WolfTame,
     WolfAngry,
+    Arrow,
+    Particles,
+    ExperienceOrb,
 }
 
 /// Owned-jar paths for every layer after the generated white one.
-pub const SOURCES: [&str; 44] = [
+pub const SOURCES: [&str; 47] = [
     "minecraft:entity/steve",
     "minecraft:entity/alex",
     "minecraft:entity/chest/normal",
@@ -110,6 +113,9 @@ pub const SOURCES: [&str; 44] = [
     "minecraft:entity/wolf/wolf",
     "minecraft:entity/wolf/wolf_tame",
     "minecraft:entity/wolf/wolf_angry",
+    "minecraft:entity/arrow",
+    "minecraft:particle/particles",
+    "minecraft:entity/experience_orb",
 ];
 
 impl From<Texture> for u32 {
@@ -944,6 +950,7 @@ fn placeholder(kind: Kind) -> ([f32; 2], [f32; 3]) {
 }
 
 /// Geometry for every visible tracked entity at the frame's partial tick.
+#[allow(clippy::too_many_arguments)]
 pub fn entities(
     out: &mut Vec<Vertex>,
     entities: &[(i32, Entity)],
@@ -951,8 +958,9 @@ pub fn entities(
     origin: [i64; 3],
     registry: Option<&crate::terrain::Registry>,
     bindings: Option<&std::collections::HashMap<u128, crate::skins::Binding>>,
+    camera: horizon_protocol_47::play::PositionLook,
 ) {
-    for (_, entity) in entities {
+    for (id, entity) in entities {
         if entity.invisible() {
             continue;
         }
@@ -972,6 +980,22 @@ pub fn entities(
             Kind::Mob(50 | 90 | 92 | 120) => common_mob(out, entity, partial, origin),
             Kind::Mob(52 | 55 | 58 | 59 | 91 | 93 | 95) => {
                 mobs::render(out, entity, partial, origin)
+            }
+            Kind::Object(2) => {
+                if let Some(registry) = registry {
+                    dropped_item(out, *id, entity, partial, origin, registry);
+                }
+            }
+            Kind::Object(60) => arrow(out, entity, partial, origin),
+            Kind::Object(50 | 70) => {
+                if let Some(registry) = registry {
+                    falling_block(out, entity, partial, origin, registry);
+                }
+            }
+            Kind::Object(61 | 62 | 63 | 64 | 65 | 66 | 72 | 73 | 75 | 90) | Kind::Orb => {
+                if let Some(registry) = registry {
+                    billboard_object(out, entity, partial, origin, registry, camera);
+                }
             }
             kind => {
                 let ([width, height], tint) = placeholder(kind);
@@ -1001,6 +1025,338 @@ pub fn entities(
                 vertex.hurt = 0.3;
             }
         }
+    }
+}
+
+/// A deterministic float in 0..1 for a seed, standing in for `Random`.
+fn noise(seed: u64) -> f32 {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 31;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 29;
+    (x >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// `java.util.Random`, for render-time sequences vanilla seeds explicitly.
+struct JavaRandom(u64);
+
+impl JavaRandom {
+    fn new(seed: u64) -> Self {
+        Self((seed ^ 0x5_DEEC_E66D) & ((1 << 48) - 1))
+    }
+
+    fn next_float(&mut self) -> f32 {
+        self.0 = (self.0.wrapping_mul(0x5_DEEC_E66D).wrapping_add(0xB)) & ((1 << 48) - 1);
+        (self.0 >> 24) as f32 / (1u32 << 24) as f32
+    }
+}
+
+fn block_item(item: &horizon_protocol_47::nbt::Item) -> bool {
+    (1..198).contains(&item.id) && !crate::hand::flat_block(item.id)
+}
+
+/// `RenderEntityItem`: bobbing, spinning, extra copies for bigger stacks
+/// and each model's `GROUND` transform.
+fn dropped_item(
+    out: &mut Vec<Vertex>,
+    id: i32,
+    entity: &Entity,
+    partial: f32,
+    origin: [i64; 3],
+    registry: &crate::terrain::Registry,
+) {
+    let Some(item) = &entity.item else {
+        return;
+    };
+    let age = entity.age as f32 + partial;
+    let hover = noise(id as u64) * PI * 2.0;
+    let bob = (age / 10.0 + hover).sin() * 0.1 + 0.1;
+    let cube = block_item(item);
+    let (lift, scale) = if cube {
+        (3.0 / 16.0, 0.25)
+    } else {
+        (2.0 / 16.0, 0.5)
+    };
+    let copies = match item.count {
+        49.. => 5,
+        33..=48 => 4,
+        17..=32 => 3,
+        2..=16 => 2,
+        _ => 1,
+    };
+    // `RenderEntityItem` reseeds its `Random` with 187 for every item.
+    let mut random = JavaRandom::new(187);
+    let mut m = Mat4::from_translation(
+        position(entity, partial, origin) + Vec3::new(0.0, bob + 0.25 * scale, 0.0),
+    ) * Mat4::from_rotation_y(age / 20.0 + hover);
+    if !cube {
+        m *= Mat4::from_translation(Vec3::new(0.0, 0.0, -0.046875 * (copies - 1) as f32 * 0.5));
+    }
+    for copy in 0..copies {
+        let mut part = m;
+        // Only 3D models scatter their copies; flat ones stack in depth.
+        if cube && copy > 0 {
+            let mut offset = || (random.next_float() * 2.0 - 1.0) * 0.15;
+            let x = offset();
+            let y = offset();
+            let z = offset();
+            part *= Mat4::from_translation(Vec3::new(x, y, z));
+        }
+        part *= Mat4::from_translation(Vec3::new(0.0, lift, 0.0))
+            * Mat4::from_scale(Vec3::splat(scale));
+        if cube {
+            registry.held_block(out, item, part);
+        } else if let Some(layer) = registry.item_layer(item) {
+            registry.item_mesh(
+                out,
+                layer,
+                part * Mat4::from_translation(Vec3::splat(-0.5)),
+                [1.0; 3],
+            );
+        }
+        if !cube {
+            m *= Mat4::from_translation(Vec3::new(0.0, 0.0, 0.046875));
+        }
+    }
+}
+
+/// A textured quad given in `arrow.png` pixels, both sides.
+fn pixel_quad(
+    out: &mut Vec<Vertex>,
+    m: Mat4,
+    corners: [[f32; 3]; 4],
+    uv: [[f32; 2]; 4],
+    layer: u32,
+    color: [f32; 3],
+) {
+    let corners = corners.map(|p| m.transform_point3(Vec3::from(p)).to_array());
+    for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+        out.push(Vertex {
+            position: corners[i],
+            uv: uv[i].map(|v| v / LAYER_SIZE as f32),
+            layer,
+            color,
+            hurt: 0.0,
+        });
+    }
+}
+
+/// `RenderArrow`: a back cross and two crossed shaft planes, 0.05625 scale.
+fn arrow(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i64; 3]) {
+    let yaw = entity.yaw;
+    let pitch = lerp(entity.previous_pitch, entity.pitch, partial);
+    let m = Mat4::from_translation(position(entity, partial, origin))
+        * Mat4::from_rotation_y((yaw - 90.0).to_radians())
+        * Mat4::from_rotation_z(pitch.to_radians())
+        * Mat4::from_scale(Vec3::splat(0.05625))
+        * Mat4::from_translation(Vec3::new(-4.0, 0.0, 0.0));
+    let layer = Texture::Arrow as u32;
+    pixel_quad(
+        out,
+        m,
+        [
+            [-7.0, -2.0, -2.0],
+            [-7.0, -2.0, 2.0],
+            [-7.0, 2.0, 2.0],
+            [-7.0, 2.0, -2.0],
+        ],
+        [[0.0, 5.0], [5.0, 5.0], [5.0, 10.0], [0.0, 10.0]],
+        layer,
+        [1.0; 3],
+    );
+    let mut plane = m;
+    for _ in 0..2 {
+        plane *= Mat4::from_rotation_x(PI / 2.0);
+        pixel_quad(
+            out,
+            plane,
+            [
+                [-8.0, -2.0, 0.0],
+                [8.0, -2.0, 0.0],
+                [8.0, 2.0, 0.0],
+                [-8.0, 2.0, 0.0],
+            ],
+            [[0.0, 0.0], [16.0, 0.0], [16.0, 5.0], [0.0, 5.0]],
+            layer,
+            [1.0; 3],
+        );
+    }
+}
+
+/// `RenderTNTPrimed` (swelling and flashing over its 80-tick fuse) and
+/// `RenderFallingBlock`.
+fn falling_block(
+    out: &mut Vec<Vertex>,
+    entity: &Entity,
+    partial: f32,
+    origin: [i64; 3],
+    registry: &crate::terrain::Registry,
+) {
+    let at = position(entity, partial, origin) + Vec3::new(0.0, 0.5, 0.0);
+    if entity.kind == Kind::Object(50) {
+        let fuse = 80.0 - entity.age as f32;
+        let left = fuse - partial + 1.0;
+        let mut m = Mat4::from_translation(at);
+        if left < 10.0 {
+            let f = (1.0 - left / 10.0).clamp(0.0, 1.0).powi(4);
+            m *= Mat4::from_scale(Vec3::splat(1.0 + f * 0.3));
+        }
+        let flash = (fuse as i32 / 5) % 2 == 0;
+        let light = if flash {
+            1.0 + (1.0 - left / 100.0).max(0.0) * 0.8
+        } else {
+            1.0
+        };
+        registry.block_model(out, horizon_world_189::BlockState(46 << 4), m, light);
+    } else {
+        let id = (entity.data & 4095) as u16;
+        let meta = ((entity.data >> 12) & 15) as u16;
+        if (1..198).contains(&id) {
+            registry.block_model(
+                out,
+                horizon_world_189::BlockState(id << 4 | meta),
+                Mat4::from_translation(at),
+                1.0,
+            );
+        }
+    }
+}
+
+/// Camera-facing sprites: `RenderSnowball` items, `RenderFireball`,
+/// `RenderFish`'s bobber and `RenderXPOrb`.
+fn billboard_object(
+    out: &mut Vec<Vertex>,
+    entity: &Entity,
+    partial: f32,
+    origin: [i64; 3],
+    registry: &crate::terrain::Registry,
+    camera: horizon_protocol_47::play::PositionLook,
+) {
+    let facing = Mat4::from_translation(position(entity, partial, origin))
+        * Mat4::from_rotation_y((-camera.yaw).to_radians())
+        * Mat4::from_rotation_x(camera.pitch.to_radians());
+    let item = |id: i16, damage: i16| horizon_protocol_47::nbt::Item {
+        id,
+        count: 1,
+        damage,
+        nbt: None,
+    };
+    let sprite =
+        |out: &mut Vec<Vertex>, layer: Option<u32>, size: f32, low: f32, color: [f32; 3]| {
+            if let Some(layer) = layer {
+                let (x, y0, y1) = (size / 2.0, low * size, (low + 1.0) * size);
+                pixel_quad(
+                    out,
+                    facing,
+                    [[-x, y0, 0.0], [x, y0, 0.0], [x, y1, 0.0], [-x, y1, 0.0]],
+                    [[0.0, 16.0], [16.0, 16.0], [16.0, 0.0], [0.0, 0.0]],
+                    layer,
+                    color,
+                );
+            }
+        };
+    match entity.kind {
+        Kind::Object(kind @ (61 | 62 | 65 | 72 | 75)) => {
+            let id = match kind {
+                61 => 332,
+                62 => 344,
+                65 => 368,
+                72 => 381,
+                _ => 384,
+            };
+            sprite(
+                out,
+                registry.item_layer(&item(id, 0)),
+                0.25,
+                -0.25,
+                [1.0; 3],
+            );
+        }
+        Kind::Object(73) => {
+            let potion = item(373, (entity.data & 0x7fff) as i16 | 16384);
+            let [r, g, b, _] = crate::ui::argb(crate::tooltip::potion_color(&potion) | 0xFF00_0000);
+            sprite(
+                out,
+                registry.sprite("potion_overlay"),
+                0.25,
+                -0.25,
+                [r, g, b],
+            );
+            sprite(
+                out,
+                registry.sprite("potion_bottle_splash"),
+                0.25,
+                -0.25,
+                [1.0; 3],
+            );
+        }
+        Kind::Object(kind @ (63 | 64 | 66)) => {
+            let size = if kind == 63 { 2.0 } else { 0.5 };
+            sprite(
+                out,
+                registry.item_layer(&item(385, 0)),
+                size,
+                -0.25,
+                [1.0; 3],
+            );
+        }
+        Kind::Object(90) => {
+            let (x, y) = (0.25, 0.25);
+            pixel_quad(
+                out,
+                facing,
+                [[-x, -y, 0.0], [x, -y, 0.0], [x, y, 0.0], [-x, y, 0.0]],
+                [[8.0, 24.0], [16.0, 24.0], [16.0, 16.0], [8.0, 16.0]],
+                Texture::Particles as u32,
+                [1.0; 3],
+            );
+        }
+        Kind::Orb => {
+            let phase = (entity.age as f32 + partial) / 2.0;
+            let red = ((phase.sin() + 1.0) * 0.5 * 255.0).floor() / 255.0;
+            let blue = ((phase + 4.1887903).sin() + 1.0) * 0.1;
+            let (x, y0, y1) = (0.15, -0.075, 0.225);
+            pixel_quad(
+                out,
+                facing,
+                [[-x, y0, 0.0], [x, y0, 0.0], [x, y1, 0.0], [-x, y1, 0.0]],
+                [[0.0, 16.0], [16.0, 16.0], [16.0, 0.0], [0.0, 0.0]],
+                Texture::ExperienceOrb as u32,
+                [red, 1.0, blue],
+            );
+        }
+        _ => {}
+    }
+}
+
+/// `RenderPlayer.renderRightArm` for the first-person hand: the arm and
+/// sleeve with `ModelBiped`'s idle sway at age zero.
+pub(crate) fn first_person_arm(
+    out: &mut Vec<Vertex>,
+    m: Mat4,
+    skin: u32,
+    slim: bool,
+    sleeve: bool,
+) {
+    let point = [-5.0, if slim { 2.5 } else { 2.0 }, 0.0];
+    let right = part(m, point, [0.0, 0.0, 0.1]);
+    let x = if slim { -2.0 } else { -3.0 };
+    let size = [if slim { 3 } else { 4 }, 12, 4];
+    add(
+        out,
+        right,
+        cuboid(40.0, 16.0, [x, -2.0, -2.0], size),
+        skin,
+        [1.0; 3],
+    );
+    if sleeve {
+        add(
+            out,
+            right,
+            cuboid(40.0, 32.0, [x, -2.0, -2.0], size).inflated(0.25),
+            skin,
+            [1.0; 3],
+        );
     }
 }
 
@@ -1080,49 +1436,6 @@ pub fn nametags(
                 label(out, at, name, 0.0);
             }
             _ => {}
-        }
-    }
-}
-
-/// The held item in first person: sword/bow sprite or block, with the swing.
-#[allow(clippy::too_many_arguments)]
-pub fn first_person(
-    out: &mut Vec<Vertex>,
-    view: &crate::inventory::View,
-    swing: Option<u8>,
-    using: bool,
-    partial: f32,
-    camera: horizon_protocol_47::play::PositionLook,
-    origin: [i64; 3],
-    registry: &crate::terrain::Registry,
-    aspect: f32,
-) {
-    if view.open {
-        return;
-    }
-    let eye = Vec3::from_array(std::array::from_fn(|a| {
-        (camera.position[a] - origin[a] as f64) as f32
-    }));
-    let basis = Mat4::from_translation(eye)
-        * Mat4::from_rotation_y((-camera.yaw).to_radians())
-        * Mat4::from_rotation_x(camera.pitch.to_radians());
-    if let Some(item) = view
-        .slots
-        .get(36 + usize::from(view.selected))
-        .and_then(Option::as_ref)
-        && let Some(texture) = registry.item_layer(item)
-    {
-        let progress = swing.map_or(0.0, |v| (f32::from(v) + partial) / 6.0);
-        let arc = (progress.sqrt() * PI).sin();
-        let mut hand =
-            basis * Mat4::from_translation(Vec3::new(-0.22 * aspect.min(1.6), -0.18, 0.55));
-        hand *= Mat4::from_rotation_z(if using { -0.9 } else { -0.35 + arc * 0.6 });
-        hand *= Mat4::from_rotation_y(if using { -0.8 } else { arc * 0.6 });
-        hand *= Mat4::from_scale(Vec3::new(0.025, -0.025, 0.025));
-        if item.id < 256 {
-            registry.held_block(out, item, hand * Mat4::from_scale(Vec3::splat(12.0)));
-        } else {
-            sprite(out, hand, texture);
         }
     }
 }
@@ -1435,6 +1748,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn java_random_matches_the_seed_187_sequence() {
+        let mut random = JavaRandom::new(187);
+        assert_eq!(random.next_float().to_bits(), 1_060_997_411);
+        assert!((random.next_float() - 0.583_058_1).abs() < 1e-6);
+        assert_eq!(random.next_float().to_bits(), 1_054_896_808);
+    }
+
+    #[test]
     fn skin_and_cape_bindings_follow_player_parts_metadata() {
         use horizon_protocol_47::{entities::EntityPacket, nbt::Meta};
         use horizon_world_189::entities::Entities;
@@ -1464,6 +1785,7 @@ mod tests {
             [0; 3],
             None,
             Some(&bindings),
+            Default::default(),
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().any(|v| v.layer == 1001));
@@ -1479,6 +1801,7 @@ mod tests {
             [0; 3],
             None,
             Some(&bindings),
+            Default::default(),
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().all(|v| v.layer != 1001));
@@ -1515,6 +1838,7 @@ mod tests {
                 [0; 3],
                 None,
                 None,
+                Default::default(),
             );
             assert!(out.iter().any(|v| v.layer == texture as u32));
             assert!(out.iter().flat_map(|v| v.position).all(f32::is_finite));
@@ -1532,6 +1856,7 @@ mod tests {
                     [0; 3],
                     None,
                     None,
+                    Default::default(),
                 );
                 assert!(out.iter().all(|v| v.layer != Texture::Wool as u32));
             }
@@ -1569,7 +1894,15 @@ mod tests {
         }
         let entities = vec![(1, tracked.get(1).unwrap().clone())];
         let mut vertices = Vec::new();
-        super::entities(&mut vertices, &entities, 0.5, [0; 3], None, None);
+        super::entities(
+            &mut vertices,
+            &entities,
+            0.5,
+            [0; 3],
+            None,
+            None,
+            Default::default(),
+        );
         for layer in [Texture::Diamond1, Texture::Diamond2, Texture::DiamondSword] {
             assert!(vertices.iter().any(|v| v.layer == layer as u32));
         }
@@ -1586,6 +1919,7 @@ mod tests {
             [0; 3],
             None,
             None,
+            Default::default(),
         );
         assert!(vertices.is_empty());
     }

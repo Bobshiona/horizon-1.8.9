@@ -74,6 +74,10 @@ pub struct Controller {
     miss_delay: u8,
     pub swing: Option<u8>,
     pub using: bool,
+    /// Ticks the held item has been in use.
+    pub use_ticks: u32,
+    /// Critical-hit particles to show: target and whether magic (Sharpness).
+    pub effects: Vec<(i32, bool)>,
     pub haste: Option<i8>,
     pub fatigue: Option<i8>,
     raycaster: raycast::Raycaster,
@@ -170,6 +174,26 @@ impl Controller {
                         Some(Hit::Entity { id, .. }) => {
                             if game_mode != 3 {
                                 writer.send(&packet::use_entity(id, 1, None)?)?;
+                                // attackTargetEntityWithCurrentItem: other players
+                                // accept the client-side hit, so crits show at once.
+                                let other_player = entities.get(id).is_some_and(|e| {
+                                    matches!(
+                                        e.kind,
+                                        horizon_world_189::entities::Kind::Player { .. }
+                                    )
+                                });
+                                let critical = player.fall_distance > 0.0
+                                    && !player.on_ground
+                                    && !player.in_water
+                                    && !player.blindness;
+                                if other_player && self.effects.len() < 64 {
+                                    if critical {
+                                        self.effects.push((id, false));
+                                    }
+                                    if inventory.held().is_some_and(|i| i.enchantment(16) > 0) {
+                                        self.effects.push((id, true));
+                                    }
+                                }
                                 // EntityPlayer.attackTargetEntityWithCurrentItem's
                                 // sprint hit reduces horizontal motion locally.
                                 if player.sprinting {
@@ -302,10 +326,26 @@ impl Controller {
                         writer.send(&packet::place([-1, -1, -1], 255, [0.0; 3], Some(item))?)?;
                         self.using = is_sword(item.id)
                             || item.id == 261
+                            || item.id == 335
+                            || (item.id == 373 && item.damage & 16384 == 0)
                             || matches!(item.id,260|282|297|319|320|322|349|350|357|360|363..=367|391..=394|400|412|413|423|424);
                     }
                 }
             }
+        }
+        // onItemUseFinish: food and drinks end after 32 ticks without a
+        // release packet; the server finishes them too.
+        if self.using {
+            self.use_ticks += 1;
+            let consumable = inventory
+                .held()
+                .is_some_and(|i| !is_sword(i.id) && i.id != 261);
+            if consumable && self.use_ticks >= 32 {
+                self.using = false;
+            }
+        }
+        if !self.using {
+            self.use_ticks = 0;
         }
         player.using_item = self.using;
         if !input.attack || self.using {

@@ -223,33 +223,36 @@ impl Renderer {
         &mut self,
         entities: &[(i32, horizon_world_189::entities::Entity)],
         partial: f32,
-        ui: Option<&(
-            Arc<crate::inventory::View>,
-            Option<u8>,
-            bool,
-            crate::gameplay::Vitals,
-        )>,
         board: &crate::scoreboard::Scoreboard,
         own_name: &str,
+        own: Option<&(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
+        extra: &[crate::terrain::Vertex],
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
             return Ok(());
         };
-        self.skins
-            .retain(|uuid, _| entities.iter().any(|(_, e)| e.uuid == *uuid));
+        let own_uuid = own.map(|(uuid, _)| *uuid);
+        self.skins.retain(|uuid, _| {
+            Some(*uuid) == own_uuid || entities.iter().any(|(_, e)| e.uuid == *uuid)
+        });
         self.skin_images
             .retain(|uuid, _| self.skins.contains_key(uuid));
         self.skin_loader
-            .retain(entities.iter().map(|(_, e)| e.uuid));
+            .retain(entities.iter().map(|(_, e)| e.uuid).chain(own_uuid));
         for (_, entity) in entities {
             if let Some(profile) = &entity.profile {
                 self.skin_loader.request(entity.uuid, profile);
             }
         }
+        if let Some((uuid, profile)) = own {
+            self.skin_loader.request(*uuid, profile);
+        }
         while let Ok(result) = self.skin_loader.results.try_recv() {
             match result {
                 Ok(loaded) => {
-                    if !entities.iter().any(|(_, e)| e.uuid == loaded.uuid) {
+                    if Some(loaded.uuid) != own_uuid
+                        && !entities.iter().any(|(_, e)| e.uuid == loaded.uuid)
+                    {
                         continue;
                     }
                     let Some(layer) = self.skins.get(&loaded.uuid).map(|b| b.skin).or_else(|| {
@@ -291,7 +294,9 @@ impl Renderer {
             scene.origin(),
             self.registry.as_deref(),
             Some(&self.skins),
+            self.pose,
         );
+        vertices.extend_from_slice(extra);
         if let Some(registry) = &self.registry {
             crate::models::nametags(
                 &mut vertices,
@@ -304,25 +309,43 @@ impl Renderer {
                 own_name,
             );
         }
-        if let Some((view, swing, using_item, vitals)) = ui
-            && let Some(registry) = &self.registry
-            && vitals.health > 0.0
-        {
-            crate::models::first_person(
-                &mut vertices,
-                view,
-                *swing,
-                *using_item,
-                partial,
-                self.pose,
-                scene.origin(),
-                registry,
-                self.config.width as f32 / self.config.height.max(1) as f32,
-            );
-        }
         let result = scene.set_entities(&self.device, &self.queue, &vertices);
         self.entity_vertices = vertices;
         result
+    }
+
+    /// The mesh origin entity positions are drawn relative to.
+    pub fn origin(&self) -> Option<[i64; 3]> {
+        self.scene.as_ref().map(Scene::origin)
+    }
+
+    /// A loaded skin's layer and model.
+    pub fn skin_of(&self, uuid: u128) -> Option<(u32, bool)> {
+        self.skins
+            .get(&uuid)
+            .map(|binding| (binding.skin, binding.slim))
+    }
+
+    /// `hurtCameraEffect` and view bobbing for the world camera.
+    pub fn set_camera_effects(&mut self, effects: glam::Mat4) {
+        if let Some(scene) = &mut self.scene {
+            scene.set_effects(effects);
+        }
+    }
+
+    /// Rebuild the first-person hand.
+    pub fn set_hand(
+        &mut self,
+        frame: Option<&crate::hand::Frame<'_>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let (Some(scene), Some(registry)) = (&mut self.scene, &self.registry) else {
+            return Ok(());
+        };
+        let mut vertices = Vec::new();
+        if let Some(frame) = frame {
+            crate::hand::draw(&mut vertices, frame, registry);
+        }
+        scene.set_hand(&self.device, &self.queue, &self.config, &vertices)
     }
 
     pub fn world_ready(&self) -> bool {
@@ -557,6 +580,31 @@ impl Renderer {
             if let Some(scene) = &self.scene {
                 scene.draw(&mut pass, &self.config);
             }
+        }
+        if let Some(scene) = &self.scene {
+            // renderHand: depth cleared so the hand never enters walls.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("First-person hand"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &scene.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            scene.draw_hand(&mut pass);
         }
         if let Some(ui) = &self.ui {
             let plain = texture.create_view(&wgpu::TextureViewDescriptor {

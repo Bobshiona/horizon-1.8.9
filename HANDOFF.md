@@ -121,13 +121,37 @@ shows the 40-tick item name. `--smoke-inventory` opens the inventory for a captu
 items draw their first face flat, no player model in the inventory, no drag-splitting or double-click
 collect, furnace/brewing progress not drawn, and other window types have no shift-click prediction.
 
-Next (in order): dropped items and projectiles; 1.8.9 first-person hand/item transforms and block-hit; Keychain-backed
-refresh-token caching; a release build measured under the 80-player lobby.
+Combat entities and first-person checkpoint. Spawn Object velocity and S12 velocity now reach non-living
+entities, which simulate locally between server updates: arrows and throwables (0.99 drag, per-kind
+gravity, stopping at solid blocks, yaw/pitch from motion), items, primed TNT and falling blocks (0.04
+gravity, ground friction), constant-motion fireballs. `RenderEntityItem` is ported from the jar's
+bytecode: bob and spin, 2-5 copies at counts above 1/16/32/48, 3D models scattered by a `Random` seeded
+187 and flat items stacked 0.046875 deep, both through `RenderItem.renderItem`'s half scale. Arrows use
+`arrow.png`; snowballs, eggs, pearls, eyes, bottles, splash potions (with overlay tint), fire charges
+(small and large fireballs), fishing bobbers and pulsing XP orbs are billboards; primed TNT swells and
+flashes; falling blocks draw their block. `hand.rs` ports `ItemRenderer`: equip progress (0.4 per tick,
+swap below 0.1, re-equip on use), arm lag (`rotateWithPlayerRotations`), `transformFirstPersonItem`,
+`doItemUsedTransformations`, block-hit (`doBlockTransformations`), bow draw and shake, eating/drinking,
+and `renderPlayerArm` with the player's own skin. Held items use the jar's display transforms: generated
+items [0,-135,25]/[0,4,2]/1.7 ([0,45,25] for the fishing rod and carrot on a stick), block items doubled
+by `ItemRenderer.renderItem` with the carpet, trapdoor and fence-gate offsets; bow pulling, potion and
+leather layers draw. The hand renders in its own pass with cleared depth and a fixed 70-degree
+projection. Camera effects follow `EntityRenderer`: hurt tilt, death roll and view bobbing
+(`--no-view-bobbing`). `particles.rs` emits `EntityCrit2FX` bursts on predicted crits (falling, not on
+ground, not in water or blind) and enchanted hits, S0B animations 4/5 from the server, and arrow crit
+trails. Physics now tracks fall distance, distance walked and camera yaw/pitch for these effects. A
+capture checked dropped items, a stuck arrow, swelling TNT, a landed falling block, collected XP orbs and
+the held sword, bow, fishing rod and wool block. Known gaps: other players' held items still use an
+approximate third-person transform (no `LayerHeldItem` port, so their block-hit pose is not shown), no
+fishing line, no item pickup animation, no explosion/smoke/block-break particles, and the cast fishing
+rod model is not swapped in.
+
+Next (in order): Keychain-backed refresh-token caching; a release build measured under the 80-player lobby.
 
 ## 2. Verified State
 
-- 102 scoped tests pass with `--include-ignored` (client 30, login CLI 2, assets 1, auth 3, physics 16,
-  protocol 35, world 15 — counts include the Metal readback and the owned-jar registry test).
+- 107 scoped tests pass with `--include-ignored` (client 34, login CLI 2, assets 1, auth 3, physics 16,
+  protocol 35, world 16 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata
@@ -170,12 +194,12 @@ refresh-token caching; a release build measured under the 80-player lobby.
 1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
    block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
    includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
-   prediction/crack effects, full first-person item transforms, consumable durations, crafting/shift-click
+   prediction/crack effects, third-person held-item transforms, crafting/shift-click
    and special-container rules. Adventure restrictions are enforced conservatively. Live Hypixel remains
    unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
-   skin/cape bindings are present. Team label rules, leather overlay/glint, first-person hands and exact
-   item display transforms remain pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
+   skin/cape bindings are present, as are first-person hands and first-person item display transforms.
+   Enchantment glint and third-person item display transforms remain pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
    position cape dynamics and additional HD texture layouts require further parity.
 3. Standard zombie, skeleton, wither skeleton, creeper, pig, cow, villager, sheep, chicken, wolf, spider,
    cave spider, slime and enderman meshes are present. Age, sheep shearing/color, slime size, wolf texture

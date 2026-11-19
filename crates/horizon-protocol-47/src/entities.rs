@@ -25,6 +25,8 @@ pub enum EntityPacket {
         pitch: i8,
         yaw: i8,
         data: i32,
+        /// Present when `data` is positive: motion in 1/8000 blocks per tick.
+        velocity: Option<[i16; 3]>,
     },
     SpawnMob {
         id: i32,
@@ -134,11 +136,11 @@ pub fn decode(id: i32, fields: &[u8]) -> io::Result<Option<EntityPacket>> {
             let pitch = byte(&mut input)?;
             let yaw = byte(&mut input)?;
             let data = int(&mut input)?;
-            if data > 0 {
-                for _ in 0..3 {
-                    short(&mut input)?;
-                }
-            }
+            let velocity = if data > 0 {
+                Some([short(&mut input)?, short(&mut input)?, short(&mut input)?])
+            } else {
+                None
+            };
             EntityPacket::SpawnObject {
                 id,
                 kind,
@@ -146,6 +148,7 @@ pub fn decode(id: i32, fields: &[u8]) -> io::Result<Option<EntityPacket>> {
                 pitch,
                 yaw,
                 data,
+                velocity,
             }
         }
         0x0f => {

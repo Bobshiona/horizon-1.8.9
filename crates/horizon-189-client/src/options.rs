@@ -23,6 +23,8 @@ pub struct Options {
     pub smoke_tab: bool,
     /// Validation only: open the inventory and hover the first hotbar slot.
     pub smoke_inventory: bool,
+    /// Vanilla `viewBobbing` (on by default).
+    pub view_bobbing: bool,
     pub help: bool,
     login: bool,
     offline: bool,
@@ -59,6 +61,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
     --render-distance N           View distance in chunks, 2-16 (default 8)\n\
     --gui-scale N                 Interface scale 0-4 (0 automatic, as vanilla)\n\
+    --no-view-bobbing             Turn off view bobbing (vanilla has it on)\n\
     --help                        Show options";
 
 impl Options {
@@ -66,6 +69,7 @@ impl Options {
         let mut options = Self {
             sensitivity: 0.5,
             view_distance: 8,
+            view_bobbing: true,
             ..Self::default()
         };
         let mut arguments = arguments.into_iter();
@@ -102,6 +106,7 @@ impl Options {
                 "--smoke-chat" => options.smoke_chat = Some(value()?),
                 "--smoke-tab" => options.smoke_tab = true,
                 "--smoke-inventory" => options.smoke_inventory = true,
+                "--no-view-bobbing" => options.view_bobbing = false,
                 "--gui-scale" => {
                     let scale: u32 = value()?.parse()?;
                     if scale > 4 {
