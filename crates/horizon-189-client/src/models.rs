@@ -29,10 +29,30 @@ pub enum Texture {
     Creeper,
     Banner,
     Font,
+    Leather1,
+    Leather2,
+    Chain1,
+    Chain2,
+    Iron1,
+    Iron2,
+    Diamond1,
+    Diamond2,
+    Gold1,
+    Gold2,
+    WoodSword,
+    StoneSword,
+    IronSword,
+    DiamondSword,
+    GoldSword,
+    Bow,
+    CreeperMob,
+    Pig,
+    Cow,
+    Villager,
 }
 
 /// Owned-jar paths for every layer after the generated white one.
-pub const SOURCES: [&str; 14] = [
+pub const SOURCES: [&str; 34] = [
     "minecraft:entity/steve",
     "minecraft:entity/alex",
     "minecraft:entity/chest/normal",
@@ -47,6 +67,26 @@ pub const SOURCES: [&str; 14] = [
     "minecraft:entity/creeper/creeper",
     "minecraft:entity/banner_base",
     "minecraft:font/ascii",
+    "minecraft:models/armor/leather_layer_1",
+    "minecraft:models/armor/leather_layer_2",
+    "minecraft:models/armor/chainmail_layer_1",
+    "minecraft:models/armor/chainmail_layer_2",
+    "minecraft:models/armor/iron_layer_1",
+    "minecraft:models/armor/iron_layer_2",
+    "minecraft:models/armor/diamond_layer_1",
+    "minecraft:models/armor/diamond_layer_2",
+    "minecraft:models/armor/gold_layer_1",
+    "minecraft:models/armor/gold_layer_2",
+    "minecraft:items/wood_sword",
+    "minecraft:items/stone_sword",
+    "minecraft:items/iron_sword",
+    "minecraft:items/diamond_sword",
+    "minecraft:items/gold_sword",
+    "minecraft:items/bow_standby",
+    "minecraft:entity/creeper/creeper",
+    "minecraft:entity/pig/pig",
+    "minecraft:entity/cow/cow",
+    "minecraft:entity/villager/villager",
 ];
 
 /// One box of a vanilla model: texture offset, origin, integer size, inflation.
@@ -356,6 +396,126 @@ fn player(out: &mut Vec<Vertex>, entity: &Entity, slim: bool, partial: f32, orig
         skin,
         white,
     );
+    for (slot, item) in entity.equipment.iter().enumerate().skip(1) {
+        let Some(item) = item else { continue };
+        let Some(texture) = armor_texture(item.id, slot) else {
+            continue;
+        };
+        let inflation = if slot == 2 { 0.5 } else { 1.0 };
+        let tint = leather_colour(item);
+        let mut draw =
+            |matrix, cube: Cuboid| add(out, matrix, cube.inflated(inflation), texture, tint);
+        match slot {
+            4 => draw(head_matrix, cuboid(0.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8])),
+            3 => {
+                draw(
+                    body_matrix,
+                    cuboid(16.0, 16.0, [-4.0, 0.0, -2.0], [8, 12, 4]),
+                );
+                draw(
+                    part(base, right_arm_point, right_arm),
+                    cuboid(40.0, 16.0, [-3.0, -2.0, -2.0], [4, 12, 4]),
+                );
+                let mut cube = cuboid(40.0, 16.0, [-1.0, -2.0, -2.0], [4, 12, 4]);
+                cube.mirror = true;
+                draw(part(base, left_arm_point, left_arm), cube);
+            }
+            2 => {
+                draw(
+                    body_matrix,
+                    cuboid(16.0, 16.0, [-4.0, 0.0, -2.0], [8, 12, 4]),
+                );
+                draw(right, cuboid(0.0, 16.0, [-2.0, 0.0, -2.0], [4, 12, 4]));
+                draw(left, cuboid(0.0, 16.0, [-2.0, 0.0, -2.0], [4, 12, 4]));
+            }
+            1 => {
+                draw(right, cuboid(0.0, 16.0, [-2.0, 0.0, -2.0], [4, 12, 4]));
+                draw(left, cuboid(0.0, 16.0, [-2.0, 0.0, -2.0], [4, 12, 4]));
+            }
+            _ => {}
+        }
+    }
+    if let Some(item) = &entity.equipment[0]
+        && let Some(texture) = held_texture(item.id)
+    {
+        let hand = part(base, right_arm_point, right_arm)
+            * Mat4::from_translation(Vec3::new(-1.0, 9.0, 0.0))
+            * Mat4::from_rotation_x(-PI / 2.0)
+            * Mat4::from_rotation_y(PI);
+        sprite(out, hand, texture);
+    }
+}
+
+fn armor_texture(id: i16, slot: usize) -> Option<Texture> {
+    let offset = id.checked_sub(298)?;
+    if !(0..20).contains(&offset) || 4 - offset as usize % 4 != slot {
+        return None;
+    }
+    let leggings = slot == 2;
+    Some(match (offset / 4, leggings) {
+        (0, false) => Texture::Leather1,
+        (0, true) => Texture::Leather2,
+        (1, false) => Texture::Chain1,
+        (1, true) => Texture::Chain2,
+        (2, false) => Texture::Iron1,
+        (2, true) => Texture::Iron2,
+        (3, false) => Texture::Diamond1,
+        (3, true) => Texture::Diamond2,
+        (4, false) => Texture::Gold1,
+        (4, true) => Texture::Gold2,
+        _ => return None,
+    })
+}
+
+fn leather_colour(item: &horizon_protocol_47::nbt::Item) -> [f32; 3] {
+    if !(298..=301).contains(&item.id) {
+        return [1.0; 3];
+    }
+    let colour = item
+        .nbt
+        .as_ref()
+        .and_then(|n| n.get("display"))
+        .and_then(|n| n.get("color"))
+        .and_then(|n| n.as_int())
+        .unwrap_or(0xa06540);
+    [
+        ((colour >> 16) & 255) as f32 / 255.0,
+        ((colour >> 8) & 255) as f32 / 255.0,
+        (colour & 255) as f32 / 255.0,
+    ]
+}
+
+fn held_texture(id: i16) -> Option<Texture> {
+    Some(match id {
+        268 => Texture::WoodSword,
+        272 => Texture::StoneSword,
+        267 => Texture::IronSword,
+        276 => Texture::DiamondSword,
+        283 => Texture::GoldSword,
+        261 => Texture::Bow,
+        _ => return None,
+    })
+}
+
+/// Double-sided item sprite attached to the animated hand. Alpha cutout
+/// retains the owned item's silhouette.
+fn sprite(out: &mut Vec<Vertex>, matrix: Mat4, texture: Texture) {
+    let points = [
+        [-8.0, 0.0, 0.0],
+        [-8.0, -16.0, 0.0],
+        [8.0, -16.0, 0.0],
+        [8.0, 0.0, 0.0],
+    ];
+    let uv = [[0.0, 16.0], [0.0, 0.0], [16.0, 0.0], [16.0, 16.0]];
+    for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+        out.push(Vertex {
+            position: matrix.transform_point3(Vec3::from(points[i])).to_array(),
+            uv: uv[i].map(|v| v / LAYER_SIZE as f32),
+            layer: texture as u32,
+            color: [1.0; 3],
+            hurt: 0.0,
+        });
+    }
 }
 
 /// Standard zombie and skeleton boxes with `ModelZombie` arm animation.
@@ -455,6 +615,150 @@ fn humanoid_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i
     }
 }
 
+/// Owned adult creeper, pig, cow and villager model boxes.
+fn common_mob(out: &mut Vec<Vertex>, entity: &Entity, partial: f32, origin: [i64; 3]) {
+    let yaw = lerp_angle(entity.previous_body_yaw, entity.body_yaw, partial);
+    let head_yaw = lerp_angle(entity.previous_head_yaw, entity.head_yaw, partial) - yaw;
+    let base = Mat4::from_translation(position(entity, partial, origin))
+        * Mat4::from_rotation_y((180.0 - yaw).to_radians())
+        * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+        * Mat4::from_translation(Vec3::new(0.0, -1.5078125, 0.0));
+    let amount = lerp(entity.previous_limb_amount, entity.limb_amount, partial).min(1.0);
+    let limb = entity.limb_swing - entity.limb_amount * (1.0 - partial);
+    let texture = match entity.kind {
+        Kind::Mob(50) => Texture::CreeperMob,
+        Kind::Mob(90) => Texture::Pig,
+        Kind::Mob(92) => Texture::Cow,
+        _ => Texture::Villager,
+    };
+    let mut draw = |matrix, cube| add(out, matrix, cube, texture, [1.0; 3]);
+    if entity.kind == Kind::Mob(120) {
+        let head = part(
+            base,
+            [0.0; 3],
+            [entity.pitch.to_radians(), head_yaw.to_radians(), 0.0],
+        );
+        draw(head, cuboid(0.0, 0.0, [-4.0, -10.0, -4.0], [8, 10, 8]));
+        draw(head, cuboid(24.0, 0.0, [-1.0, -3.0, -6.0], [2, 4, 2]));
+        let body = part(base, [0.0; 3], [0.0; 3]);
+        draw(body, cuboid(16.0, 20.0, [-4.0, 0.0, -3.0], [8, 12, 6]));
+        draw(
+            body,
+            cuboid(0.0, 38.0, [-4.0, 0.0, -3.0], [8, 18, 6]).inflated(0.5),
+        );
+        let arms = part(base, [0.0, 3.0, -1.0], [-0.75, 0.0, 0.0]);
+        for x in [-8.0, 4.0] {
+            draw(arms, cuboid(44.0, 22.0, [x, -2.0, -2.0], [4, 8, 4]));
+        }
+        draw(arms, cuboid(40.0, 38.0, [-4.0, 2.0, -2.0], [8, 4, 4]));
+        for (x, phase) in [(-2.0, 0.0), (2.0, PI)] {
+            draw(
+                part(
+                    base,
+                    [x, 12.0, 0.0],
+                    [(limb * 0.6662 + phase).cos() * 0.7 * amount, 0.0, 0.0],
+                ),
+                cuboid(0.0, 22.0, [-2.0, 0.0, -2.0], [4, 12, 4]),
+            );
+        }
+        return;
+    }
+    let creeper = entity.kind == Kind::Mob(50);
+    let cow = entity.kind == Kind::Mob(92);
+    let head_at = if creeper {
+        [0.0, 6.0, 0.0]
+    } else if cow {
+        [0.0, 4.0, -8.0]
+    } else {
+        [0.0, 12.0, -6.0]
+    };
+    let head = part(
+        base,
+        head_at,
+        [entity.pitch.to_radians(), head_yaw.to_radians(), 0.0],
+    );
+    let head_box = if creeper {
+        cuboid(0.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8])
+    } else if cow {
+        cuboid(0.0, 0.0, [-4.0, -4.0, -6.0], [8, 8, 6])
+    } else {
+        cuboid(0.0, 0.0, [-4.0, -4.0, -8.0], [8, 8, 8])
+    };
+    draw(head, head_box);
+    if cow {
+        for x in [-5.0, 4.0] {
+            draw(head, cuboid(22.0, 0.0, [x, -5.0, -4.0], [1, 3, 1]));
+        }
+    } else if !creeper {
+        draw(head, cuboid(16.0, 16.0, [-2.0, 0.0, -9.0], [4, 3, 1]));
+    }
+    let body = if creeper {
+        part(base, [0.0, 6.0, 0.0], [0.0; 3])
+    } else {
+        part(
+            base,
+            [0.0, if cow { 5.0 } else { 11.0 }, 2.0],
+            [PI / 2.0, 0.0, 0.0],
+        )
+    };
+    draw(
+        body,
+        if creeper {
+            cuboid(16.0, 16.0, [-4.0, 0.0, -2.0], [8, 12, 4])
+        } else if cow {
+            cuboid(18.0, 4.0, [-6.0, -10.0, -7.0], [12, 18, 10])
+        } else {
+            cuboid(28.0, 8.0, [-5.0, -10.0, -7.0], [10, 16, 8])
+        },
+    );
+    if cow {
+        draw(body, cuboid(52.0, 0.0, [-2.0, 2.0, -8.0], [4, 6, 1]));
+    }
+    let leg_h = if cow { 12 } else { 6 };
+    let spread = if creeper {
+        2.0
+    } else if cow {
+        4.0
+    } else {
+        3.0
+    };
+    for (x, z, phase) in [
+        (-spread, if creeper { 4.0 } else { 7.0 }, 0.0),
+        (spread, if creeper { 4.0 } else { 7.0 }, PI),
+        (
+            -spread,
+            if creeper {
+                -4.0
+            } else if cow {
+                -6.0
+            } else {
+                -5.0
+            },
+            PI,
+        ),
+        (
+            spread,
+            if creeper {
+                -4.0
+            } else if cow {
+                -6.0
+            } else {
+                -5.0
+            },
+            0.0,
+        ),
+    ] {
+        draw(
+            part(
+                base,
+                [x, 24.0 - f32::from(leg_h), z],
+                [(limb * 0.6662 + phase).cos() * 1.4 * amount, 0.0, 0.0],
+            ),
+            cuboid(0.0, 16.0, [-2.0, 0.0, -2.0], [4, leg_h, 4]),
+        );
+    }
+}
+
 /// Placeholder size (width, height) and tint for non-player entities.
 fn placeholder(kind: Kind) -> ([f32; 2], [f32; 3]) {
     let hostile = [0.75, 0.32, 0.30];
@@ -507,6 +811,7 @@ pub fn entities(out: &mut Vec<Vertex>, entities: &[(i32, Entity)], partial: f32,
         match entity.kind {
             Kind::Player { slim } => player(out, entity, slim, partial, origin),
             Kind::Mob(51 | 54) => humanoid_mob(out, entity, partial, origin),
+            Kind::Mob(50 | 90 | 92 | 120) => common_mob(out, entity, partial, origin),
             kind => {
                 let ([width, height], tint) = placeholder(kind);
                 let at = position(entity, partial, origin);
@@ -535,6 +840,43 @@ pub fn entities(out: &mut Vec<Vertex>, entities: &[(i32, Entity)], partial: f32,
                 vertex.hurt = 0.3;
             }
         }
+    }
+}
+
+/// Depth-tested player labels. Texture properties remain on each profile
+/// for an asynchronous skin/cape provider to consume.
+pub fn nametags(
+    out: &mut Vec<Vertex>,
+    entities: &[(i32, Entity)],
+    partial: f32,
+    origin: [i64; 3],
+    camera: horizon_protocol_47::play::PositionLook,
+    widths: &[u8; 256],
+) {
+    for (_, entity) in entities {
+        if entity.invisible() || !matches!(entity.kind, Kind::Player { .. }) {
+            continue;
+        }
+        let Some(profile) = &entity.profile else {
+            continue;
+        };
+        let distance: f64 = entity
+            .position
+            .iter()
+            .zip(camera.position)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        let range = if entity.sneaking() { 32.0 } else { 64.0 };
+        if distance > range * range {
+            continue;
+        }
+        let at = position(entity, partial, origin)
+            + Vec3::new(0.0, if entity.sneaking() { 2.05 } else { 2.3 }, 0.0);
+        let matrix = Mat4::from_translation(at)
+            * Mat4::from_rotation_y((-camera.yaw).to_radians())
+            * Mat4::from_rotation_x(camera.pitch.to_radians())
+            * Mat4::from_scale(Vec3::new(-0.025, -0.025, 0.025));
+        text_line(out, matrix, &profile.name, 0.0, widths, [1.0; 3]);
     }
 }
 
@@ -820,6 +1162,56 @@ pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equipment_meshes_follow_slots_and_hidden_players_emit_nothing() {
+        use horizon_protocol_47::{
+            entities::EntityPacket,
+            nbt::{Item, Meta},
+        };
+        use horizon_world_189::entities::Entities;
+        let mut tracked = Entities::default();
+        tracked.apply(EntityPacket::SpawnPlayer {
+            id: 1,
+            uuid: 0,
+            position: [0; 3],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        for (slot, id) in [(0, 276), (1, 313), (2, 312), (3, 311), (4, 310)] {
+            tracked.apply(EntityPacket::Equipment {
+                id: 1,
+                slot,
+                item: Some(Item {
+                    id,
+                    count: 1,
+                    damage: 0,
+                    nbt: None,
+                }),
+            });
+        }
+        let entities = vec![(1, tracked.get(1).unwrap().clone())];
+        let mut vertices = Vec::new();
+        super::entities(&mut vertices, &entities, 0.5, [0; 3]);
+        for layer in [Texture::Diamond1, Texture::Diamond2, Texture::DiamondSword] {
+            assert!(vertices.iter().any(|v| v.layer == layer as u32));
+        }
+        assert!(vertices.iter().flat_map(|v| v.position).all(f32::is_finite));
+        tracked.apply(EntityPacket::Metadata {
+            id: 1,
+            entries: vec![(0, Meta::Byte(0x20))],
+        });
+        vertices.clear();
+        super::entities(
+            &mut vertices,
+            &[(1, tracked.get(1).unwrap().clone())],
+            0.5,
+            [0; 3],
+        );
+        assert!(vertices.is_empty());
+    }
 
     #[test]
     fn boxes_emit_six_outward_faces_with_layer_scaled_uvs() {

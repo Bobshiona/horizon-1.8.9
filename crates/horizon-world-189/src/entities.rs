@@ -20,6 +20,8 @@ pub enum Kind {
 pub struct Entity {
     pub kind: Kind,
     pub uuid: u128,
+    pub profile: Option<horizon_protocol_47::player_list::Profile>,
+    pub skin_parts: u8,
     server: [i32; 3],
     target: [f64; 3],
     target_yaw: f32,
@@ -54,6 +56,8 @@ impl Entity {
         Self {
             kind,
             uuid,
+            profile: None,
+            skin_parts: 0x7f,
             server,
             target: position,
             target_yaw: yaw,
@@ -92,8 +96,12 @@ impl Entity {
 
     fn metadata(&mut self, entries: &[(u8, Meta)]) {
         for (index, value) in entries {
-            if let (0, Meta::Byte(flags)) = (index, value) {
-                self.flags = *flags as u8;
+            match (index, value) {
+                (0, Meta::Byte(flags)) => self.flags = *flags as u8,
+                (10, Meta::Byte(parts)) if matches!(self.kind, Kind::Player { .. }) => {
+                    self.skin_parts = *parts as u8
+                }
+                _ => {}
             }
         }
     }
@@ -190,6 +198,7 @@ pub fn slim_skin(uuid: u128) -> bool {
 #[derive(Debug, Default)]
 pub struct Entities {
     map: HashMap<i32, Entity>,
+    profiles: HashMap<u128, horizon_protocol_47::player_list::Profile>,
 }
 
 impl Entities {
@@ -211,11 +220,29 @@ impl Entities {
 
     pub fn clear(&mut self) {
         self.map.clear();
+        self.profiles.clear();
     }
 
     pub fn tick(&mut self) {
         for entity in self.map.values_mut() {
             entity.tick();
+        }
+    }
+
+    pub fn update_profiles(&mut self, updates: Vec<horizon_protocol_47::player_list::Update>) {
+        use horizon_protocol_47::player_list::Update;
+        for update in updates {
+            match update {
+                Update::Add { uuid, profile } => {
+                    for entity in self.map.values_mut().filter(|entity| entity.uuid == uuid) {
+                        entity.profile = Some(profile.clone());
+                    }
+                    self.profiles.insert(uuid, profile);
+                }
+                Update::Remove(uuid) => {
+                    self.profiles.remove(&uuid);
+                }
+            }
         }
     }
 
@@ -239,6 +266,7 @@ impl Entities {
                     angle(yaw),
                     angle(pitch),
                 );
+                entity.profile = self.profiles.get(&uuid).cloned();
                 entity.metadata(&metadata);
                 self.map.insert(id, entity);
             }

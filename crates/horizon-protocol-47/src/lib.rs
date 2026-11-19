@@ -10,6 +10,7 @@ pub mod nbt;
 pub mod packet;
 pub mod play;
 pub mod player;
+pub mod player_list;
 #[cfg(test)]
 mod tests;
 

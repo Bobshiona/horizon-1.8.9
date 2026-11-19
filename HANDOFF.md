@@ -24,13 +24,19 @@ Checkpoint added fixed-width entity status decoding, ten-tick hurt feedback with
 and textured standard zombie/skeleton geometry. Scoped tests (including owned-jar/Metal), Clippy, formatting,
 layer/public-tree checks and the local entity/flight gate pass. The entity capture was inspected.
 
-Next: player equipment, names, skin/cape hooks, remaining mobs, then combat (attack/interact packets with vanilla swing-before-attack order),
+Equipment checkpoint adds owned armor textures, sword/bow sprites, depth-tested profile names, signed
+texture-property hooks, and adult creeper/pig/cow/villager geometry. The expanded local entity gate supplied
+a diamond armor set and sword, captured 700 Metal frames, and finished flight with zero movement flags.
+All 69 scoped tests, strict Clippy and formatting pass. Profile README/bio updates and three private PNG
+avatars have been completed outside this repository.
+
+Next: combat (attack/interact packets with vanilla swing-before-attack order),
 inventory and held-item rendering, nametags, real skins.
 
 ## 2. Verified State
 
-- 67 scoped tests pass with `--include-ignored` (client 9, login CLI 2, assets 1, auth 2, physics 14,
-  protocol 25, world 14 — counts include the Metal readback and the owned-jar registry test).
+- 69 scoped tests pass with `--include-ignored` (client 10, login CLI 2, assets 1, auth 2, physics 14,
+  protocol 26, world 14 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata
@@ -71,8 +77,11 @@ inventory and held-item rendering, nametags, real skins.
 ## 5. Known Gaps
 
 1. Combat and interaction packets (attack, use item, block placement and digging) and inventory UI.
-2. Nametags, held items and armour on players; real skins from the session server.
-3. Standard zombie/skeleton models are implemented; other mobs remain sized, tinted boxes.
+2. Player armor and sword/bow sprites are present, with depth-tested profile nametags. Signed texture
+   properties are preserved as skin/cape hooks. Remote texture loading, capes, team label rules, leather
+   overlay/glint, block/tool held meshes and first-person hands remain pending.
+3. Standard adult zombie, skeleton, creeper, pig, cow and villager meshes are present. Baby variants,
+   profession/subtype textures, additional mobs and special animation states remain pending.
 4. Full client light engine (heightmap skylight covers open sky; covered cells use server light).
 5. Fluid flow textures and smooth lighting/AO.
 

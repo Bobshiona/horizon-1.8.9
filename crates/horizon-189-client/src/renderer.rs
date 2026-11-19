@@ -150,6 +150,16 @@ impl Renderer {
         let mut vertices = std::mem::take(&mut self.entity_vertices);
         vertices.clear();
         crate::models::entities(&mut vertices, entities, partial, scene.origin());
+        if let Some(registry) = &self.registry {
+            crate::models::nametags(
+                &mut vertices,
+                entities,
+                partial,
+                scene.origin(),
+                self.pose,
+                &registry.glyphs,
+            );
+        }
         let result = scene.set_entities(&self.device, &self.queue, &vertices);
         self.entity_vertices = vertices;
         result

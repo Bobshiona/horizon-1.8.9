@@ -566,6 +566,9 @@ fn run_actor(
                         positioned = false;
                         lock(shared)?.positioned = false;
                     }
+                    play::Packet::Other { id: 0x38, fields } => {
+                        entities.update_profiles(horizon_protocol_47::player_list::decode(fields)?);
+                    }
                     play::Packet::Other { id: 0x39, fields } => {
                         let abilities = entity_packets::decode_abilities(fields)?;
                         player.flying = abilities.flying;
