@@ -43,3 +43,27 @@
 
 # Visual Studio editor state.
 .vs/
+
+# Horizon 1.8.9: local reference servers, verification captures and secrets never belong in Git.
+/server/
+/servers/
+/mc-*/
+server.properties
+eula.txt
+ops.json
+whitelist.json
+banned-*.json
+usercache.json
+/world/
+*.mca
+*.mcr
+level.dat
+/*.zip
+*.tar.gz
+.env
+.env.*
+*.pem
+*.key
+*.p12
+/*token*.json
+/target/horizon-189-verification/

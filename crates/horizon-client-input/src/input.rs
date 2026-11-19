@@ -2,8 +2,7 @@
 //! Item-use and sneak multipliers come from the player's current state; this
 //! module does not implement sprint eligibility, poses or the input lifecycle.
 
-use std::collections::HashSet;
-use winit::keyboard::{KeyCode, ModifiersState};
+pub use horizon_client_platform::is_quit_shortcut_down;
 
 fn length(v: [f32; 2]) -> f32 {
     f64::from(v[0] * v[0] + v[1] * v[1]).sqrt() as f32
@@ -70,21 +69,11 @@ fn square_movement(v: [f32; 2]) -> [f32; 2] {
     )
 }
 
-/// `InputQuirks.isQuitShortcutDown`: checks whether the platform's window-closing
-/// keyboard shortcut is held.
-/// - On macOS: Command (`super_key()`) + `Q`.
-/// - On Windows / Linux / other: Alt (`alt_key()`) + `F4`.
-pub fn is_quit_shortcut_down(modifiers: ModifiersState, keys: &HashSet<KeyCode>) -> bool {
-    if cfg!(target_os = "macos") {
-        modifiers.super_key() && keys.contains(&KeyCode::KeyQ)
-    } else {
-        modifiers.alt_key() && keys.contains(&KeyCode::F4)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    use winit::keyboard::{KeyCode, ModifiersState};
 
     #[test]
     fn quit_shortcut_follows_platform_modifiers_and_keys() {

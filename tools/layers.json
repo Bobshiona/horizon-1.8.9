@@ -20,6 +20,13 @@
     "crates/horizon-telemetry-server/Cargo.toml"
   ],
   "crates": {
+    "horizon-189-client": "engine",
+    "horizon-assets-189": "engine",
+    "horizon-auth": "engine",
+    "horizon-client-platform": "engine",
+    "horizon-physics-189": "engine",
+    "horizon-protocol-47": "engine",
+    "horizon-world-189": "engine",
     "horizon-assets": "engine",
     "horizon-game-discovery": "engine",
     "horizon-bench": "engine",

@@ -1,83 +1,126 @@
+<h1 align="center">Horizon 1.8.9</h1>
+
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/readme/title-dark.png">
-    <img src="docs/media/readme/title-light.png" alt="Horizon" width="320">
-  </picture>
+  <b>A native Minecraft 1.8.9 client in Rust and Apple Metal.</b><br>
+  Protocol 47, vanilla-exact movement and the full 1.8.9 block registry. No Java, no LWJGL, no OpenGL.
 </p>
 
 <p align="center">
-  <b>Minecraft: Java Edition 26.3, rewritten from scratch in Rust.</b><br>
-  It opens your worlds, generates the same terrain and plays by the same rules, without Java.
+  <img src="docs/media/189/blocks.png" alt="Stairs, slabs, glass, stained glass, water, leaves, fences, panes, a door, a bookshelf and planks rendered by the native Metal client" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://playhorizon.dev/download"><img src="docs/media/readme/download-button.png" alt="Download the Horizon launcher for Windows, macOS and Linux" width="400"></a><br>
-  <sub>You need your own copy of Minecraft: Java Edition.</sub>
+  <img src="docs/media/189/entities.png" alt="A second native client rendered as a skinned player beside chests, a sign, a skull, a banner and mob placeholders" width="49%">
+  <img src="docs/media/189/block-entities.png" alt="A sign reading Horizon 1.8.9 native Metal, an ender chest, a chest and a double chest" width="49%">
 </p>
 
-<p align="center">
-  <a href="https://playhorizon.dev/docs/install"><b>Install guide</b></a> ·
-  <a href="https://playhorizon.dev/docs/"><b>Docs</b></a> ·
-  <a href="https://playhorizon.dev/mods"><b>Mods</b></a> ·
-  <a href="https://discord.gg/playhorizon"><b>Discord</b></a>
-</p>
+<p align="center"><sub>Every frame above was rendered by this client and captured from its Metal surface, connected to an official 1.8.9 server.</sub></p>
 
-<p align="center">
-  <img src="docs/media/readme/hero-lookout.webp" alt="A player's view from a wooden lookout over a village: a friend in diamond armour sneaks at the edge while a creeper flashes white behind her, another friend rides a horse between the houses below, and forest, snowy peaks and the sea run to the horizon" width="100%">
-</p>
+## What it does
 
-<p align="center">
-  <img src="docs/media/readme/signs.webp" alt="Three wooden signs: 3.5x faster start than modded Java, 38 percent more FPS than Java with Sodium, and a mod API to port your mods to Rust" width="100%">
-</p>
+- **Connects like 1.8.9.** Protocol 47 framing, zlib compression, AES/CFB8 encryption, Microsoft → Xbox Live →
+  Minecraft sign-in (or offline/direct-token modes for testing), keep-alives and every movement packet in
+  vanilla's order.
+- **Moves like 1.8.9.** A line-by-line port of `EntityPlayerSP`: the legacy 65536-entry sine table, float
+  rounding and double promotions, sprint/sneak/jump rules, step-up, sneak-edge clipping, ladders, water flow,
+  lava, cobwebs, soul sand, ice, slime, Depth Strider, flight, knockback, potions and attribute modifiers in
+  Java `HashSet` order.
+- **Draws 1.8.9.** All 198 block IDs and 2,557 blockstate variants from your own game jar, with neighbour
+  states (stairs, fences, panes, walls, doors), biome tints, flat lighting with client skylight, cutout and
+  sorted translucency, mipmaps and fog. Players (Steve/Alex, limb swing, sneak, arm swing), mob placeholders,
+  chests, signs with text, skulls and banners.
+- **Feels native on a Mac.** winit + wgpu forced to the Metal backend on Apple Silicon, Retina-aware, raw
+  mouse deltas with vanilla sensitivity, keyboard state reconciled against the window server, and meshing on
+  its own thread so the 20 TPS simulation never waits.
 
-<p align="center">
-  <sub>Against Java Edition with Sodium, Lithium, FerriteCore and ImmediatelyFast on a Ryzen 7 9800X3D with an RTX 5080. More computers on the <a href="https://playhorizon.dev/benchmarks">benchmarks page</a>.</sub>
-</p>
+## How it is verified
 
-<h2 align="center">What you get</h2>
+Parity claims are checked against the real game, not against expectations:
 
-- **Vanilla Minecraft:** survival, creative and hardcore in every dimension, with the same terrain, mobs, villagers and redstone. Your saves open as they are.
-- **Multiplayer:** vanilla and Horizon servers, LAN, and invite codes for playing your world with friends. You can [host a server](https://playhorizon.dev/docs/hosting) too.
-- **Mods:** Horizon's own mod system, with mods like zoom and a minimap, and shader packs. Browse the [catalogue](https://playhorizon.dev/mods) or [make a mod](https://playhorizon.dev/docs/make-a-mod).
-- **Beyond vanilla:** terrain up to 1,024 chunks away, HDR, controller support, graphics presets and dynamic lights.
+| Check | How |
+| --- | --- |
+| Collision boxes | Stair corners compared with the official 1.8.9 server jar on all 52,488 neighbour configurations (`stairs_probe` example vs. a reflection harness). AABB clipping matched 1.8.9 bytecode on 15,000 cases. |
+| Movement | Scripted walk, sprint, sprint-jump, sneak, strafe and flight against a local official 1.8.9 server, which re-simulates every move: zero "moved wrongly" or "moved too quickly" flags. |
+| Physics figures | Unit tests pin walking (0.21586 blocks/tick), sprinting (0.28062), the 1.8.9 jump apex (1.249187…), step-up, sneak edges, flight and Depth Strider. |
+| Rendering | Every metadata state binds a blockstate variant from the owned jar; Metal frames are read back and inspected. |
 
-The dedicated server is measured too: in a four-thread server run, Horizon averaged 47.83 ms per tick with 50 bots while vanilla's watchdog stopped its server during warm-up. Horizon used 1.11 GB of RSS at 50 bots, and the full comparison against vanilla, Paper and Fabric + Lithium is in [the server benchmark](docs/performance/server-vs-vanilla.md). Paper is a separately optimized, feature-breaking server and is a reference point rather than a direct vanilla-compatible comparison.
+## Architecture
 
-<h2 align="center">What you need</h2>
+```
+            winit (AppKit)                    Protocol 47 actor (50 ms ticks)            Mesher thread
+  keys ─► keyboard.rs ─┐                ┌─► horizon-physics-189 player tick ─► C03/C0B/C13
+  mouse ─► look ───────┼─► Shared ──────┤   horizon-world-189 World ◄─ chunks, block changes
+                       │   (keys, pose, │   entities, block entities                   │
+  Metal ◄─ scene.rs ◄──┘    entities)   └─► dirty columns ─────────────────────────────►├─ terrain.rs + models.rs
+         per-column buffers ◄──────────────────────────────── MeshUpdate ◄──────────────┘
+```
 
-- **Your own copy of Minecraft: Java Edition.** Horizon ships no Minecraft files. It builds them from the game you bought, so install version 26.3 and start it once.
-- **Windows, macOS or Linux:** Windows on x64 or ARM64, macOS 12 or later, Linux on x86-64.
+| Crate | Role |
+| --- | --- |
+| `horizon-protocol-47` | Transport, login, play primitives, entities, bounded NBT, slots, metadata |
+| `horizon-world-189` | Legacy chunk storage, heightmap skylight, block registry, blockstate selection, entity tracking |
+| `horizon-physics-189` | Exact AABB clipping, collision shapes, the local player tick |
+| `horizon-assets-189` | Reads blockstates, models and textures from your own 1.8.9 jar |
+| `horizon-auth` | Microsoft/Xbox/Minecraft sign-in, memory-only sessions |
+| `horizon-189-client` | Window, input, network actor, mesher, Metal renderer |
 
-<h2 align="center">Made by the Horizon Team</h2>
+The 1.8.9 crates live beside the [Horizon](https://github.com/horizon-rust/horizon) workspace (a Rust rewrite
+of Minecraft 26.3) and reuse its numeric geometry, model baking and platform layers, while keeping every
+legacy algorithm in its own crate.
 
-<table align="center">
-  <tr>
-    <td align="center" width="140"><a href="https://github.com/kacpherek"><img src="https://github.com/kacpherek.png?size=160" width="80" alt="Kacper"><br><b>Kacper</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/Online5277"><img src="https://github.com/Online5277.png?size=160" width="80" alt="Cosmic"><br><b>Cosmic</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/levzzz5154"><img src="https://github.com/levzzz5154.png?size=160" width="80" alt="levzzz"><br><b>levzzz</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/rdbtCVS"><img src="https://github.com/rdbtCVS.png?size=160" width="80" alt="rdbt"><br><b>rdbt</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/dezer-x"><img src="https://github.com/dezer-x.png?size=160" width="80" alt="Anthony S"><br><b>Anthony S</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/NikitaMGrimm"><img src="https://github.com/NikitaMGrimm.png?size=160" width="80" alt="Nikita"><br><b>Nikita</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/ludovic111"><img src="https://github.com/ludovic111.png?size=160" width="80" alt="Ludovic Marie"><br><b>Ludovic Marie</b></a><br><sub>Founder</sub></td>
-  </tr>
-</table>
+## Build and run
 
-<p align="center">
-  <sub>and everyone who has contributed</sub><br><br>
-  <a href="https://github.com/horizon-rust/horizon/graphs/contributors"><img src="https://contrib.rocks/image?repo=horizon-rust/horizon&max=72&columns=12" alt="Everyone who has contributed to Horizon"></a>
-</p>
+Requirements: an Apple Silicon Mac, Xcode command-line tools, Rust (stable, `aarch64-apple-darwin`), and your
+own copy of Minecraft: Java Edition with the 1.8.9 version installed in the official launcher. Game assets
+are read from your local jar at run time and are never part of this repository.
 
-<p align="center">
-  <a href="https://blacksmith.sh"><img src="docs/media/readme/blacksmith.png" alt="CI powered by Blacksmith" width="280"></a>
-</p>
+```sh
+git clone https://github.com/Bobshiona/horizon-1.8.9.git
+cd horizon-1.8.9
+cargo build --release -p horizon-189-client --target aarch64-apple-darwin
 
-<p align="center">
-  <a href="docs/native-client.md#run-from-a-checkout"><b>Build guide</b></a> ·
-  <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
-  <a href="GOVERNANCE.md"><b>Governance</b></a> ·
-  <a href="https://github.com/sponsors/ludovic111"><b>Sponsor</b></a>
-</p>
+# Offline, against a local 1.8.9 server in offline mode:
+target/aarch64-apple-darwin/release/horizon-189-client --offline --username Steve --server 127.0.0.1
 
-<sub>Horizon is released under the [GNU LGPL, version 3 or later](LICENSE), for the project's original work. Code merged before the move from MIT stays available under the [MIT licence](LICENSES/MIT.txt). Dependencies keep their own licences, see the [notices](THIRD_PARTY_NOTICES.md). Founded by [Ludovic Marie](https://lu4ovic.com) and built by the Horizon Team and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors). You can support it on [GitHub Sponsors](https://github.com/sponsors/ludovic111).</sub>
+# Signed in with your Microsoft account:
+target/aarch64-apple-darwin/release/horizon-189-client --login --server <host>
+```
 
-<sub>NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Minecraft is a trademark of Mojang Synergies AB; its code and assets belong to Mojang and Microsoft under the [Minecraft EULA](https://www.minecraft.net/en-us/eula).</sub>
+| Option | Meaning |
+| --- | --- |
+| `--assets JAR` | 1.8.9 jar to read (defaults to the launcher's install) |
+| `--render-distance N` | View distance in chunks, 2–16 (default 8) |
+| `--sensitivity F` | Mouse sensitivity 0.0–1.0 (vanilla default 0.5) |
+| `--help` | Every option |
+
+Controls: the cursor captures on join; **WASD** move, **Space** jumps (double-tap to fly where allowed),
+**Shift** sneaks, **Control** or **Left Option** sprints, **Escape** releases the cursor.
+
+`--login` signs in with a Microsoft device code; tokens stay in memory and are never written to disk or logs.
+It uses a public Microsoft client ID unless `HORIZON_MSA_CLIENT_ID` names your own approved Azure app
+registration. Horizon's own registration is never used.
+
+## Roadmap
+
+- [x] Protocol 47 transport, encryption, compression, login and sign-in
+- [x] Full 1.8.9 block registry and Metal terrain renderer
+- [x] Vanilla-exact local player movement, collision and flight
+- [x] Players, entities and block entities
+- [ ] Combat and interaction: attacks, item use, block placing and digging
+- [ ] Inventory, hotbar and HUD; held items and armour on players
+- [ ] Nametags, chat and real skins
+- [ ] Mob models, smooth lighting, animated textures
+- [ ] Signed release builds
+
+## Credits and licence
+
+This is an unofficial fork of [horizon-rust/horizon](https://github.com/horizon-rust/horizon) and keeps its
+licence: GNU LGPL-3.0 ([LICENSE](LICENSE), with the GPL-3.0 text in [LICENSES/](LICENSES)) and the
+[third-party notices](THIRD_PARTY_NOTICES.md). The 1.8.9 client is new work in the `horizon-*-189`,
+`horizon-protocol-47`, `horizon-auth` and `horizon-client-platform` crates; the rest of the workspace is
+Horizon's, described in its [original README](docs/horizon-upstream-README.md). It is not affiliated with or
+endorsed by the Horizon project.
+
+<sub>NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Minecraft is a
+trademark of Mojang Synergies AB; its code and assets belong to Mojang and Microsoft under the
+[Minecraft EULA](https://www.minecraft.net/en-us/eula).</sub>

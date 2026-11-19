@@ -1,6 +1,13 @@
 [workspace]
 exclude = ["crates/horizon-telemetry-server", "launcher", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "tools/fixtures/paper-trace-mod"]
 members = [
+    "crates/horizon-physics-189",
+    "crates/horizon-assets-189",
+    "crates/horizon-auth",
+    "crates/horizon-world-189",
+    "crates/horizon-client-platform",
+    "crates/horizon-189-client",
+    "crates/horizon-protocol-47",
     "crates/horizon-guest-stack",
     "crates/horizon-mod-vocab",
     "crates/horizon-game-discovery",

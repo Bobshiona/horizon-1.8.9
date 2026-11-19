@@ -1,0 +1,16 @@
+[package]
+name = "horizon-auth"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Native Microsoft device-code and Minecraft session authentication"
+
+[dependencies]
+horizon-protocol-47 = { path = "../horizon-protocol-47" }
+md-5 = "0.11"
+serde_json = "1.0.151"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+
+[lints]
+workspace = true
