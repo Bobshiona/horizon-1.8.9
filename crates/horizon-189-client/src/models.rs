@@ -62,10 +62,11 @@ pub enum Texture {
     Wolf,
     WolfTame,
     WolfAngry,
+    Vitals,
 }
 
 /// Owned-jar paths for every layer after the generated white one.
-pub const SOURCES: [&str; 44] = [
+pub const SOURCES: [&str; 45] = [
     "minecraft:entity/steve",
     "minecraft:entity/alex",
     "minecraft:entity/chest/normal",
@@ -110,6 +111,7 @@ pub const SOURCES: [&str; 44] = [
     "minecraft:entity/wolf/wolf",
     "minecraft:entity/wolf/wolf_tame",
     "minecraft:entity/wolf/wolf_angry",
+    "minecraft:gui/icons",
 ];
 
 impl From<Texture> for u32 {
@@ -1079,6 +1081,25 @@ fn icon(out: &mut Vec<Vertex>, matrix: Mat4, x: f32, y: f32, layer: u32) {
     }
 }
 
+fn vital_icon(out: &mut Vec<Vertex>, matrix: Mat4, x: f32, y: f32, u: f32, v: f32) {
+    let points = [
+        [x, y, 0.0],
+        [x + 9.0, y, 0.0],
+        [x + 9.0, y + 9.0, 0.0],
+        [x, y + 9.0, 0.0],
+    ];
+    let uv = [[u, v], [u + 9.0, v], [u + 9.0, v + 9.0], [u, v + 9.0]];
+    for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+        out.push(Vertex {
+            position: matrix.transform_point3(Vec3::from(points[i])).to_array(),
+            uv: uv[i].map(|a| a / LAYER_SIZE as f32),
+            layer: Texture::Vitals as u32,
+            color: [1.0; 3],
+            hurt: 0.0,
+        });
+    }
+}
+
 /// Functional inventory/hotbar and a first-person sword/bow animation.
 #[allow(clippy::too_many_arguments)]
 pub fn hud(
@@ -1092,6 +1113,7 @@ pub fn hud(
     registry: &crate::terrain::Registry,
     aspect: f32,
     cursor: [f32; 2],
+    vitals: crate::gameplay::Vitals,
 ) {
     let widths = &registry.glyphs;
     let eye = Vec3::from_array(std::array::from_fn(|a| {
@@ -1104,6 +1126,26 @@ pub fn hud(
     let matrix = basis
         * Mat4::from_translation(Vec3::new(0.0, 0.0, 0.1))
         * Mat4::from_scale(Vec3::new(-pixel, -pixel, 1.0));
+    if vitals.health <= 0.0 {
+        panel(
+            out,
+            matrix,
+            [-100.0, -60.0, 200.0, 100.0],
+            [0.12, 0.02, 0.02],
+        );
+        let front = matrix * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.0001));
+        text_line(out, front, &registry.death_label, -45.0, widths, [1.0; 3]);
+        panel(out, front, [-45.0, -10.0, 90.0, 20.0], [0.25; 3]);
+        text_line(
+            out,
+            front * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.0001)),
+            &registry.respawn_label,
+            -4.0,
+            widths,
+            [1.0; 3],
+        );
+        return;
+    }
     if view.open {
         for (slot, x, y) in view.layout() {
             panel(out, matrix, [x, y, 17.0, 17.0], [0.18; 3]);
@@ -1167,6 +1209,77 @@ pub fn hud(
     // Crosshair stays legible on dark and light surfaces.
     panel(out, matrix, [-4.0, -0.5, 8.0, 1.0], [0.9; 3]);
     panel(out, matrix, [-0.5, -4.0, 1.0, 8.0], [0.9; 3]);
+    let health = vitals.health.ceil().max(0.0) as usize;
+    let max_health = vitals.max_health.ceil().clamp(1.0, 80.0) as usize;
+    let hearts = ((vitals.max_health + vitals.absorption) / 2.0)
+        .ceil()
+        .clamp(1.0, 40.0) as usize;
+    for heart in 0..hearts {
+        let (x, y) = (
+            -81.0 + (heart % 10) as f32 * 8.0,
+            115.0 - (heart / 10) as f32 * 9.0,
+        );
+        vital_icon(out, matrix, x, y, 0.0, 0.0);
+        let (amount, row) = if heart * 2 >= max_health {
+            (
+                (max_health as f32 + vitals.absorption).ceil() as usize,
+                27.0,
+            )
+        } else {
+            (health, 0.0)
+        };
+        let point = heart * 2 + 1;
+        let source = if point < amount {
+            Some(9.0)
+        } else if point == amount {
+            Some(18.0)
+        } else {
+            None
+        };
+        if let Some(u) = source {
+            vital_icon(
+                out,
+                matrix * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.0001)),
+                x,
+                y,
+                u,
+                row,
+            );
+        }
+    }
+    for slot in 0..10 {
+        let points = i32::from(vitals.armor) - slot * 2;
+        let armor = if points >= 2 {
+            9.0
+        } else if points == 1 {
+            18.0
+        } else {
+            0.0
+        };
+        if vitals.armor > 0 {
+            vital_icon(
+                out,
+                matrix,
+                -81.0 + slot as f32 * 8.0,
+                115.0 - hearts.div_ceil(10) as f32 * 9.0,
+                armor,
+                9.0,
+            );
+        }
+        let x = 72.0 - slot as f32 * 8.0;
+        vital_icon(out, matrix, x, 115.0, 0.0, 18.0);
+        let food = vitals.food - slot * 2;
+        if food > 0 {
+            vital_icon(
+                out,
+                matrix * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.0001)),
+                x,
+                115.0,
+                if food >= 2 { 9.0 } else { 18.0 },
+                18.0,
+            );
+        }
+    }
     let y = 128.0;
     for slot in 0..9 {
         let x = -81.0 + slot as f32 * 18.0;

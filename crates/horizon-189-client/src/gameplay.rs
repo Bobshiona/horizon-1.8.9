@@ -12,7 +12,28 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug)]
+pub struct Vitals {
+    pub health: f32,
+    pub max_health: f32,
+    pub food: i32,
+    pub armor: u8,
+    pub absorption: f32,
+}
+impl Default for Vitals {
+    fn default() -> Self {
+        Self {
+            health: 20.0,
+            max_health: 20.0,
+            food: 20,
+            armor: 0,
+            absorption: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum Action {
+    Respawn,
     Attack,
     Use,
     Select(u8),
@@ -98,6 +119,7 @@ impl Controller {
         let mut use_pressed = false;
         while let Some(action) = input.actions.pop_front() {
             match action {
+                Action::Respawn => writer.send(&[0x16, 0])?,
                 Action::Select(slot) if slot <= 8 && slot != inventory.view.selected => {
                     self.abort(writer)?;
                     if self.using {
@@ -703,6 +725,38 @@ mod tests {
             );
         }
         println!("REFERENCE_SPECTATOR_WALL_PASS");
+        println!("REFERENCE_DEATH_REQUESTED");
+        loop {
+            if network.shared.lock().unwrap().vitals.health <= 0.0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "death health did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        network
+            .shared
+            .lock()
+            .unwrap()
+            .input
+            .actions
+            .push_back(Action::Respawn);
+        loop {
+            let state = network.shared.lock().unwrap();
+            let alive = state.vitals.health > 0.0 && state.positioned;
+            drop(state);
+            if alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "respawn did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        println!("REFERENCE_RESPAWN_CONFIRMED");
         drop(network);
     }
 }

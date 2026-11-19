@@ -116,7 +116,7 @@ impl App {
             Keys::default()
         };
         if let Ok(mut shared) = network.shared.lock() {
-            shared.keys = if shared.inventory.open {
+            shared.keys = if shared.inventory.open || shared.vitals.health <= 0.0 {
                 Keys::default()
             } else {
                 keys
@@ -281,23 +281,31 @@ impl ApplicationHandler for App {
                             && let Ok(mut state) = network.shared.lock()
                         {
                             use gameplay::Action;
-                            let action = match key {
-                                KeyCode::Digit1 => Some(Action::Select(0)),
-                                KeyCode::Digit2 => Some(Action::Select(1)),
-                                KeyCode::Digit3 => Some(Action::Select(2)),
-                                KeyCode::Digit4 => Some(Action::Select(3)),
-                                KeyCode::Digit5 => Some(Action::Select(4)),
-                                KeyCode::Digit6 => Some(Action::Select(5)),
-                                KeyCode::Digit7 => Some(Action::Select(6)),
-                                KeyCode::Digit8 => Some(Action::Select(7)),
-                                KeyCode::Digit9 => Some(Action::Select(8)),
-                                KeyCode::KeyE if !state.inventory.open => {
-                                    Some(Action::OpenInventory)
+                            let action = if state.vitals.health <= 0.0 {
+                                if matches!(key, KeyCode::Enter | KeyCode::NumpadEnter) {
+                                    Some(Action::Respawn)
+                                } else {
+                                    None
                                 }
-                                KeyCode::KeyE | KeyCode::Escape if state.inventory.open => {
-                                    Some(Action::CloseInventory)
+                            } else {
+                                match key {
+                                    KeyCode::Digit1 => Some(Action::Select(0)),
+                                    KeyCode::Digit2 => Some(Action::Select(1)),
+                                    KeyCode::Digit3 => Some(Action::Select(2)),
+                                    KeyCode::Digit4 => Some(Action::Select(3)),
+                                    KeyCode::Digit5 => Some(Action::Select(4)),
+                                    KeyCode::Digit6 => Some(Action::Select(5)),
+                                    KeyCode::Digit7 => Some(Action::Select(6)),
+                                    KeyCode::Digit8 => Some(Action::Select(7)),
+                                    KeyCode::Digit9 => Some(Action::Select(8)),
+                                    KeyCode::KeyE if !state.inventory.open => {
+                                        Some(Action::OpenInventory)
+                                    }
+                                    KeyCode::KeyE | KeyCode::Escape if state.inventory.open => {
+                                        Some(Action::CloseInventory)
+                                    }
+                                    _ => None,
                                 }
-                                _ => None,
                             };
                             if let Some(action) = action
                                 && state.input.actions.len() < 128
@@ -352,14 +360,22 @@ impl ApplicationHandler for App {
                 if let Some(network) = &self.network
                     && let Ok(mut state) = network.shared.lock()
                 {
-                    open = state.inventory.open;
+                    open = state.inventory.open || state.vitals.health <= 0.0;
                     if open && pressed {
                         if let Some(renderer) = &self.renderer {
                             let size = renderer.window.inner_size();
                             let scale = 300.0 / f64::from(size.height.max(1));
                             let x = (self.cursor.0 - f64::from(size.width) / 2.0) * scale;
                             let y = (self.cursor.1 - f64::from(size.height) / 2.0) * scale;
-                            if let Some(slot) = state.inventory.slot_at(x as f32, y as f32)
+                            if state.vitals.health <= 0.0 {
+                                if button == MouseButton::Left
+                                    && (-45.0..45.0).contains(&(x as f32))
+                                    && (-10.0..10.0).contains(&(y as f32))
+                                    && state.input.actions.len() < 128
+                                {
+                                    state.input.actions.push_back(gameplay::Action::Respawn);
+                                }
+                            } else if let Some(slot) = state.inventory.slot_at(x as f32, y as f32)
                                 && state.input.actions.len() < 128
                             {
                                 state.input.actions.push_back(gameplay::Action::Click {
@@ -404,7 +420,13 @@ impl ApplicationHandler for App {
                 let menu = self
                     .network
                     .as_ref()
-                    .and_then(|network| network.shared.lock().ok().map(|s| s.inventory.open))
+                    .and_then(|network| {
+                        network
+                            .shared
+                            .lock()
+                            .ok()
+                            .map(|s| s.inventory.open || s.vitals.health <= 0.0)
+                    })
                     .unwrap_or(false);
                 if menu && self.captured {
                     self.release_cursor();
@@ -423,7 +445,7 @@ impl ApplicationHandler for App {
                             n.shared
                                 .lock()
                                 .ok()
-                                .map(|s| (s.inventory.clone(), s.swing, s.using_item))
+                                .map(|s| (s.inventory.clone(), s.swing, s.using_item, s.vitals))
                         });
                         if let Err(error) = renderer.set_entities(&entities, partial, ui.as_ref()) {
                             self.fail(event_loop, error);

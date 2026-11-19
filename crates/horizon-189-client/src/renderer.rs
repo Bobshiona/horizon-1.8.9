@@ -163,7 +163,12 @@ impl Renderer {
         &mut self,
         entities: &[(i32, horizon_world_189::entities::Entity)],
         partial: f32,
-        ui: Option<&(Arc<crate::inventory::View>, Option<u8>, bool)>,
+        ui: Option<&(
+            Arc<crate::inventory::View>,
+            Option<u8>,
+            bool,
+            crate::gameplay::Vitals,
+        )>,
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
             return Ok(());
@@ -235,7 +240,7 @@ impl Renderer {
                 &registry.glyphs,
             );
         }
-        if let Some((view, swing, using_item)) = ui
+        if let Some((view, swing, using_item, vitals)) = ui
             && let Some(registry) = &self.registry
         {
             crate::models::hud(
@@ -249,6 +254,7 @@ impl Renderer {
                 registry,
                 self.config.width as f32 / self.config.height.max(1) as f32,
                 self.cursor,
+                *vitals,
             );
         }
         let result = scene.set_entities(&self.device, &self.queue, &vertices);

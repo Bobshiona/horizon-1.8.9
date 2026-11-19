@@ -118,7 +118,7 @@ def main() -> None:
             for package in PACKAGES:
                 args.extend(["-p", package])
             args.extend(["--target", "aarch64-apple-darwin", "--target-dir", str(TARGET), "--", "--include-ignored", "--nocapture"])
-            configured = placed = mined = spectator = False
+            configured = placed = mined = spectator = death = False
             with test_log.open("w") as output:
                 child = subprocess.Popen(args, cwd=REPO, env=env, stdout=output, stderr=subprocess.STDOUT)
                 deadline = time.monotonic() + 300
@@ -151,6 +151,10 @@ def main() -> None:
                         spectator = True
                         command("fill 0 4 2 1 7 2 minecraft:stone")
                         command("gamemode 3 NativeCombat")
+                    if "REFERENCE_DEATH_REQUESTED" in progress and not death:
+                        death = True
+                        command("gamemode 0 NativeCombat")
+                        command("kill NativeCombat")
                     if time.monotonic() > deadline:
                         raise TimeoutError(f"Reference tests timed out; inspect {test_log}")
                     time.sleep(0.1)

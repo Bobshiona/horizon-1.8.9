@@ -63,6 +63,7 @@ pub struct Shared {
     pub swing: Option<u8>,
     pub using_item: bool,
     pub game_mode: u8,
+    pub vitals: crate::gameplay::Vitals,
     pub yaw: f32,
     pub pitch: f32,
     pub previous: [f64; 3],
@@ -411,6 +412,7 @@ fn run_actor(
     let mut inventory = crate::inventory::Inventory::default();
     let mut controller = crate::gameplay::Controller::default();
     let mut game_mode = 0;
+    let mut vitals = crate::gameplay::Vitals::default();
     let mut capabilities = entity_packets::Abilities {
         invulnerable: false,
         flying: false,
@@ -552,7 +554,10 @@ fn run_actor(
                         dirty(keys);
                     }
                     play::Packet::Other { id: 0x06, fields } => {
-                        player.food = fields::decode_health(fields)?.food;
+                        let health = fields::decode_health(fields)?;
+                        player.food = health.food;
+                        vitals.health = health.health;
+                        vitals.food = health.food;
                     }
                     play::Packet::Other { id: 0x07, fields } => {
                         // Respawn: a new dimension or a server switch behind a
@@ -568,6 +573,7 @@ fn run_actor(
                             .ok_or_else(|| io::Error::other("Short respawn game mode"))?;
                         inventory = crate::inventory::Inventory::default();
                         controller = crate::gameplay::Controller::default();
+                        vitals = crate::gameplay::Vitals::default();
                         sky_light = Some(dimension == 0);
                         let mut world = write(world)?;
                         let keys: Vec<(i32, i32)> = world.columns().map(|(key, _)| key).collect();
@@ -643,6 +649,17 @@ fn run_actor(
                         ) =>
                     {
                         if let Some(packet) = entity_packets::decode(id, fields)? {
+                            if let entity_packets::EntityPacket::Metadata { id, entries } = &packet
+                                && *id == entity_id
+                            {
+                                for (index, value) in entries {
+                                    if let (17, horizon_protocol_47::nbt::Meta::Float(amount)) =
+                                        (index, value)
+                                    {
+                                        vitals.absorption = *amount;
+                                    }
+                                }
+                            }
                             entities.apply(packet);
                         }
                     }
@@ -660,6 +677,18 @@ fn run_actor(
                         let (entity, properties) = fields::decode_properties(fields)?;
                         if entity == entity_id {
                             for property in properties {
+                                if property.key == "generic.maxHealth" {
+                                    let mut attribute =
+                                        horizon_physics_189::player::Attribute::new(property.base);
+                                    for &(uuid, amount, operation) in &property.modifiers {
+                                        attribute.apply(Modifier {
+                                            uuid,
+                                            amount,
+                                            operation,
+                                        });
+                                    }
+                                    vitals.max_health = attribute.value() as f32;
+                                }
                                 if property.key == "generic.movementSpeed" {
                                     let modifiers: Vec<Modifier> = property
                                         .modifiers
@@ -736,6 +765,13 @@ fn run_actor(
                     },
                 )
             };
+            if vitals.health <= 0.0 {
+                input
+                    .actions
+                    .retain(|a| matches!(a, crate::gameplay::Action::Respawn));
+                input.attack = false;
+                input.using = false;
+            }
             controller.tick(
                 &mut input,
                 &mut player,
@@ -751,12 +787,34 @@ fn run_actor(
                 state.swing = controller.swing;
                 state.using_item = controller.using;
                 state.game_mode = game_mode;
+                const ARMOR: [[u8; 4]; 5] = [
+                    [1, 3, 2, 1],
+                    [2, 5, 4, 1],
+                    [2, 6, 5, 2],
+                    [3, 8, 6, 3],
+                    [2, 5, 3, 1],
+                ];
+                vitals.armor = inventory.player[5..9]
+                    .iter()
+                    .flatten()
+                    .filter_map(|item| {
+                        let offset = item.id.checked_sub(298)?;
+                        if (0..20).contains(&offset) {
+                            Some(ARMOR[offset as usize / 4][offset as usize % 4])
+                        } else {
+                            None
+                        }
+                    })
+                    .sum();
+                state.vitals = vitals;
                 if state.input.actions.is_empty() {
                     state.input.actions = std::mem::take(&mut input.actions);
                 }
             }
             player.no_clip = game_mode == 3;
-            player.tick(&world_view, keys);
+            if vitals.health > 0.0 {
+                player.tick(&world_view, keys);
+            }
             // sendPlayerAbilities happens inside onLivingUpdate, before the
             // walking update's actions and movement.
             if std::mem::take(&mut player.abilities_changed) {

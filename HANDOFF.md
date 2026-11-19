@@ -62,11 +62,27 @@ wall times over 699 samples measured P50 7,539 us, P95 7,695 us and P99 7,787 us
 about 90 entities. One frame used the smoke-only offscreen target. These figures cover frame submission
 and drawable acquisition; GPU duration and live multiplayer latency need their own measurement.
 
-Next: finish the parity gaps below and validate a live Hypixel lobby.
+**Live Hypixel lobby login passed** with Microsoft device-code sign-in: 120 Metal frames, 86 chunk columns
+and about 40 tracked entities. It needed an auth fix: an empty 204 body is `Null`, and a non-JSON HTTP error
+keeps its status (`<service> returned invalid JSON (HTTP n)`) without echoing the body.
+
+Vitals checkpoint: hearts (absorption rows from entity metadata index 17, `generic.maxHealth` with its
+modifiers), armour points from the four armour slots (vanilla per-material table), and food, all cut from
+the owned `gui/icons` atlas with `GuiIngame`'s full/half thresholds and row stacking. At zero health the
+client stops ticking physics, drops attack/use/actions, releases the cursor and shows a death panel using
+the jar's `en_US.lang` (`deathScreen.title`, `deathScreen.respawn`); Enter or the button sends C16
+`ClientStatus` action 0. The managed reference gate kills the test player and confirms the respawn. A
+local capture checked a 14-point armour row, a partial absorption heart and an empty food bar.
+
+Next (in order): chat with JSON/§ formatting and chat/command input; scoreboard, teams, titles/action bar
+and the tab list; item counts, durability and tooltips with shift-click, number-key swaps and Q drop;
+dropped items and projectiles; 1.8.9 first-person hand/item transforms and block-hit; Keychain-backed
+refresh-token caching; a release build measured under the 80-player lobby. The death screen is still a
+plain panel (no full-screen gradient, score or title-screen button).
 
 ## 2. Verified State
 
-- 83 scoped tests pass with `--include-ignored` (client 18, login CLI 2, assets 1, auth 2, physics 16,
+- 84 scoped tests pass with `--include-ignored` (client 18, login CLI 2, assets 1, auth 3, physics 16,
   protocol 29, world 15 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.

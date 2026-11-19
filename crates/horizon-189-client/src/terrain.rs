@@ -67,6 +67,8 @@ pub struct Registry {
     /// 128-pixel entity layers in `models::Texture` order, and font advances.
     pub entity_textures: Vec<Texture>,
     pub glyphs: [u8; 256],
+    pub death_label: String,
+    pub respawn_label: String,
     item_layers: HashMap<i16, u32>,
     block_layers: Vec<u32>,
 }
@@ -302,9 +304,31 @@ impl Registry {
             match assets.texture(source) {
                 Ok(image) => {
                     let (w, h) = (image.width as usize, image.height as usize);
-                    for y in 0..h.min(size) {
-                        let row = &image.rgba[y * w * 4..(y * w + w.min(size)) * 4];
-                        canvas[y * size * 4..y * size * 4 + row.len()].copy_from_slice(row);
+                    if source == "minecraft:gui/icons" {
+                        for (sx, sy, dx, dy) in [
+                            (16, 0, 0, 0),
+                            (52, 0, 9, 0),
+                            (61, 0, 18, 0),
+                            (16, 9, 0, 9),
+                            (34, 9, 9, 9),
+                            (25, 9, 18, 9),
+                            (16, 27, 0, 18),
+                            (52, 27, 9, 18),
+                            (61, 27, 18, 18),
+                            (160, 0, 9, 27),
+                            (169, 0, 18, 27),
+                        ] {
+                            for y in 0..9 {
+                                let start = ((sy + y) * w + sx) * 4;
+                                let to = ((dy + y) * size + dx) * 4;
+                                canvas[to..to + 36].copy_from_slice(&image.rgba[start..start + 36]);
+                            }
+                        }
+                    } else {
+                        for y in 0..h.min(size) {
+                            let row = &image.rgba[y * w * 4..(y * w + w.min(size)) * 4];
+                            canvas[y * size * 4..y * size * 4 + row.len()].copy_from_slice(row);
+                        }
                     }
                     if source.ends_with("font/ascii") {
                         glyphs = crate::models::glyph_widths(&image.rgba, image.width);
@@ -355,6 +379,7 @@ impl Registry {
         let foliage = colormap("minecraft:colormap/foliage")?;
         let water = layer_for("minecraft:blocks/water_still", &mut textures);
         let lava = layer_for("minecraft:blocks/lava_still", &mut textures);
+        let language = assets.language()?;
         let mut registry = Self {
             models,
             by_variant,
@@ -370,6 +395,14 @@ impl Registry {
             inexact: Vec::new(),
             entity_textures,
             glyphs,
+            death_label: language
+                .get("deathScreen.title")
+                .cloned()
+                .unwrap_or_else(|| "deathScreen.title".into()),
+            respawn_label: language
+                .get("deathScreen.respawn")
+                .cloned()
+                .unwrap_or_else(|| "deathScreen.respawn".into()),
             item_layers,
             block_layers,
         };

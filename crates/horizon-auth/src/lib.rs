@@ -70,11 +70,19 @@ fn response(
     if bytes.len() as u64 > MAX_JSON {
         return Err(invalid("Authentication response exceeds limit"));
     }
-    let value = if bytes.is_empty() {
+    let value = if status == 204 || bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes)
-            .map_err(|_| invalid("Authentication response is invalid JSON"))?
+        match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) if status >= 300 => Value::Null,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{service} returned invalid JSON (HTTP {status})"),
+                ));
+            }
+        }
     };
     Ok((status, value))
 }
@@ -324,6 +332,22 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_success_and_non_json_http_errors_keep_their_status_without_body_secrets() {
+        let response_value = ureq::Response::new(204, "No Content", " ").unwrap();
+        assert_eq!(
+            response(Ok(response_value), "fixture").unwrap(),
+            (204, Value::Null)
+        );
+        let response_value =
+            ureq::Response::new(403, "Forbidden", "<html>private-token</html>").unwrap();
+        let result = success(response(Ok(response_value), "fixture").unwrap(), "fixture")
+            .unwrap_err()
+            .to_string();
+        assert!(result.contains("HTTP 403"));
+        assert!(!result.contains("private-token"));
+    }
 
     #[test]
     fn offline_identity_matches_vanilla_and_direct_secrets_stay_hidden() {

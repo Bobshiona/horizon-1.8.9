@@ -69,6 +69,19 @@ impl Assets {
         Ok(bake_model(&self.models.resolve(&name)?)?)
     }
 
+    pub fn language(&self) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
+        let bytes = self
+            .source
+            .read_limited("assets/minecraft/lang/en_US.lang", 1 << 20)?;
+        let text = std::str::from_utf8(&bytes)?;
+        Ok(text
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect())
+    }
+
     /// First generated-item texture, following legacy item-model parents.
     pub fn item_texture(&self, name: &str) -> Result<Texture, Box<dyn Error>> {
         use horizon_assets::model::TextureSlot;
