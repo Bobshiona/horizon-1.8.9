@@ -708,3 +708,21 @@ Stairs: a rebuilt private reflection harness on the official server jar (`kb.c()
 `adq` block access, `aju.e`/`h`/`i` with bounds fields `B`-`G`) prints all 8 stairs metadata against
 every air/stairs mix on four sides; its 52,488 lines are byte-identical to
 `cargo run -p horizon-physics-189 --example stairs_probe`. The harness stays private.
+
+
+## 17. Hit slow-down and spectator attack parity
+
+Section 16's right-click fix is `0c7c5571c9`.
+
+`attackTargetEntityWithCurrentItem` applies `motion *= 0.6` and `setSprinting(false)` only when the
+knockback level is positive (the Knockback enchantment, id 19, plus one while sprinting) and the
+target's client-side `attackEntityFrom` succeeded. On the client that is `EntityOtherPlayerMP`
+(always true), boats and minecarts; mobs return false, so hitting a zombie while sprinting no longer
+slows or unsprints the player, and a Knockback sword now slows a non-sprinting hit on a player.
+Spectators now send attackEntity's C02 after the swing (the server spectates the target) while local
+hit effects stay skipped.
+
+Regressions written first: `hit_slowdown_needs_knockback_and_a_player_target` (failed on the
+Knockback case) and `spectator_attack_sends_c02_to_spectate` (no C02). Gate: 157 scoped tests
+(76 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt,
+layers, public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

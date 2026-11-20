@@ -239,10 +239,11 @@ impl Controller {
                     self.swing(writer)?;
                     match hit {
                         Some(Hit::Entity { id, .. }) => {
+                            // attackEntity syncs after clickMouse's swing and
+                            // sends C02 in every mode (a spectator spectates).
+                            self.sync_slot(inventory.view.selected, writer)?;
+                            writer.send(&packet::use_entity(id, 1, None)?)?;
                             if game_mode != 3 {
-                                // attackEntity syncs after clickMouse's swing.
-                                self.sync_slot(inventory.view.selected, writer)?;
-                                writer.send(&packet::use_entity(id, 1, None)?)?;
                                 // attackTargetEntityWithCurrentItem: other players
                                 // accept the client-side hit, so crits show at once.
                                 let other_player = entities.get(id).is_some_and(|e| {
@@ -263,9 +264,21 @@ impl Controller {
                                         self.effects.push((id, true));
                                     }
                                 }
-                                // EntityPlayer.attackTargetEntityWithCurrentItem's
-                                // sprint hit reduces horizontal motion locally.
-                                if player.sprinting {
+                                // attackTargetEntityWithCurrentItem: with knockback
+                                // (the enchantment, plus one while sprinting) and a
+                                // target whose client-side attackEntityFrom succeeds
+                                // (other players, boats, minecarts; not mobs), motion
+                                // drops to 0.6 and sprinting stops.
+                                let knockback = inventory.held().map_or(0, |i| i.enchantment(19))
+                                    + i32::from(player.sprinting);
+                                let accepted = entities.get(id).is_some_and(|e| {
+                                    matches!(
+                                        e.kind,
+                                        horizon_world_189::entities::Kind::Player { .. }
+                                            | horizon_world_189::entities::Kind::Object(1 | 10)
+                                    )
+                                });
+                                if accepted && knockback > 0 {
                                     player.motion[0] *= 0.6;
                                     player.motion[2] *= 0.6;
                                     player.sprinting = false;
@@ -887,6 +900,140 @@ mod tests {
         // Nothing else was sent: the next packet is a fresh swing.
         controller.swing(&mut writer).unwrap();
         assert_eq!(peer.receive().unwrap(), [0x0a]);
+    }
+
+    /// attackTargetEntityWithCurrentItem: the 0.6 slow-down and sprint stop
+    /// need knockback (sprinting or the enchantment) and a target whose
+    /// client-side attackEntityFrom succeeds: other players, not mobs.
+    #[test]
+    fn hit_slowdown_needs_knockback_and_a_player_target() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let world = world();
+        let attack = |entities: &Entities,
+                      sprinting: bool,
+                      knockback: bool,
+                      writer: &mut PacketWriter<TcpStream>| {
+            let mut player = Player::default();
+            player.set_position(0.5, 4.0, 0.5);
+            player.on_ground = true;
+            player.sprinting = sprinting;
+            player.motion = [0.2, 0.0, 0.3];
+            let mut inventory = Inventory::default();
+            let nbt = knockback.then(|| {
+                use horizon_protocol_47::nbt::Tag;
+                Tag::Compound(vec![(
+                    "ench".into(),
+                    Tag::List(vec![Tag::Compound(vec![
+                        ("id".into(), Tag::Short(19)),
+                        ("lvl".into(), Tag::Short(1)),
+                    ])]),
+                )])
+            });
+            inventory.player[36] = Some(Item {
+                id: 276,
+                count: 1,
+                damage: 0,
+                nbt,
+            });
+            let mut input = Input {
+                attack: true,
+                using: false,
+                actions: VecDeque::from([Action::Attack]),
+            };
+            Controller::default()
+                .tick(
+                    &mut input,
+                    &mut player,
+                    &world,
+                    entities,
+                    &mut inventory,
+                    0,
+                    writer,
+                )
+                .unwrap();
+            (player.sprinting, player.motion)
+        };
+        let mut players = Entities::default();
+        players.apply(EntityPacket::SpawnPlayer {
+            id: 7,
+            uuid: 0,
+            position: [16, 4 * 32, 2 * 32],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let mut mobs = Entities::default();
+        mobs.apply(EntityPacket::SpawnMob {
+            id: 8,
+            kind: 54,
+            position: [16, 4 * 32, 2 * 32],
+            yaw: 0,
+            pitch: 0,
+            head_yaw: 0,
+            metadata: Vec::new(),
+        });
+        let slowed = [0.2 * 0.6, 0.0, 0.3 * 0.6];
+        assert_eq!(attack(&players, true, false, &mut writer), (false, slowed));
+        assert_eq!(attack(&players, false, true, &mut writer), (false, slowed));
+        assert_eq!(
+            attack(&players, false, false, &mut writer),
+            (false, [0.2, 0.0, 0.3])
+        );
+        // A zombie's client-side attackEntityFrom fails: no slow-down.
+        assert_eq!(
+            attack(&mobs, true, false, &mut writer),
+            (true, [0.2, 0.0, 0.3])
+        );
+    }
+
+    /// A spectator's left click still swings and sends attackEntity's C02
+    /// (the server makes it spectate the target); only the local hit is
+    /// skipped.
+    #[test]
+    fn spectator_attack_sends_c02_to_spectate() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let mut entities = Entities::default();
+        entities.apply(EntityPacket::SpawnPlayer {
+            id: 7,
+            uuid: 0,
+            position: [16, 4 * 32, 2 * 32],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let mut player = Player::default();
+        player.set_position(0.5, 4.0, 0.5);
+        player.sprinting = true;
+        let mut inventory = Inventory::default();
+        let mut input = Input {
+            attack: true,
+            using: false,
+            actions: VecDeque::from([Action::Attack]),
+        };
+        Controller::default()
+            .tick(
+                &mut input,
+                &mut player,
+                &world(),
+                &entities,
+                &mut inventory,
+                3,
+                &mut writer,
+            )
+            .unwrap();
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        assert_eq!(peer.receive().unwrap(), [0x02, 7, 1]);
+        assert!(player.sprinting);
     }
 
     #[test]
