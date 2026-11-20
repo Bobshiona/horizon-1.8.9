@@ -75,7 +75,31 @@ pub struct Registry {
     /// 1 right, 2 top, 3 bottom), for the extruded item mesh.
     item_edges: HashMap<u32, Vec<[u8; 3]>>,
     block_layers: Vec<u32>,
+    /// Blocks whose item model is a separate `*_inventory` block model, by
+    /// (id, metadata or 255 for any).
+    inventory: HashMap<(u16, u8), u32>,
 }
+
+/// Item models that parent their own inventory block model rather than a
+/// blockstate variant.
+const INVENTORY_MODELS: [((u16, u8), &str); 16] = [
+    ((29, 255), "piston_inventory_sticky"),
+    ((33, 255), "piston_inventory_normal"),
+    ((70, 255), "stone_pressure_plate_inventory"),
+    ((77, 255), "stone_button_inventory"),
+    ((85, 255), "oak_fence_inventory"),
+    ((113, 255), "nether_brick_fence_inventory"),
+    ((139, 1), "cobblestone_wall_mossy_inventory"),
+    ((139, 255), "cobblestone_wall_inventory"),
+    ((143, 255), "wooden_button_inventory"),
+    ((147, 255), "light_pressure_plate_inventory"),
+    ((148, 255), "heavy_pressure_plate_inventory"),
+    ((188, 255), "spruce_fence_inventory"),
+    ((189, 255), "birch_fence_inventory"),
+    ((190, 255), "jungle_fence_inventory"),
+    ((191, 255), "dark_oak_fence_inventory"),
+    ((192, 255), "acacia_fence_inventory"),
+];
 
 /// Edges between opaque and transparent pixels of a 16-pixel sprite at the
 /// top-left of a `size`-pixel layer.
@@ -328,6 +352,32 @@ impl Registry {
             alternatives: vec![(placeholder, 1)],
             total: 1,
         });
+        let mut inventory = HashMap::new();
+        for (key, name) in INVENTORY_MODELS {
+            let Ok(quads) = assets.bake_block(name) else {
+                continue;
+            };
+            let faces = quads
+                .into_iter()
+                .map(|quad| Face {
+                    positions: quad.positions,
+                    uv: quad.uv,
+                    layer: layer_for(&quad.material.sprite, &mut textures),
+                    shade: if quad.shade {
+                        face_shade(quad.facing.name())
+                    } else {
+                        1.0
+                    },
+                    tint: quad.tint_index >= 0,
+                    cull: quad.cull.map(|side| direction(side.name())),
+                })
+                .collect();
+            inventory.insert(key, models.len() as u32);
+            models.push(Model {
+                alternatives: vec![(faces, 1)],
+                total: 1,
+            });
+        }
         let colormap = |name: &str| -> Result<Vec<[u8; 3]>, Box<dyn Error>> {
             let image = assets.texture(name)?;
             if image.width != 256 || image.height != 256 {
@@ -471,6 +521,7 @@ impl Registry {
             item_layers,
             overlays,
             block_layers,
+            inventory,
         };
         let empty = World::default();
         let mut unresolved = Vec::new();
@@ -566,7 +617,14 @@ impl Registry {
         matrix: glam::Mat4,
         light: f32,
     ) -> bool {
-        let Some(model) = self.resolve(&World::default(), [0; 3], state) else {
+        let (id, meta) = (state.block_id(), state.metadata());
+        let Some(model) = self
+            .inventory
+            .get(&(id, meta))
+            .or_else(|| self.inventory.get(&(id, 255)))
+            .copied()
+            .or_else(|| self.resolve(&World::default(), [0; 3], state))
+        else {
             return false;
         };
         let tint = match (state.block_id(), state.metadata() & 3) {

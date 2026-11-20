@@ -606,7 +606,15 @@ fn block_icon(
     let matrix = Mat4::from_translation(Vec3::new(x + 8.0, y + 8.0, 0.0))
         * Mat4::from_scale(Vec3::new(10.0, 10.0, -10.0))
         * Mat4::from_rotation_x(210f32.to_radians())
-        * Mat4::from_rotation_y((-135f32).to_radians());
+        * Mat4::from_rotation_y((-135f32).to_radians())
+        // The item models' own `gui` display: fences turn 90, stairs 180.
+        * Mat4::from_rotation_y(match item.id {
+            85 | 113 | 188..=192 => 90f32.to_radians(),
+            53 | 67 | 108 | 109 | 114 | 128 | 134..=136 | 156 | 163 | 164 | 180 => {
+                std::f32::consts::PI
+            }
+            _ => 0.0,
+        });
     let mut vertices = Vec::new();
     let state = horizon_world_189::BlockState(((item.id as u16) << 4) | (item.damage as u16 & 15));
     if !registry.block_model(&mut vertices, state, matrix, 1.0) || vertices.is_empty() {
