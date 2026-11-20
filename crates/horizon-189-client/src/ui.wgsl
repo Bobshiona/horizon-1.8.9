@@ -30,8 +30,32 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
 }
 
+// `RenderItem.renderEffect` on an icon (layer flag 0x40000000): colour
+// carries the pass's scroll, angle and glint layer. The icon's alpha masks
+// it, as the depth test does in vanilla, and it adds src * src colour.
+fn glint(in: VertexOut) -> vec4<f32> {
+    let index = in.layer & 0x3fffffffu;
+    let icon = textureSampleLevel(entity, pixels, in.uv, min(index, u32(screen.scale.w) - 1u), 0.0);
+    if icon.a <= 0.1 {
+        discard;
+    }
+    let size = f32(textureDimensions(entity).x);
+    let pixel = in.uv * size;
+    let atlas = vec2<f32>(pixel.x / 1024.0, pixel.y / 512.0);
+    let c = cos(in.color.y);
+    let s = sin(in.color.y);
+    let g = vec2<f32>(atlas.x * c - atlas.y * s + in.color.x, atlas.x * s + atlas.y * c) * 8.0;
+    let sampled = textureSampleLevel(entity, pixels, fract(g) * (64.0 / size), u32(in.color.z), 0.0);
+    let rgb = linear_to_srgb(sampled.rgb) * vec3<f32>(128.0 / 255.0, 64.0 / 255.0, 204.0 / 255.0);
+    // Premultiplied blending with zero alpha: the colour is added.
+    return vec4<f32>(rgb * rgb, 0.0);
+}
+
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
+    if in.layer != 0xffffffffu && (in.layer & 0x40000000u) != 0u {
+        return glint(in);
+    }
     var color = in.color;
     if in.layer != 0xffffffffu {
         let index = in.layer & 0x7fffffffu;
@@ -44,5 +68,5 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     if color.a <= 0.1 {
         discard;
     }
-    return color;
+    return vec4<f32>(color.rgb * color.a, color.a);
 }

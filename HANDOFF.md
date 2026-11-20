@@ -197,9 +197,11 @@ golden apples, potions with effects, bottles o' enchanting, nether stars) adds t
 clock and turned -50 and 10 degrees); armour uses `LayerArmorBase.renderGlint` (a third scale, 30 and
 -30 degrees, scrolled by entity age, 0.76 of (0.5, 0.25, 0.8)). Glint vertices copy the item's
 positions and draw with an equal depth test and `GL_SRC_COLOR, GL_ONE` blending: world glint in the
-gamma label pass, the hand's in the hand pass. A capture checked an enchanted chestplate on another
-player and the held enchanted sword. Known gaps: no glint on interface icons, and the atlas size is
-assumed, so the stripe spacing is approximate.
+gamma label pass, the hand's in the hand pass. Interface icons get the same two passes: the GUI
+pipeline now blends premultiplied, and a glint fragment (layer flag 0x40000000) masks by the icon's
+alpha and outputs its added colour with zero alpha. Potions mask by the bottle, leather by the base
+piece. A capture checked an enchanted chestplate on another player, the held enchanted sword and the
+hotbar. Known gap: the atlas size is assumed, so the stripe spacing is approximate.
 
 Next (in order): live Hypixel PvP play test with the release build.
 
@@ -254,7 +256,7 @@ Next (in order): live Hypixel PvP play test with the release build.
    unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
    skin/cape bindings are present, as are first-person hands and first-person item display transforms.
-   Third-person item display transforms and world enchantment glint are ported; interface glint remains pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
+   Third-person item display transforms and enchantment glint (world and interface) are ported. Cape motion currently uses limb/sneak pose; vanilla chasing-
    position cape dynamics and additional HD texture layouts require further parity.
 3. Standard zombie, skeleton, wither skeleton, creeper, pig, cow, villager, sheep, chicken, wolf, spider,
    cave spider, slime and enderman meshes are present. Age, sheep shearing/color, slime size, wolf texture

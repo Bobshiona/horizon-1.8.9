@@ -637,11 +637,28 @@ pub fn item_slot(
         };
         canvas.item_icon_tinted(under, x, y, under_tint);
         canvas.item_icon(over, x, y);
+        // The glint follows the whole silhouette: the bottle, or the base
+        // leather piece.
+        if let Some(glint) = registry
+            .sprite("enchanted_item_glint")
+            .filter(|_| crate::models::has_glint(item))
+        {
+            let mask = if item.id == 373 { over } else { under };
+            canvas.item_glint(mask, glint, x, y, crate::models::millis());
+        }
         true
     });
     if !drawn {
         match registry.item_layer(item) {
-            Some(layer) => canvas.item_icon(layer, x, y),
+            Some(layer) => {
+                canvas.item_icon(layer, x, y);
+                if let Some(glint) = registry
+                    .sprite("enchanted_item_glint")
+                    .filter(|_| crate::models::has_glint(item))
+                {
+                    canvas.item_glint(layer, glint, x, y, crate::models::millis());
+                }
+            }
             None => {
                 let id = item.id.to_string();
                 canvas.text(&id, x + 1.0, y + 4.0, 0xFFFF_FFFF, true);

@@ -35,6 +35,8 @@ pub const LAYERS: u32 = FIXED_LAYERS + PAGE_LAYERS;
 /// Vertex `layer` flag: sample the 128-pixel entity/item array instead.
 pub const ENTITY: u32 = 0x8000_0000;
 pub const UNTEXTURED: u32 = u32::MAX;
+/// With an entity layer: the enchantment glint over that item icon.
+pub const GLINT: u32 = 0x4000_0000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -510,6 +512,25 @@ impl<'a> Canvas<'a> {
         );
     }
 
+    /// `RenderItem.renderEffect` over a 16-pixel icon: two passes scrolled
+    /// by the clock and turned -50 and 10 degrees, as on held items.
+    pub fn item_glint(&mut self, layer: u32, glint: u32, x: f32, y: f32, millis: u64) {
+        let s = 16.0 / crate::models::LAYER_SIZE as f32;
+        let passes = [
+            ((millis % 3000) as f32 / 3000.0 / 8.0, -50f32),
+            (-((millis % 4873) as f32 / 4873.0 / 8.0), 10f32),
+        ];
+        for (scroll, degrees) in passes {
+            self.quad(
+                false,
+                [[x, y], [x + 16.0, y], [x + 16.0, y + 16.0], [x, y + 16.0]],
+                [[0.0, 0.0], [s, 0.0], [s, s], [0.0, s]],
+                ENTITY | GLINT | layer,
+                [scroll, degrees.to_radians(), glint as f32, 0.0],
+            );
+        }
+    }
+
     /// A player face (and hat layer) from a 64-pixel skin in the entity
     /// array, as `Gui.drawScaledCustomSizeModalRect`.
     pub fn skin_face(&mut self, layer: u32, x: f32, y: f32) {
@@ -902,7 +923,8 @@ impl Pass {
                 cache: None,
             })
         };
-        let pipeline = make(wgpu::BlendState::ALPHA_BLENDING);
+        // Premultiplied, so a glint (alpha 0) adds its colour.
+        let pipeline = make(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let invert = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::OneMinusDst,
             dst_factor: wgpu::BlendFactor::OneMinusSrc,
