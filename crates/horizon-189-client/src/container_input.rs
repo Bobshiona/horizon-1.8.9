@@ -107,7 +107,7 @@ impl Pointer {
             return vec![];
         }
         if g.collect {
-            return if slot == Some(g.start) {
+            return if slot == Some(g.start) && !(view.window == 0 && g.start == 0) {
                 vec![Click {
                     slot: g.start,
                     mode: 6,
@@ -186,6 +186,18 @@ mod tests {
         p.clear();
         assert!(p.release(&v, Some(10), 1).is_empty());
     }
+    #[test]
+    fn double_click_cannot_collect_through_the_player_crafting_result() {
+        let mut p = Pointer::default();
+        let mut v = view();
+        v.cursor = None;
+        let t = Instant::now();
+        p.press(&v, Some(0), 0, false, t);
+        v.cursor = view().cursor;
+        p.press(&v, Some(0), 0, false, t + Duration::from_millis(100));
+        assert!(p.release(&v, Some(0), 0).is_empty());
+    }
+
     #[test]
     fn collect_requires_same_window_button_slot_and_time() {
         let mut p = Pointer::default();

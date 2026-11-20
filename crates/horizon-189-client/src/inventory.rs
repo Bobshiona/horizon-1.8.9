@@ -1010,11 +1010,20 @@ mod tests {
         inv.view.slots[11] = stack(1, 10);
         inv.view.slots[11].as_mut().unwrap().damage = 1;
         inv.view.slots[12] = stack(1, 5);
+        inv.view.slots[15] = stack(1, 8);
+        inv.view.slots[15].as_mut().unwrap().nbt = Some(horizon_protocol_47::nbt::Tag::Compound(
+            vec![("marker".to_owned(), horizon_protocol_47::nbt::Tag::Int(1))],
+        ));
         inv.click_mode(13, 6, 1).unwrap().unwrap();
         assert_eq!(inv.view.cursor.as_ref().unwrap().count, 64);
         assert_eq!(inv.view.slots[9].as_ref().unwrap().count, 10);
         assert!(inv.view.slots[10].is_none() && inv.view.slots[12].is_none());
         assert_eq!(inv.view.slots[11].as_ref().unwrap().count, 10);
+        assert_eq!(
+            inv.view.slots[15].as_ref().unwrap().count,
+            8,
+            "distinct NBT cannot collect"
+        );
         inv.view.cursor = stack(1, 2);
         inv.view.slots[14] = stack(1, 4);
         let before = inv.view.cursor.clone();

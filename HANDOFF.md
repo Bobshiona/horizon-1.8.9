@@ -227,7 +227,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 130 scoped tests pass with `--include-ignored` (client 51, login CLI 2, assets 1, auth 6, physics 16,
+- 131 scoped tests pass with `--include-ignored` (client 52, login CLI 2, assets 1, auth 6, physics 16,
   protocol 37, world 17 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -325,7 +325,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest recorded gate outcomes are 130 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 131 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -480,3 +480,11 @@ FPS/CPS HUD plus adjustable FOV, with physical-event counting and unchanged reac
 Do not start deferred zoom, keystrokes, brewing, inventory player model or cosmetic polish. The fallback
 queue of explosion/smoke, block fragments and inventory gestures is complete; Section 8 remains its
 original task specification rather than a request to repeat it.
+
+
+Final inventory review adds the `GuiContainer` crafting-result guard: a double-click on that slot does
+not emit collection, even when it is empty. The collect regression also distinguishes equal item IDs
+with different NBT. Final full gate: 131 scoped tests (52 client; remaining package counts unchanged),
+strict Clippy/fmt/layers/public-tree/privacy and managed reference gate passing. The separate
+`horizon-client-input` suite also passes 209 tests. Static release captures are recorded above; the last
+change affects gesture admission, covered by the added GUI unit and the repeated reference gate.
