@@ -527,3 +527,65 @@ fn retry_after_login_rejection_uses_fresh_state_and_same_session() {
     drop(second);
     server.join().unwrap();
 }
+
+#[test]
+fn forced_hotbar_changes_sync_once_and_survive_respawn() {
+    let mut actor = Actor::new();
+    actor.join();
+    actor.position();
+    actor.grounded();
+    // Drain preceding movement through an ordered keepalive barrier.
+    actor.barrier(380);
+    actor.send(vec![0x09, 4]);
+    assert_eq!(actor.next(0x09), vec![0x09, 0, 4]);
+    actor.grounded();
+    assert_eq!(actor.shared.lock().unwrap().inventory.selected, 4);
+    // The same slot never produces a redundant C09.
+    actor.send(vec![0x09, 4]);
+    actor.barrier(381);
+    for _ in 0..3 {
+        let packet = actor.peer.receive().unwrap();
+        assert_ne!(packet.first(), Some(&0x09));
+    }
+    // A new player starts at slot zero, but the controller's last sent slot persists.
+    actor.send(respawn(0));
+    actor.barrier(382);
+    actor.position();
+    assert_eq!(actor.peer.receive().unwrap(), vec![0x09, 0, 0]);
+    actor.grounded();
+    // Vanilla ignores values outside InventoryPlayer.getHotbarSize().
+    for slot in [9, 127, 255] {
+        actor.send(vec![0x09, slot]);
+    }
+    actor.barrier(383);
+    actor.grounded();
+    assert_eq!(actor.shared.lock().unwrap().inventory.selected, 0);
+}
+
+#[test]
+fn mid_session_join_starts_a_fresh_controller_and_inventory_without_c09() {
+    let mut actor = Actor::new();
+    actor.join();
+    actor.position();
+    actor.grounded();
+    actor.barrier(390);
+    actor.send(vec![0x09, 4]);
+    assert_eq!(actor.next(0x09), vec![0x09, 0, 4]);
+    // handleJoinGame builds a new PlayerControllerMP (currentPlayerItem 0)
+    // and a new EntityPlayerSP whose inventory selects slot 0: nothing to sync.
+    let mut join = vec![1];
+    join.extend(7i32.to_be_bytes());
+    join.extend([0, 0, 1, 20]);
+    write_string(&mut join, "default", 16).unwrap();
+    join.push(0);
+    actor.send(join);
+    actor.barrier(391);
+    actor.position();
+    actor.grounded();
+    actor.barrier(392);
+    assert_eq!(actor.shared.lock().unwrap().inventory.selected, 0);
+    for _ in 0..3 {
+        let packet = actor.peer.receive().unwrap();
+        assert_ne!(packet.first(), Some(&0x09));
+    }
+}

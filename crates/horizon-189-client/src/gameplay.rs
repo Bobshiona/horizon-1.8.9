@@ -72,6 +72,8 @@ pub struct Input {
 
 #[derive(Default)]
 pub struct Controller {
+    /// PlayerControllerMP.currentPlayerItem survives replacement of the local player.
+    sent_slot: u8,
     digging: Option<([i32; 3], u8, f32, Option<Item>)>,
     delay: u8,
     right_delay: u8,
@@ -90,6 +92,25 @@ pub struct Controller {
 }
 
 impl Controller {
+    pub fn reset_player(&mut self) {
+        *self = Self {
+            sent_slot: self.sent_slot,
+            ..Self::default()
+        };
+    }
+
+    fn sync_slot(
+        &mut self,
+        slot: u8,
+        writer: &mut PacketWriter<impl Read + Write>,
+    ) -> io::Result<()> {
+        if slot != self.sent_slot {
+            writer.send(&packet::held(slot)?)?;
+            self.sent_slot = slot;
+        }
+        Ok(())
+    }
+
     /// The block being dug and `curBlockDamageMP`, 0 to 1.
     pub fn dig_progress(&self) -> Option<([i32; 3], f32)> {
         self.digging
@@ -121,6 +142,7 @@ impl Controller {
         game_mode: u8,
         writer: &mut PacketWriter<impl Read + Write>,
     ) -> io::Result<()> {
+        self.sync_slot(inventory.view.selected, writer)?;
         if let Some(swing) = &mut self.swing {
             *swing += 1;
             if *swing >= 6 {
@@ -154,14 +176,14 @@ impl Controller {
         while let Some(action) = input.actions.pop_front() {
             match action {
                 Action::Respawn => writer.send(&[0x16, 0])?,
+                // A key or wheel selection only changes currentItem. C09
+                // waits for syncCurrentPlayItem, and EntityPlayer.onUpdate
+                // drops an item in use that is no longer held, without a
+                // release packet; a dig in progress restarts from
+                // onPlayerDamageBlock's tool check.
                 Action::Select(slot) if slot <= 8 && slot != inventory.view.selected => {
-                    self.abort(writer)?;
-                    if self.using {
-                        writer.send(&packet::dig(5, [0; 3], 0)?)?;
-                        self.using = false;
-                    }
+                    self.using = false;
                     inventory.view.selected = slot;
-                    writer.send(&packet::held(slot)?)?;
                 }
                 Action::OpenInventory => {
                     self.abort(writer)?;
@@ -197,6 +219,8 @@ impl Controller {
                     match hit {
                         Some(Hit::Entity { id, .. }) => {
                             if game_mode != 3 {
+                                // attackEntity syncs after clickMouse's swing.
+                                self.sync_slot(inventory.view.selected, writer)?;
                                 writer.send(&packet::use_entity(id, 1, None)?)?;
                                 // attackTargetEntityWithCurrentItem: other players
                                 // accept the client-side hit, so crits show at once.
@@ -254,6 +278,8 @@ impl Controller {
         if inventory.view.open {
             self.abort(writer)?;
             if self.using {
+                // onStoppedUsingItem syncs before C07 RELEASE_USE_ITEM.
+                self.sync_slot(inventory.view.selected, writer)?;
                 writer.send(&packet::dig(5, [0; 3], 0)?)?;
             }
             self.using = false;
@@ -261,6 +287,7 @@ impl Controller {
             return Ok(());
         }
         if self.using && !input.using {
+            self.sync_slot(inventory.view.selected, writer)?;
             writer.send(&packet::dig(5, [0; 3], 0)?)?;
             self.using = false;
         }
@@ -275,6 +302,8 @@ impl Controller {
                         .get(id)
                         .map(|e| std::array::from_fn(|a| (point[a] - e.position[a]) as f32))
                         .unwrap_or([0.0; 3]);
+                    // isPlayerRightClickingOnEntity syncs first.
+                    self.sync_slot(inventory.view.selected, writer)?;
                     writer.send(&packet::use_entity(id, 2, Some(relative))?)?;
                     writer.send(&packet::use_entity(id, 0, None)?)?;
                     let consumes_interaction = entities.get(id).is_some_and(|e| {
@@ -297,6 +326,8 @@ impl Controller {
                     let relative = std::array::from_fn(|a| {
                         (point[a] - f64::from(at[a])).clamp(0.0, 1.0) as f32
                     });
+                    // onPlayerRightClick syncs first.
+                    self.sync_slot(inventory.view.selected, writer)?;
                     writer.send(&packet::place(at, face, relative, inventory.held())?)?;
                     if inventory.held().is_some() {
                         self.swing(writer)?;
@@ -348,6 +379,10 @@ impl Controller {
                 }
                 None => {
                     if let Some(item) = inventory.held() {
+                        // sendUseItem syncs first (not in spectator).
+                        if game_mode != 3 {
+                            self.sync_slot(inventory.view.selected, writer)?;
+                        }
                         writer.send(&packet::place([-1, -1, -1], 255, [0.0; 3], Some(item))?)?;
                         self.using = is_sword(item.id)
                             || item.id == 261
@@ -377,15 +412,18 @@ impl Controller {
             self.abort(writer)?;
             return Ok(());
         }
-        if self.delay > 0 {
-            self.delay -= 1;
-            return Ok(());
-        }
         let Some(Hit::Block { at, face, .. }) = hit else {
             self.abort(writer)?;
             return Ok(());
         };
         if game_mode != 0 && game_mode != 1 {
+            return Ok(());
+        }
+        // onPlayerDamageBlock: sync first, then count blockHitDelay down,
+        // only while a block is targeted.
+        self.sync_slot(inventory.view.selected, writer)?;
+        if self.delay > 0 {
+            self.delay -= 1;
             return Ok(());
         }
         let same = self.digging.as_ref().is_some_and(|(pos, _, _, item)| {
@@ -522,6 +560,154 @@ mod tests {
         });
         world
     }
+    /// PlayerControllerMP.syncCurrentPlayItem: a selection only changes
+    /// `currentItem`; C09 follows at the next updateController or just
+    /// before an attack/use packet, and switching away from a used item
+    /// clears it locally without a release packet.
+    #[test]
+    fn hotbar_selection_syncs_like_player_controller_mp() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let mut entities = Entities::default();
+        entities.apply(EntityPacket::SpawnPlayer {
+            id: 7,
+            uuid: 0,
+            position: [16, 4 * 32, 2 * 32],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let mut player = Player::default();
+        player.set_position(0.5, 4.0, 0.5);
+        player.on_ground = true;
+        let mut inventory = Inventory::default();
+        let sword = Some(Item {
+            id: 276,
+            count: 1,
+            damage: 0,
+            nbt: None,
+        });
+        inventory.player[41] = sword.clone();
+        let world = world();
+        let mut controller = Controller::default();
+        let mut tick = |controller: &mut Controller,
+                        inventory: &mut Inventory,
+                        player: &mut Player,
+                        actions: Vec<Action>,
+                        attack: bool,
+                        using: bool| {
+            let mut input = Input {
+                attack,
+                using,
+                actions: VecDeque::from(actions),
+            };
+            controller
+                .tick(
+                    &mut input,
+                    player,
+                    &world,
+                    &entities,
+                    inventory,
+                    0,
+                    &mut writer,
+                )
+                .unwrap();
+        };
+        // A selection alone sends nothing until the next tick.
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![Action::Select(3)],
+            false,
+            false,
+        );
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![],
+            false,
+            false,
+        );
+        assert_eq!(peer.receive().unwrap(), [0x09, 0, 3]);
+        // Select then attack in one tick: swing, sync, attack.
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![Action::Select(5), Action::Attack],
+            true,
+            false,
+        );
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        assert_eq!(peer.receive().unwrap(), [0x09, 0, 5]);
+        assert_eq!(peer.receive().unwrap(), [0x02, 7, 1]);
+        // Block with the sword on the player: interact-at, interact, use.
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![Action::Use],
+            false,
+            true,
+        );
+        assert_eq!(peer.receive().unwrap()[..3], [0x02, 7, 2]);
+        assert_eq!(peer.receive().unwrap(), [0x02, 7, 0]);
+        assert_eq!(peer.receive().unwrap()[0], 0x08);
+        assert!(controller.using);
+        // Switching away clears the use locally: no C07 release, then C09.
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![Action::Select(6)],
+            false,
+            false,
+        );
+        assert!(!controller.using);
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![],
+            false,
+            false,
+        );
+        assert_eq!(peer.receive().unwrap(), [0x09, 0, 6]);
+        // Re-selecting the synced slot is silent.
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![Action::Select(6)],
+            false,
+            false,
+        );
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![Action::Select(2)],
+            false,
+            false,
+        );
+        tick(
+            &mut controller,
+            &mut inventory,
+            &mut player,
+            vec![],
+            false,
+            false,
+        );
+        assert_eq!(peer.receive().unwrap(), [0x09, 0, 2]);
+    }
+
     #[test]
     fn user_attack_swings_before_attack_and_block_use_releases() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -544,7 +730,8 @@ mod tests {
         player.set_position(0.5, 4.0, 0.5);
         player.on_ground = true;
         let mut inventory = Inventory::default();
-        inventory.player[36] = Some(Item {
+        inventory.view.selected = 4;
+        inventory.player[40] = Some(Item {
             id: 276,
             count: 1,
             damage: 0,
@@ -567,6 +754,7 @@ mod tests {
                 &mut writer,
             )
             .unwrap();
+        assert_eq!(peer.receive().unwrap(), [0x09, 0, 4]);
         assert_eq!(peer.receive().unwrap(), [0x0a]);
         assert_eq!(peer.receive().unwrap(), [0x02, 7, 1]);
         input.attack = false;

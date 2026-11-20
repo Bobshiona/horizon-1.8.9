@@ -1,6 +1,6 @@
 //! Authoritative window snapshots, vanilla container geometry and predicted
 //! clicks: pick up, shift-click, number keys and drops.
-use horizon_protocol_47::{interaction, nbt::Item, read_string, read_varint};
+use horizon_protocol_47::{interaction, nbt::Item, read_string};
 use std::io::{self, Cursor, Read};
 
 /// The `GuiContainer` a window opens as.
@@ -865,18 +865,29 @@ pub fn window_property(fields: &[u8]) -> io::Result<(u8, i16, i16)> {
     ))
 }
 
-pub fn server_hotbar(fields: &[u8]) -> io::Result<u8> {
-    let mut input = Cursor::new(fields);
-    let value = read_varint(&mut input)?;
-    if !(0..=8).contains(&value) || input.position() != fields.len() as u64 {
-        return Err(io::Error::other("Invalid server hotbar"));
-    }
-    Ok(value as u8)
+/// S09 carries a signed byte; vanilla ignores selections outside 0..9.
+pub fn server_hotbar(fields: &[u8]) -> io::Result<Option<u8>> {
+    let [value] = fields else {
+        return Err(io::Error::other("Invalid server hotbar packet length"));
+    };
+    Ok((*value < 9).then_some(*value))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn server_hotbar_uses_one_signed_byte_and_ignores_out_of_range_slots() {
+        for value in 0..=255u8 {
+            assert_eq!(
+                server_hotbar(&[value]).unwrap(),
+                (value < 9).then_some(value)
+            );
+        }
+        assert!(server_hotbar(&[]).is_err());
+        assert!(server_hotbar(&[0, 0]).is_err());
+        assert!(server_hotbar(&[0x80, 0]).is_err());
+    }
 
     #[test]
     fn window_properties_decode_big_endian_shorts() {

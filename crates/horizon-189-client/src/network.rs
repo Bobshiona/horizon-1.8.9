@@ -555,6 +555,12 @@ fn run_actor(
                 let body = packet?;
                 match play::decode(&body)? {
                     play::Packet::Join(join) => {
+                        // handleJoinGame: a new PlayerControllerMP (nothing
+                        // sent yet) and a new EntityPlayerSP inventory.
+                        if entity_id != 0 {
+                            controller = crate::gameplay::Controller::default();
+                            inventory = crate::inventory::Inventory::default();
+                        }
                         entity_id = join.entity_id;
                         game_mode = apply_game_mode(
                             &mut player,
@@ -703,7 +709,7 @@ fn run_actor(
                         let world_changed = dimension != Some(respawn.dimension);
                         dimension = Some(respawn.dimension);
                         inventory = crate::inventory::Inventory::default();
-                        controller = crate::gameplay::Controller::default();
+                        controller.reset_player();
                         vitals = crate::gameplay::Vitals::default();
                         player = Player::default();
                         // PlayerControllerMP.flipPlayer initializes the new player's yaw.
@@ -829,7 +835,9 @@ fn run_actor(
                         }
                     }
                     play::Packet::Other { id: 0x09, fields } => {
-                        inventory.view.selected = crate::inventory::server_hotbar(fields)?;
+                        if let Some(slot) = crate::inventory::server_hotbar(fields)? {
+                            inventory.view.selected = slot;
+                        }
                     }
                     play::Packet::Other { id: 0x2d, fields } => {
                         let title = |json: &str| {

@@ -651,3 +651,33 @@ the test plan. On a naturally occurring disconnect, capture the retained reason 
 retry; stop live testing on warnings/rubberbanding/inventory faults and reproduce locally first.
 Successful real-token refresh, complete live matches, native retry interaction and the remaining
 Retina/high-refresh display matrix remain unverified. Deferred features remain deferred.
+
+
+## 15. Held-item (C09) sync checkpoint
+
+`Controller` now ports `PlayerControllerMP.currentPlayerItem`/`syncCurrentPlayItem` (bytecode `bda.n`,
+called from `e` updateController, `c(cj,cq)` onPlayerDamageBlock, onPlayerRightClick, sendUseItem
+outside spectator, attackEntity, both entity right-click paths and onStoppedUsingItem; not from
+clickBlock or windowClick). A tick starts with the comparison `selected != last_sent → C09`, and the
+same check runs immediately before each of those packets, so a selection made in the tick it is used
+gives vanilla's C0A, C09, C02 order. A key/wheel selection now only changes `currentItem`: it no longer
+sends C09 at once, an `ABORT_DESTROY_BLOCK`, or `RELEASE_USE_ITEM`. The item in use is cleared locally
+as `EntityPlayer.onUpdate` does, and a dig restarts through onPlayerDamageBlock's tool comparison.
+`blockHitDelay` now counts down only while a block is targeted, after the sync.
+
+S09 is read as one byte; `InventoryPlayer.isHotbar` ignores values outside 0-8 (including negative
+bytes). Server-forced S09 slots are synced once on the next tick. Respawn (same or other dimension)
+creates a new player whose inventory selects 0 while the controller keeps its last sent slot, so a
+non-zero slot produces one C09 0. A second Join Game builds a new controller and inventory (nothing
+sent, slot 0); a reconnect starts a new actor and controller.
+
+Regressions written first and failing before the fix: `hotbar_selection_syncs_like_player_controller_mp`
+(selection-only tick silent, select+attack order, no release when switching off a blocking sword,
+duplicate selection silent), `forced_hotbar_changes_sync_once_and_survive_respawn`, and
+`mid_session_join_starts_a_fresh_controller_and_inventory_without_c09`; the S09 decoder has a
+0-255 table test. Gate: 154 scoped tests (73 client, 2 login CLI, 1 assets, 6 auth, 16 physics,
+38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release
+build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+Noted for the parity audit: spectator left-clicks on an entity send no C02 here, while vanilla's
+attackEntity sends one (spectate target).
