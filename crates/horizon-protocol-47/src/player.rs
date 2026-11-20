@@ -76,22 +76,7 @@ pub fn decode_velocity(fields: &[u8]) -> io::Result<(i32, [i16; 3])> {
 
 /// Clientbound 0x27: the player's knockback after the affected records.
 pub fn decode_explosion(fields: &[u8]) -> io::Result<[f32; 3]> {
-    let mut input = Cursor::new(fields);
-    for _ in 0..4 {
-        f32_be(&mut input)?;
-    }
-    let count = i32::from_be_bytes(bytes(&mut input)?);
-    if count < 0 || count as usize > remaining(&input) / 3 {
-        return Err(invalid("Invalid explosion record count"));
-    }
-    input.set_position(input.position() + count as u64 * 3);
-    let motion = [
-        f32_be(&mut input)?,
-        f32_be(&mut input)?,
-        f32_be(&mut input)?,
-    ];
-    finish(&input)?;
-    Ok(motion)
+    Ok(crate::effects::explosion(fields)?.motion)
 }
 
 #[derive(Clone, Debug, PartialEq)]

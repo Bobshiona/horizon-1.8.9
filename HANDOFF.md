@@ -147,8 +147,7 @@ trails. Physics now tracks fall distance, distance walked and camera yaw/pitch f
 capture checked dropped items, a stuck arrow, swelling TNT, a landed falling block, collected XP orbs and
 the held sword, bow, fishing rod and wool block. S0D `Collect Item` marks an item, arrow or orb with its
 collector: it skips its destroy packet, flies along `EntityPickupFX`'s squared progress to the
-collector's feet plus half a block for three ticks, then goes. Known gaps: no explosion or smoke
-particles.
+collector's feet plus half a block for three ticks, then goes. Explosion and smoke particles are now implemented (see the sprint execution record below).
 
 Saved sign-in and release pacing checkpoint. A device-code sign-in now keeps Microsoft's refresh token
 in the macOS Keychain (generic password, service "Horizon 1.8.9 Microsoft sign-in", account = client
@@ -229,8 +228,8 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 115 scoped tests pass with `--include-ignored` (client 38, login CLI 2, assets 1, auth 6, physics 16,
-  protocol 35, world 17 — counts include the Metal readback and the owned-jar registry test).
+- 120 scoped tests pass with `--include-ignored` (client 41, login CLI 2, assets 1, auth 6, physics 16,
+  protocol 37, world 17 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata
@@ -327,7 +326,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest recorded gate outcomes are 115 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 120 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -407,3 +406,24 @@ reports show lost navigation or gameplay information.
 - Update Sections 1/2/5 with actual results and return commit, exact gate commands/exit codes/test counts,
   private evidence paths, remaining limitations and manual live-test status. Keep reported baseline
   evidence distinct from checks performed for the new revision.
+
+
+## 9. November 19 fallback queue execution
+
+### Explosion/smoke checkpoint
+
+Bounded S27/S2A decoders retain signed affected-block records and particle parameters; explosion block
+changes remesh and player knockback remains applied once. The window receives bounded visual events.
+Owned-jar bytecode `bdp`, `beh`, `bdx`, `bdu`, `bdv`, `bec` and `cy` informed normal/large/huge explosions,
+smoke, sheet animation and fuse emission. All sixteen explosion cells survive texture-layer upload.
+Validation scripts now reject non-loopback server names; movement also checks resolved socket addresses.
+
+Full gate: 120 scoped tests (41 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 37 protocol, 17 world),
+zero failures; strict scoped Clippy, fmt, layer/public-tree and diff privacy checks passed. Managed official
+server result: `VANILLA_189_REFERENCE_GATE_PASS`. Native ARM64 release build passed. A private 960x600
+release capture was inspected: explosion clouds, smoke and the reference terrain/chest render correctly;
+500 frames, 50 columns, one offscreen frame. This is a visual fixture, not live match or display certification.
+Evidence remains outside git in the private `h189-sprint-effects` capture directory and `h189-effects-*`
+logs. Live Hypixel and real Keychain reuse are still pending user testing.
+
+Next: inherited particle material and busy-tick collision; then player/chest drag-split and collect.

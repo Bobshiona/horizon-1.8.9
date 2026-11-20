@@ -6,7 +6,27 @@ use crate::{models::Texture, terrain::Vertex};
 use glam::{Mat4, Vec3};
 use horizon_world_189::entities::{Entity, Kind};
 
+pub enum Event {
+    Explosion(horizon_protocol_47::effects::Explosion),
+    Particle(horizon_protocol_47::effects::Particle),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Style {
+    Crit,
+    Digging,
+    Smoke,
+    NormalExplosion,
+    LargeExplosion,
+}
+
+struct Huge {
+    position: [f64; 3],
+    age: u32,
+}
+
 struct Particle {
+    style: Style,
     position: [f64; 3],
     previous: [f64; 3],
     motion: [f64; 3],
@@ -30,6 +50,7 @@ pub struct Particles {
     particles: Vec<Particle>,
     emitters: Vec<Emitter>,
     seed: u64,
+    huge: Vec<Huge>,
 }
 
 impl Default for Particles {
@@ -38,6 +59,7 @@ impl Default for Particles {
             particles: Vec::new(),
             emitters: Vec::new(),
             seed: 0x2545_F491_4F6C_DD1D,
+            huge: Vec::new(),
         }
     }
 }
@@ -46,6 +68,179 @@ impl Default for Particles {
 const MAX_PARTICLES: usize = 4000;
 
 impl Particles {
+    fn gaussian(&mut self) -> f64 {
+        (-2.0 * self.random().max(f64::MIN_POSITIVE).ln()).sqrt()
+            * (std::f64::consts::TAU * self.random()).cos()
+    }
+
+    pub fn event(&mut self, event: &Event, camera: [f64; 3]) {
+        match event {
+            Event::Explosion(e) => {
+                let at = e.position.map(f64::from);
+                self.visual(if e.strength >= 2.0 { 2 } else { 1 }, at, [0.0; 3]);
+                for &block in e.blocks.iter().take(MAX_PARTICLES / 2) {
+                    let point = block.map(|v| f64::from(v) + self.random());
+                    let delta: [f64; 3] = std::array::from_fn(|a| point[a] - at[a]);
+                    let distance = delta.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    if distance <= 0.0 || e.strength <= 0.0 {
+                        continue;
+                    }
+                    let speed = 0.5 / (distance / f64::from(e.strength) + 0.1)
+                        * (self.random() * self.random() + 0.3);
+                    let motion = delta.map(|v| v / distance * speed);
+                    self.visual(0, std::array::from_fn(|a| (point[a] + at[a]) / 2.0), motion);
+                    self.visual(11, point, motion);
+                }
+            }
+            Event::Particle(p) => {
+                let at = p.position.map(f64::from);
+                let distance = (0..3).map(|a| (at[a] - camera[a]).powi(2)).sum::<f64>();
+                if distance
+                    > if p.long_distance {
+                        256.0f64.powi(2)
+                    } else {
+                        32.0f64.powi(2)
+                    }
+                {
+                    return;
+                }
+                if p.count == 0 {
+                    self.visual(p.id, at, p.offset.map(|v| f64::from(v * p.speed)));
+                } else {
+                    for _ in 0..p.count.min(MAX_PARTICLES as i32) {
+                        let position = std::array::from_fn(|a| {
+                            at[a] + self.gaussian() * f64::from(p.offset[a])
+                        });
+                        let speed = std::array::from_fn(|_| self.gaussian() * f64::from(p.speed));
+                        self.visual(p.id, position, speed);
+                    }
+                }
+            }
+        }
+    }
+
+    fn visual(&mut self, id: i32, at: [f64; 3], speed: [f64; 3]) {
+        if !at.iter().chain(&speed).all(|v| v.is_finite()) {
+            return;
+        }
+        if id == 2 {
+            if self.huge.len() < 64 {
+                self.huge.push(Huge {
+                    position: at,
+                    age: 0,
+                });
+            }
+            return;
+        }
+        let style = match id {
+            0 => Style::NormalExplosion,
+            1 => Style::LargeExplosion,
+            11 | 12 => Style::Smoke,
+            _ => return,
+        };
+        let (motion, color, scale, max_age) = match style {
+            Style::LargeExplosion => (
+                [0.0; 3],
+                (self.random() * 0.6 + 0.4) as f32,
+                20.0 * (1.0 - speed[0] as f32 * 0.5),
+                6 + (self.random() * 4.0) as u32,
+            ),
+            Style::NormalExplosion => (
+                speed.map(|v| v + (self.random() * 2.0 - 1.0) * 0.050_000_000_745_058_06),
+                (self.random() * 0.3 + 0.7) as f32,
+                (self.random() * self.random() * 6.0 + 1.0) as f32,
+                (16.0 / (self.random() * 0.8 + 0.2)) as u32 + 2,
+            ),
+            _ => {
+                // EntitySmokeFX starts from EntityFX's normalized random velocity.
+                let mut motion: [f64; 3] =
+                    std::array::from_fn(|_| (self.random() * 2.0 - 1.0) * 0.4);
+                let length = motion.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-9);
+                let f = (self.random() + self.random() + 1.0) * 0.15;
+                for a in 0..3 {
+                    motion[a] = motion[a] / length * f * 0.4;
+                }
+                motion[1] += 0.1;
+                for a in 0..3 {
+                    motion[a] = motion[a] * 0.100_000_001_490_116_12 + speed[a];
+                }
+                let multiplier = if id == 12 { 2.5 } else { 1.0 };
+                let color = (self.random() * 0.3) as f32;
+                let scale = ((self.random() * 0.5 + 0.5) * 2.0 * 0.75 * multiplier) as f32;
+                let age = (8.0 / (self.random() * 0.8 + 0.2)) as u32;
+                (
+                    motion,
+                    color,
+                    scale,
+                    (age as f32 * multiplier as f32) as u32,
+                )
+            }
+        };
+        if self.particles.len() >= MAX_PARTICLES {
+            self.particles.remove(0);
+        }
+        self.particles.push(Particle {
+            style,
+            position: at,
+            previous: at,
+            motion,
+            age: 0,
+            max_age: max_age.max(1),
+            color: [color; 3],
+            scale,
+            texture: 7,
+            block: None,
+            on_ground: false,
+        });
+    }
+
+    fn update_visual(p: &mut Particle, world: Option<&horizon_world_189::World>) -> bool {
+        p.previous = p.position;
+        if p.age >= p.max_age {
+            return false;
+        }
+        p.age += 1;
+        if p.style == Style::LargeExplosion {
+            return true;
+        }
+        p.texture = (7i32 - (p.age * 8 / p.max_age) as i32).max(0) as u8;
+        p.motion[1] += 0.004;
+        let before_y = p.position[1];
+        for axis in [1, 0, 2] {
+            let mut next = p.position;
+            next[axis] += p.motion[axis];
+            let [x, y, z] = next.map(|v| v.floor() as i32);
+            let solid = world.and_then(|w| w.block(x, y, z)).is_some_and(|s| {
+                s.block_id() != 0
+                    && horizon_world_189::blocks::block(s.block_id()).layer
+                        == horizon_world_189::blocks::Layer::Solid
+            });
+            if solid {
+                p.on_ground |= axis == 1 && p.motion[axis] < 0.0;
+                p.motion[axis] = 0.0;
+            } else {
+                p.position = next;
+            }
+        }
+        if p.style == Style::Smoke && before_y == p.position[1] {
+            p.motion[0] *= 1.1;
+            p.motion[2] *= 1.1;
+        }
+        let drag = if p.style == Style::Smoke {
+            0.959_999_978_542_327_9
+        } else {
+            0.899_999_976_158_142_1
+        };
+        for value in &mut p.motion {
+            *value *= drag;
+        }
+        if p.on_ground {
+            p.motion[0] *= 0.699_999_988_079_071;
+            p.motion[2] *= 0.699_999_988_079_071;
+        }
+        true
+    }
+
     /// `Math.random()` stand-in.
     fn random(&mut self) -> f64 {
         self.seed ^= self.seed << 13;
@@ -94,6 +289,7 @@ impl Particles {
         let scale = ((self.random() * 0.5 + 0.5) * 2.0 * 0.75) as f32;
         let max_age = (6.0 / (self.random() * 0.8 + 0.6)) as u32;
         let mut particle = Particle {
+            style: Style::Crit,
             position: at,
             previous: at,
             motion,
@@ -147,6 +343,7 @@ impl Particles {
         let max_age = (4.0 / (self.random() * 0.9 + 0.1)) as u32;
         let jitter = [(self.random() * 3.0) as f32, (self.random() * 3.0) as f32];
         self.particles.push(Particle {
+            style: Style::Digging,
             position: at,
             previous: at,
             motion,
@@ -225,6 +422,18 @@ impl Particles {
     /// One client tick: emitters burst around their entity for three ticks,
     /// critical arrows trail, particles move and expire.
     pub fn tick(&mut self, entities: &[(i32, Entity)], world: Option<&horizon_world_189::World>) {
+        let mut huge = std::mem::take(&mut self.huge);
+        huge.retain_mut(|h| {
+            for _ in 0..6 {
+                let at = h
+                    .position
+                    .map(|v| v + (self.random() - self.random()) * 4.0);
+                self.visual(1, at, [f64::from(h.age) / 8.0, 0.0, 0.0]);
+            }
+            h.age += 1;
+            h.age < 8
+        });
+        self.huge = huge;
         let mut emitters = std::mem::take(&mut self.emitters);
         emitters.retain_mut(|emitter| {
             let Some((_, entity)) = entities.iter().find(|(id, _)| *id == emitter.entity) else {
@@ -251,6 +460,10 @@ impl Particles {
         });
         self.emitters = emitters;
         for (_, entity) in entities {
+            if entity.kind == Kind::Object(50) && entity.age < 80 {
+                let [x, y, z] = entity.position;
+                self.visual(11, [x, y + 0.5, z], [0.0; 3]);
+            }
             if entity.kind == Kind::Object(60) && entity.critical && !entity.stuck {
                 let [mx, my, mz] = entity.motion;
                 for k in 0..4 {
@@ -267,8 +480,10 @@ impl Particles {
         self.particles.retain_mut(|particle| {
             if particle.block.is_some() {
                 Self::update_digging(particle, world)
-            } else {
+            } else if particle.style == Style::Crit {
                 Self::update(particle)
+            } else {
+                Self::update_visual(particle, world)
             }
         });
     }
@@ -289,7 +504,10 @@ impl Particles {
         let up = facing.transform_vector3(Vec3::Y);
         let texel = 1.0 / crate::models::LAYER_SIZE as f32;
         for particle in &self.particles {
-            let grow = if particle.block.is_some() {
+            let grow = if matches!(
+                particle.style,
+                Style::Digging | Style::LargeExplosion | Style::NormalExplosion
+            ) {
                 1.0
             } else {
                 ((particle.age as f32 + partial) / particle.max_age.max(1) as f32 * 32.0)
@@ -320,6 +538,22 @@ impl Particles {
                         layer,
                     )
                 }
+                None if particle.style == Style::LargeExplosion => {
+                    let frame = (((particle.age as f32 + partial) * 15.0 / particle.max_age as f32)
+                        as u32)
+                        .min(15);
+                    let u = (frame % 4) as f32 * 32.0;
+                    let v = (frame / 4) as f32 * 32.0;
+                    (
+                        [
+                            [u, v + 31.968],
+                            [u + 31.968, v + 31.968],
+                            [u + 31.968, v],
+                            [u, v],
+                        ],
+                        Texture::Explosion as u32,
+                    )
+                }
                 None => (
                     [[u, v + 8.0], [u + 8.0, v + 8.0], [u + 8.0, v], [u, v]],
                     Texture::Particles as u32,
@@ -346,6 +580,63 @@ impl Particles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_explosion_emits_six_children_for_eight_ticks_then_expires() {
+        let mut p = Particles::default();
+        p.visual(2, [0.0; 3], [0.0; 3]);
+        for _ in 0..8 {
+            p.tick(&[], None);
+        }
+        assert!(p.huge.is_empty());
+        assert!(p.particles.len() >= 36 && p.particles.len() <= 48);
+        let mut vertices = Vec::new();
+        p.draw(&mut vertices, 0.5, [0; 3], 0.0, 0.0);
+        assert!(!vertices.is_empty());
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.position.iter().chain(&v.uv).all(|v| v.is_finite()))
+        );
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.layer == Texture::Explosion as u32)
+        );
+        for _ in 0..20 {
+            p.tick(&[], None);
+        }
+        assert!(p.particles.is_empty());
+    }
+
+    #[test]
+    fn packet_count_zero_velocity_distance_and_budget() {
+        use horizon_protocol_47::effects::Particle;
+        let mut p = Particles::default();
+        let mut packet = Particle {
+            id: 11,
+            long_distance: false,
+            position: [0.0; 3],
+            offset: [1.0, 2.0, 3.0],
+            speed: 2.0,
+            count: 0,
+            data: vec![],
+        };
+        p.event(&Event::Particle(packet.clone()), [100.0; 3]);
+        assert_eq!(p.len(), 0);
+        p.event(&Event::Particle(packet.clone()), [0.0; 3]);
+        assert_eq!(p.len(), 1);
+        for (a, expected) in [2.0, 4.0, 6.0].iter().enumerate() {
+            assert!((p.particles[0].motion[a] - expected).abs() < 0.1);
+        }
+        packet.count = i32::MAX;
+        p.event(&Event::Particle(packet), [0.0; 3]);
+        assert_eq!(p.len(), MAX_PARTICLES);
+        for _ in 0..120 {
+            p.tick(&[], None);
+        }
+        assert!(p.particles.is_empty());
+    }
 
     #[test]
     fn crit_bursts_last_three_ticks_and_particles_expire() {

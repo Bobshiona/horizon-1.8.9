@@ -99,6 +99,7 @@ pub struct Shared {
     pub cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
     /// Blocks broken since the window last looked (effect 2001 and the
     /// local player's own breaks), for break particles.
+    pub visuals: Vec<crate::particles::Event>,
     pub breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
 }
 
@@ -281,6 +282,9 @@ fn run(
     for address in (config.host.as_str(), config.port).to_socket_addrs()? {
         if stop.load(Ordering::Acquire) {
             return Ok(());
+        }
+        if (config.autopilot || config.autopilot_fly) && !address.ip().is_loopback() {
+            return Err(io::Error::other("Scripted movement requires loopback"));
         }
         match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
             Ok(connected) => {
@@ -910,9 +914,37 @@ fn run_actor(
                         let collector = horizon_protocol_47::read_varint(&mut input)?;
                         entities.collect(collected, collector);
                     }
+                    play::Packet::Other { id: 0x2a, fields } => {
+                        let packet = horizon_protocol_47::effects::particle(fields)?;
+                        if matches!(packet.id, 0..=2 | 11 | 12) {
+                            let mut state = lock(shared)?;
+                            if state.visuals.len() < 64 {
+                                state
+                                    .visuals
+                                    .push(crate::particles::Event::Particle(packet));
+                            }
+                        }
+                    }
                     play::Packet::Other { id: 0x27, fields } => {
-                        let [x, y, z] = fields::decode_explosion(fields)?;
+                        let explosion = horizon_protocol_47::effects::explosion(fields)?;
+                        let [x, y, z] = explosion.motion;
                         player.add_velocity(x, y, z);
+                        let mut keys = Vec::new();
+                        let mut world = write(world)?;
+                        for &[x, y, z] in &explosion.blocks {
+                            if world.set_block(x, y, z, BlockState(0)) {
+                                world.set_block_entity([x, y, z], None);
+                                keys.extend(around(x.div_euclid(16), z.div_euclid(16)));
+                            }
+                        }
+                        drop(world);
+                        dirty(keys);
+                        let mut state = lock(shared)?;
+                        if state.visuals.len() < 64 {
+                            state
+                                .visuals
+                                .push(crate::particles::Event::Explosion(explosion));
+                        }
                     }
                     play::Packet::Other { id: 0x20, fields } => {
                         let (entity, properties) = fields::decode_properties(fields)?;

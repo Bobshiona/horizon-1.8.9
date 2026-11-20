@@ -110,6 +110,7 @@ struct Snapshot {
     own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
     entity_id: i32,
     cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
+    visuals: Vec<particles::Event>,
     breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
 }
 
@@ -718,6 +719,7 @@ impl ApplicationHandler for App {
                         own: s.own.clone(),
                         entity_id: s.entity_id,
                         cracks: s.cracks.clone(),
+                        visuals: std::mem::take(&mut s.visuals),
                         breaks: std::mem::take(&mut s.breaks),
                     })
                 });
@@ -743,6 +745,12 @@ impl ApplicationHandler for App {
                     }
                 }
                 if let Some(snapshot) = &snapshot {
+                    for event in &snapshot.visuals {
+                        self.particles.event(
+                            event,
+                            pose.as_ref().map_or([0.0; 3], |(pose, _, _)| pose.position),
+                        );
+                    }
                     for &(entity, magic) in &snapshot.effects {
                         self.particles.emit(entity, magic);
                     }

@@ -417,9 +417,20 @@ impl Registry {
             match assets.texture(source) {
                 Ok(image) => {
                     let (w, h) = (image.width as usize, image.height as usize);
-                    for y in 0..h.min(size) {
-                        let row = &image.rgba[y * w * 4..(y * w + w.min(size)) * 4];
-                        canvas[y * size * 4..y * size * 4 + row.len()].copy_from_slice(row);
+                    if source.ends_with("entity/explosion") {
+                        // Preserve all sixteen cells of the 256px sheet in a 128px layer.
+                        for y in 0..size {
+                            for x in 0..size {
+                                let from = ((y * h / size) * w + x * w / size) * 4;
+                                let to = (y * size + x) * 4;
+                                canvas[to..to + 4].copy_from_slice(&image.rgba[from..from + 4]);
+                            }
+                        }
+                    } else {
+                        for y in 0..h.min(size) {
+                            let row = &image.rgba[y * w * 4..(y * w + w.min(size)) * 4];
+                            canvas[y * size * 4..y * size * 4 + row.len()].copy_from_slice(row);
+                        }
                     }
                     if source.ends_with("font/ascii") {
                         glyphs = crate::models::glyph_widths(&image.rgba, image.width);

@@ -4,6 +4,7 @@
 
 pub mod chat;
 mod cipher;
+pub mod effects;
 pub mod entities;
 mod frame;
 pub mod interaction;

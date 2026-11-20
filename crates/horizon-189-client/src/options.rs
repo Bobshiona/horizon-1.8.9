@@ -219,6 +219,20 @@ impl Options {
         if options.capture.is_some() && options.smoke_frames.is_none() {
             return Err("--capture requires --smoke-frames".into());
         }
+        if (options.autopilot
+            || options.autopilot_fly
+            || options.smoke_chat.is_some()
+            || options.smoke_tab
+            || options.smoke_inventory)
+            && options.server.as_deref().is_some_and(|host| {
+                host != "localhost"
+                    && !host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            })
+        {
+            return Err("Scripted validation requires a loopback server".into());
+        }
         if (options.autopilot || options.autopilot_fly) && options.server.is_none() {
             return Err("--autopilot requires --server".into());
         }
@@ -363,6 +377,30 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Options, Box<dyn Error>> {
         Options::parse(args.iter().map(|value| (*value).to_owned()))
+    }
+
+    #[test]
+    fn scripted_validation_rejects_public_servers() {
+        for flag in [
+            "--autopilot",
+            "--autopilot-fly",
+            "--smoke-tab",
+            "--smoke-inventory",
+        ] {
+            assert!(parse(&["--server", "mc.hypixel.net", "--smoke-frames", "10", flag]).is_err());
+            assert!(parse(&["--server", "127.0.0.1", "--smoke-frames", "10", flag]).is_ok());
+        }
+        assert!(
+            parse(&[
+                "--server",
+                "mc.hypixel.net",
+                "--smoke-frames",
+                "10",
+                "--smoke-chat",
+                "test"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
