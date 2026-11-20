@@ -127,14 +127,18 @@ impl Raycaster {
                 }
             }
         }
-        let block_distance = nearest * reach;
-        let entity_reach = if creative { 6.0 } else { 3.0 };
+        // EntityRenderer.getMouseOver: entities are traced as far as the
+        // block reach (six in creative), but in survival one farther than
+        // 3.0 makes the whole result a miss, hiding any block behind it.
+        let entity_reach = if creative { 6.0 } else { reach };
         let ray = direction.map(|v| v * entity_reach);
-        let mut distance = if hit.is_some() {
-            block_distance
+        let block_distance = if hit.is_some() {
+            nearest * reach
         } else {
             entity_reach
         };
+        let mut distance = block_distance;
+        let mut pointed = None;
         for (id, entity) in entities.iter() {
             if entity.health <= 0.0 {
                 continue;
@@ -154,20 +158,27 @@ impl Raycaster {
                 f64::from(0.1f32),
             );
             let (min, max) = (lo(bounds), hi(bounds));
-            let inside = (0..3).all(|a| eye[a] > min[a] && eye[a] < max[a]);
-            let t = if inside {
-                Some(0.0)
-            } else {
-                intercept(bounds, eye, ray).map(|(t, _)| t)
-            };
-            if let Some(t) = t
-                && t * entity_reach < distance
-            {
-                distance = t * entity_reach;
-                hit = Some(Hit::Entity {
-                    id,
-                    point: std::array::from_fn(|a| eye[a] + ray[a] * t),
-                });
+            if (0..3).all(|a| eye[a] > min[a] && eye[a] < max[a]) {
+                distance = 0.0;
+                pointed = Some((id, eye));
+            } else if let Some((t, _)) = intercept(bounds, eye, ray) {
+                let d = t * entity_reach;
+                if d < distance || distance == 0.0 {
+                    distance = d;
+                    pointed = Some((id, std::array::from_fn(|a| eye[a] + ray[a] * t)));
+                }
+            }
+        }
+        if let Some((id, point)) = pointed {
+            let far = (0..3)
+                .map(|a| (point[a] - eye[a]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if !creative && far > 3.0 {
+                return None;
+            }
+            if distance < block_distance || hit.is_none() {
+                return Some(Hit::Entity { id, point });
             }
         }
         hit
@@ -229,5 +240,48 @@ mod tests {
             Raycaster::default().select(&world, &entities, [0.5, 1.6, 0.5], 0.0, 0.0, false),
             None
         );
+    }
+
+    /// EntityRenderer.getMouseOver traces entities as far as the block reach
+    /// (4.5); in survival an entity nearer than the block but beyond 3.0
+    /// turns the result into a miss rather than letting the block through.
+    #[test]
+    fn entities_beyond_three_blocks_turn_a_block_hit_into_a_miss() {
+        let mut world = World::default();
+        world.apply(ColumnUpdate::Data {
+            x: 0,
+            z: 0,
+            full: true,
+            data: Box::new(ColumnData {
+                sections: Default::default(),
+                biomes: None,
+            }),
+        });
+        world.set_block(0, 1, 4, BlockState(16));
+        let mut entities = Entities::default();
+        entities.apply(EntityPacket::SpawnPlayer {
+            id: 7,
+            uuid: 0,
+            position: [16, 0, 4 * 32],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let eye = [0.5, 1.6, 0.5];
+        assert_eq!(
+            Raycaster::default().select(&world, &entities, eye, 0.0, 0.0, false),
+            None
+        );
+        // Creative reaches entities up to six blocks.
+        assert!(matches!(
+            Raycaster::default().select(&world, &entities, eye, 0.0, 0.0, true),
+            Some(Hit::Entity { id: 7, .. })
+        ));
+        // Without the entity the block is hit.
+        assert!(matches!(
+            Raycaster::default().select(&world, &Entities::default(), eye, 0.0, 0.0, false),
+            Some(Hit::Block { at: [0, 1, 4], .. })
+        ));
     }
 }

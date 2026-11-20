@@ -941,3 +941,20 @@ tick. C0A is now sent on every swing; only the local animation keeps the half-wa
 scoped tests (88 client, 2 login CLI, 1 assets, 6 auth, 17 physics, 38 protocol, 18 world), strict
 Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 31. Entities beyond 3.0 blocks hide blocks behind them
+
+Section 30's swing fix is `6d71a87815`.
+
+`EntityRenderer.getMouseOver` traces entities along the block reach (4.5 in survival, 6.0 with
+creative's extended reach), choosing the nearest one closer than the block hit. In survival, if that
+entity is farther than 3.0 the result becomes a miss: the block behind it is not selected. The client
+traced entities only to 3.0, so looking at a player 3 to 4.5 blocks away with ground behind selected
+the ground: a click started digging (C07) instead of the vanilla miss and its ten-tick
+`leftClickCounter`, and right-click placed against the block. The selection now follows the jar,
+including the zero-distance replacement rule for an eye inside an entity box. Not modelled: the
+direction-dependent end of `rayTraceBlocks`' last-uncollidable miss. Regression
+`entities_beyond_three_blocks_turn_a_block_hit_into_a_miss` (physics) failed first. Gate: 171 scoped
+tests (88 client, 2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world), strict
+Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.
