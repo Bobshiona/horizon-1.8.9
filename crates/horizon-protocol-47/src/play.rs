@@ -22,9 +22,18 @@ pub struct JoinGame {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct Respawn {
+    pub dimension: i32,
+    pub difficulty: u8,
+    pub game_mode: u8,
+    pub level_type: String,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum Packet<'a> {
     KeepAlive(i32),
     Join(JoinGame),
+    Respawn(Respawn),
     Position {
         location: PositionLook,
         relative: u8,
@@ -56,6 +65,12 @@ pub fn decode(body: &[u8]) -> io::Result<Packet<'_>> {
             max_players: bytes::<1>(&mut input)?[0],
             level_type: read_string(&mut input, 16)?,
             reduced_debug: bytes::<1>(&mut input)?[0] != 0,
+        }),
+        7 => Packet::Respawn(Respawn {
+            dimension: i32::from_be_bytes(bytes(&mut input)?),
+            difficulty: bytes::<1>(&mut input)?[0],
+            game_mode: bytes::<1>(&mut input)?[0],
+            level_type: read_string(&mut input, 16)?,
         }),
         8 => {
             let location = PositionLook {
@@ -244,6 +259,28 @@ impl Movement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn respawn_fields_are_complete_bounded_and_keep_signed_dimension() {
+        let mut body = vec![7];
+        body.extend((-1i32).to_be_bytes());
+        body.extend([2, 3]);
+        write_string(&mut body, "default", 16).unwrap();
+        assert_eq!(
+            decode(&body).unwrap(),
+            Packet::Respawn(Respawn {
+                dimension: -1,
+                difficulty: 2,
+                game_mode: 3,
+                level_type: "default".into()
+            })
+        );
+        for len in 0..body.len() {
+            assert!(decode(&body[..len]).is_err());
+        }
+        body.push(0);
+        assert!(decode(&body).is_err());
+    }
 
     #[test]
     fn stationary_report_counter_matches_preincrement_vanilla_order() {

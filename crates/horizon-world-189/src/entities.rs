@@ -445,8 +445,13 @@ impl Entities {
     }
 
     pub fn clear(&mut self) {
-        self.map.clear();
+        self.clear_world();
         self.profiles.clear();
+    }
+
+    /// New WorldClient, same connection: player-info profiles survive S07.
+    pub fn clear_world(&mut self) {
+        self.map.clear();
     }
 
     /// One client tick; objects the client simulates move against `world`.
@@ -660,6 +665,37 @@ mod tests {
             held_item: 0,
             metadata: vec![],
         });
+    }
+
+    #[test]
+    fn dimension_change_retains_profiles_for_players_that_spawn_again() {
+        use horizon_protocol_47::player_list::{Profile, Update};
+        let mut entities = Entities::default();
+        entities.update_profiles(vec![Update::Add {
+            uuid: 0,
+            profile: Profile {
+                name: "NativeProfile".into(),
+                properties: vec![],
+            },
+            game_mode: 0,
+            ping: 0,
+            display: None,
+        }]);
+        spawn(&mut entities);
+        let before = entities.get(5).unwrap().profile.as_ref().unwrap().clone();
+        entities.clear_world();
+        assert!(entities.is_empty());
+        spawn(&mut entities);
+        assert!(std::sync::Arc::ptr_eq(
+            &before,
+            entities.get(5).unwrap().profile.as_ref().unwrap()
+        ));
+        entities.clear();
+        spawn(&mut entities);
+        assert!(
+            entities.get(5).unwrap().profile.is_none(),
+            "fresh connection must discard old profiles"
+        );
     }
 
     #[test]

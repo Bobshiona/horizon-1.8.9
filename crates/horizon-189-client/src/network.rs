@@ -94,6 +94,9 @@ pub struct Shared {
     pub own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
     /// The local player's entity ID from the last join.
     pub entity_id: i32,
+    /// A new local player invalidates UI gestures; a new world also invalidates particles.
+    pub player_epoch: u64,
+    pub world_epoch: u64,
     /// Blocks showing cracks: position, state and stage 0 to 9 (S25 from
     /// others, `curBlockDamageMP` for the local player).
     pub cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
@@ -517,6 +520,7 @@ fn run_actor(
     let mut breaking: std::collections::HashMap<i32, ([i32; 3], u8)> = Default::default();
     let mut positioned = false;
     let mut sky_light = None;
+    let mut dimension = None;
     let mut reporter = MovementReporter::default();
     let (mut server_sprint, mut server_sneak) = (false, false);
     let tick = Duration::from_millis(50);
@@ -539,6 +543,7 @@ fn run_actor(
                         board = crate::scoreboard::Scoreboard::default();
                         board_dirty = true;
                         entities.clear();
+                        dimension = Some(i32::from(join.dimension));
                         sky_light = Some(join.dimension == 0);
                         write(world)?.set_sky(join.dimension == 0);
                         writer.send(&play::client_settings(config.view_distance))?;
@@ -561,13 +566,6 @@ fn run_actor(
                             yaw: player.yaw,
                             pitch: player.pitch,
                         };
-                        writer.send(
-                            &Movement::PositionLook {
-                                location: pose,
-                                on_ground: false,
-                            }
-                            .encode()?,
-                        )?;
                         if pose.position.iter().any(|&value| {
                             value < f64::from(i32::MIN) || value > f64::from(i32::MAX)
                         }) {
@@ -576,6 +574,13 @@ fn run_actor(
                                 "Server position exceeds block coordinate range",
                             ));
                         }
+                        writer.send(
+                            &Movement::PositionLook {
+                                location: pose,
+                                on_ground: false,
+                            }
+                            .encode()?,
+                        )?;
                         let origin = [
                             (pose.position[0] / 16.0).floor() as i64 * 16,
                             0,
@@ -665,31 +670,67 @@ fn run_actor(
                         vitals.food = health.food;
                         vitals.saturation = health.saturation;
                     }
-                    play::Packet::Other { id: 0x07, fields } => {
-                        // Respawn: a new dimension or a server switch behind a
-                        // proxy. Vanilla discards the world and its entities.
-                        let dimension = fields
-                            .get(..4)
-                            .map(|bytes| {
-                                i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-                            })
-                            .ok_or_else(|| io::Error::other("Short respawn packet"))?;
-                        game_mode = *fields
-                            .get(5)
-                            .ok_or_else(|| io::Error::other("Short respawn game mode"))?;
+                    play::Packet::Respawn(respawn) => {
+                        // bcy.handleRespawn creates WorldClient only when the dimension changes.
+                        // Minecraft.respawnPlayer always creates a fresh EntityPlayerSP.
+                        let world_changed = dimension != Some(respawn.dimension);
+                        dimension = Some(respawn.dimension);
+                        game_mode = respawn.game_mode & 7;
                         inventory = crate::inventory::Inventory::default();
                         controller = crate::gameplay::Controller::default();
                         vitals = crate::gameplay::Vitals::default();
-                        sky_light = Some(dimension == 0);
-                        let mut world = write(world)?;
-                        let keys: Vec<(i32, i32)> = world.columns().map(|(key, _)| key).collect();
-                        *world = World::default();
-                        world.set_sky(dimension == 0);
-                        drop(world);
-                        dirty(keys);
-                        entities.clear();
+                        player = Player::default();
+                        // PlayerControllerMP.flipPlayer initializes the new player's yaw.
+                        player.yaw = -180.0;
+                        capabilities = entity_packets::Abilities {
+                            invulnerable: matches!(game_mode, 1 | 3),
+                            flying: game_mode == 3,
+                            allow_flying: matches!(game_mode, 1 | 3),
+                            creative: game_mode == 1,
+                            fly_speed: 0.05,
+                            walk_speed: 0.1,
+                        };
+                        player.flying = capabilities.flying;
+                        player.allow_flying = capabilities.allow_flying;
+                        player.no_clip = game_mode == 3;
+                        reporter = MovementReporter::default();
+                        server_sprint = false;
+                        server_sneak = false;
+                        hand = crate::hand::Tracked::default();
+                        sky_light = Some(respawn.dimension == 0);
+                        if world_changed {
+                            let mut world = write(world)?;
+                            let keys: Vec<_> = world.columns().map(|(key, _)| key).collect();
+                            *world = World::default();
+                            world.set_sky(respawn.dimension == 0);
+                            drop(world);
+                            dirty(keys);
+                            entities.clear_world();
+                            breaking.clear();
+                            mesh_origin = None;
+                        }
                         positioned = false;
-                        lock(shared)?.positioned = false;
+                        let mut state = lock(shared)?;
+                        state.positioned = false;
+                        state.yaw = player.yaw;
+                        state.pitch = player.pitch;
+                        state.sneaking = false;
+                        state.player_epoch = state.player_epoch.wrapping_add(1);
+                        state.inventory = Arc::new(inventory.view.clone());
+                        state.vitals = vitals;
+                        state.hand = hand.clone();
+                        state.swing = None;
+                        state.using_item = false;
+                        state.game_mode = game_mode;
+                        state.input.actions.clear();
+                        state.cracks.clear();
+                        if world_changed {
+                            state.world_epoch = state.world_epoch.wrapping_add(1);
+                            state.entities = Arc::default();
+                            state.effects.clear();
+                            state.visuals.clear();
+                            state.breaks.clear();
+                        }
                     }
                     play::Packet::Other { id: 0x38, fields } => {
                         let updates = horizon_protocol_47::player_list::decode(fields)?;
@@ -1242,3 +1283,7 @@ fn run_actor(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "network_tests.rs"]
+mod tests;

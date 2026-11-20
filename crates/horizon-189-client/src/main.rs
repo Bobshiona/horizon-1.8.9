@@ -92,6 +92,8 @@ struct App {
     particles: particles::Particles,
     /// The last client tick particles advanced to.
     particle_tick: u64,
+    player_epoch: u64,
+    world_epoch: u64,
     view_bobbing: bool,
     fov: f32,
     pvp_hud: bool,
@@ -115,6 +117,8 @@ struct Snapshot {
     effects: Vec<(i32, bool)>,
     own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
     entity_id: i32,
+    player_epoch: u64,
+    world_epoch: u64,
     cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
     visuals: Vec<particles::Event>,
     breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
@@ -771,11 +775,24 @@ impl ApplicationHandler for App {
                         effects: std::mem::take(&mut s.effects),
                         own: s.own.clone(),
                         entity_id: s.entity_id,
+                        player_epoch: s.player_epoch,
+                        world_epoch: s.world_epoch,
                         cracks: s.cracks.clone(),
                         visuals: std::mem::take(&mut s.visuals),
                         breaks: std::mem::take(&mut s.breaks),
                     })
                 });
+                if let Some(s) = &snapshot {
+                    if self.player_epoch != s.player_epoch {
+                        self.player_epoch = s.player_epoch;
+                        self.container_pointer.clear();
+                        self.metrics.release_input();
+                    }
+                    if self.world_epoch != s.world_epoch {
+                        self.world_epoch = s.world_epoch;
+                        self.particles = particles::Particles::default();
+                    }
+                }
                 if let Some(s) = &mut snapshot
                     && let Some(preview) = self.container_pointer.preview(&s.view)
                 {
@@ -1200,6 +1217,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         container_pointer: container_input::Pointer::default(),
         particles: particles::Particles::default(),
         particle_tick: 0,
+        player_epoch: 0,
+        world_epoch: 0,
         view_bobbing: options.view_bobbing,
         fov: options.fov,
         pvp_hud: options.pvp_hud,
