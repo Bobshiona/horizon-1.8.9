@@ -505,10 +505,17 @@ pub struct Frame<'a> {
     pub look: [f32; 2],
     /// The local player's bobber is out.
     pub cast: bool,
+    /// Milliseconds of the system clock, for the enchantment glint.
+    pub millis: u64,
 }
 
 /// The first-person hand and held item in view space.
-pub fn draw(out: &mut Vec<Vertex>, frame: &Frame<'_>, registry: &Registry) {
+pub fn draw(
+    out: &mut Vec<Vertex>,
+    glint: &mut Vec<Vertex>,
+    frame: &Frame<'_>,
+    registry: &Registry,
+) {
     let state = frame.state;
     let t = frame.partial;
     let equip = 1.0 - lerp(state.equip[0], state.equip[1], t);
@@ -532,7 +539,14 @@ pub fn draw(out: &mut Vec<Vertex>, frame: &Frame<'_>, registry: &Registry) {
                 }
                 _ => m = transform_item(swing_lunge(m, frame.swing), equip, frame.swing),
             }
+            let start = out.len();
             held_item(out, m, item, registry, used, frame.cast);
+            if let Some(layer) = registry
+                .sprite("enchanted_item_glint")
+                .filter(|_| crate::models::has_glint(item))
+            {
+                crate::models::item_glint(glint, &out[start..], layer, frame.millis);
+            }
         }
         None if !frame.invisible => {
             arm(

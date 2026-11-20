@@ -288,7 +288,10 @@ fn player(
     registry: Option<&crate::terrain::Registry>,
     binding: Option<&crate::skins::Binding>,
     cast: bool,
+    glint: &mut Vec<Vertex>,
+    millis: u64,
 ) {
+    let glint_layer = registry.and_then(|r| r.sprite("enchanted_item_glint"));
     let mut at = position(entity, partial, origin);
     let sneaking = entity.sneaking();
     if sneaking {
@@ -492,6 +495,7 @@ fn player(
         };
         let inflation = if slot == 2 { 0.5 } else { 1.0 };
         let tint = leather_colour(item);
+        let piece = out.len();
         let mut draw =
             |matrix, cube: Cuboid| add(out, matrix, cube.inflated(inflation), texture, tint);
         match slot {
@@ -523,6 +527,9 @@ fn player(
             }
             _ => {}
         }
+        if let Some(layer) = glint_layer.filter(|_| has_glint(item)) {
+            armor_glint(glint, &out[piece..], layer, age);
+        }
     }
     if let Some(item) = &entity.equipment[0] {
         // `LayerHeldItem`: the arm's item point, back in block units.
@@ -531,7 +538,11 @@ fn player(
             * Mat4::from_scale(Vec3::splat(16.0));
         if let Some(registry) = registry {
             let used = (entity.flags & 0x10 != 0).then_some(entity.use_ticks as f32);
+            let held = out.len();
             crate::hand::third_person(out, hand, item, registry, sneaking, used, cast);
+            if let Some(layer) = glint_layer.filter(|_| has_glint(item)) {
+                item_glint(glint, &out[held..], layer, millis);
+            }
         } else if let Some(layer) = held_texture(item.id).map(|t| t as u32) {
             sprite(
                 out,
@@ -970,6 +981,8 @@ pub fn entities(
     registry: Option<&crate::terrain::Registry>,
     bindings: Option<&std::collections::HashMap<u128, crate::skins::Binding>>,
     camera: horizon_protocol_47::play::PositionLook,
+    glint: &mut Vec<Vertex>,
+    millis: u64,
 ) {
     // Whose bobbers are out: they hold `fishing_rod_cast`.
     let anglers: Vec<i32> = entities
@@ -993,6 +1006,8 @@ pub fn entities(
                 registry,
                 binding,
                 anglers.contains(id),
+                glint,
+                millis,
             ),
             Kind::Mob(51 | 54) => humanoid_mob(out, entity, partial, origin),
             Kind::Mob(50 | 90 | 92 | 120) => common_mob(out, entity, partial, origin),
@@ -1579,6 +1594,87 @@ pub fn glyph_widths(font: &[u8], width: u32) -> [u8; 256] {
     widths
 }
 
+/// The glint texture's share of an entity layer (64 of 128 pixels): the
+/// glint shader wraps coordinates into it.
+const GLINT_SPAN: f32 = 64.0 / LAYER_SIZE as f32;
+
+/// `ItemStack.hasEffect`: enchanted stacks, enchanted books with stored
+/// enchantments, enchanted golden apples, potions with effects (damage
+/// effect bits or custom effects), bottles o' enchanting and nether stars.
+pub fn has_glint(item: &horizon_protocol_47::nbt::Item) -> bool {
+    let list = |name: &str| {
+        item.nbt
+            .as_ref()
+            .and_then(|tag| tag.get(name))
+            .is_some_and(|tag| !tag.as_list().is_empty())
+    };
+    match item.id {
+        403 => list("StoredEnchantments") || list("ench"),
+        322 => item.damage > 0 || list("ench"),
+        373 => item.damage & 15 != 0 || list("CustomPotionEffects") || list("ench"),
+        384 | 399 => true,
+        _ => list("ench"),
+    }
+}
+
+/// `Minecraft.getSystemTime`: milliseconds that drive the item glint.
+pub fn millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_millis() as u64)
+}
+
+/// `RenderItem.renderEffect` over an item's vertices: two additive passes
+/// of the glint texture in colour 0x8040CC, its coordinates the vertices'
+/// atlas coordinates (a 1024x512 items atlas) scaled by 8, scrolled by the
+/// clock and turned -50 and 10 degrees.
+pub fn item_glint(out: &mut Vec<Vertex>, item: &[Vertex], layer: u32, millis: u64) {
+    let passes = [
+        ((millis % 3000) as f32 / 3000.0 / 8.0, -50f32),
+        (-((millis % 4873) as f32 / 4873.0 / 8.0), 10f32),
+    ];
+    for (scroll, degrees) in passes {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        for vertex in item {
+            let pixel = [
+                vertex.uv[0] * LAYER_SIZE as f32,
+                vertex.uv[1] * LAYER_SIZE as f32,
+            ];
+            let [u, v] = [pixel[0] / 1024.0, pixel[1] / 512.0];
+            let rotated = [u * cos - v * sin + scroll, u * sin + v * cos];
+            out.push(Vertex {
+                uv: rotated.map(|c| c * 8.0),
+                layer,
+                color: [128.0 / 255.0, 64.0 / 255.0, 204.0 / 255.0],
+                hurt: GLINT_SPAN,
+                ..*vertex
+            });
+        }
+    }
+}
+
+/// `LayerArmorBase.renderGlint` over an armour piece's vertices: two
+/// additive passes at 0.76 of (0.5, 0.25, 0.8), coordinates in the 64x32
+/// armour texture scaled by a third, turned 30 and -30 degrees and
+/// scrolled by entity age.
+fn armor_glint(out: &mut Vec<Vertex>, armor: &[Vertex], layer: u32, age: f32) {
+    for pass in 0..2 {
+        let (sin, cos) = (30.0 - pass as f32 * 60.0).to_radians().sin_cos();
+        let scroll = age * (0.001 + pass as f32 * 0.003) * 20.0;
+        for vertex in armor {
+            let u = vertex.uv[0] * LAYER_SIZE as f32 / 64.0;
+            let v = vertex.uv[1] * LAYER_SIZE as f32 / 32.0 + scroll;
+            out.push(Vertex {
+                uv: [(u * cos - v * sin) / 3.0, (u * sin + v * cos) / 3.0],
+                layer,
+                color: [0.5 * 0.76, 0.25 * 0.76, 0.8 * 0.76],
+                hurt: GLINT_SPAN,
+                ..*vertex
+            });
+        }
+    }
+}
+
 /// The local player, for a line from their own fishing rod.
 pub struct Angler {
     pub id: i32,
@@ -1932,6 +2028,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn glint_follows_has_effect() {
+        use horizon_protocol_47::nbt::{Item, Tag};
+        let item = |id, damage, nbt| Item {
+            id,
+            count: 1,
+            damage,
+            nbt,
+        };
+        let enchanted = Some(Tag::Compound(vec![(
+            "ench".into(),
+            Tag::List(vec![Tag::Compound(vec![])]),
+        )]));
+        assert!(has_glint(&item(276, 0, enchanted)));
+        assert!(!has_glint(&item(276, 0, None)));
+        assert!(has_glint(&item(322, 1, None)));
+        assert!(!has_glint(&item(322, 0, None)));
+        assert!(has_glint(&item(373, 8201, None)));
+        assert!(!has_glint(&item(373, 16, None)));
+        assert!(has_glint(&item(384, 0, None)));
+    }
+
+    #[test]
     fn java_random_matches_the_seed_187_sequence() {
         let mut random = JavaRandom::new(187);
         assert_eq!(random.next_float().to_bits(), 1_060_997_411);
@@ -1970,6 +2088,8 @@ mod tests {
             None,
             Some(&bindings),
             Default::default(),
+            &mut Vec::new(),
+            0,
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().any(|v| v.layer == 1001));
@@ -1986,6 +2106,8 @@ mod tests {
             None,
             Some(&bindings),
             Default::default(),
+            &mut Vec::new(),
+            0,
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().all(|v| v.layer != 1001));
@@ -2023,6 +2145,8 @@ mod tests {
                 None,
                 None,
                 Default::default(),
+                &mut Vec::new(),
+                0,
             );
             assert!(out.iter().any(|v| v.layer == texture as u32));
             assert!(out.iter().flat_map(|v| v.position).all(f32::is_finite));
@@ -2041,6 +2165,8 @@ mod tests {
                     None,
                     None,
                     Default::default(),
+                    &mut Vec::new(),
+                    0,
                 );
                 assert!(out.iter().all(|v| v.layer != Texture::Wool as u32));
             }
@@ -2086,6 +2212,8 @@ mod tests {
             None,
             None,
             Default::default(),
+            &mut Vec::new(),
+            0,
         );
         for layer in [Texture::Diamond1, Texture::Diamond2, Texture::DiamondSword] {
             assert!(vertices.iter().any(|v| v.layer == layer as u32));
@@ -2104,6 +2232,8 @@ mod tests {
             None,
             None,
             Default::default(),
+            &mut Vec::new(),
+            0,
         );
         assert!(vertices.is_empty());
     }

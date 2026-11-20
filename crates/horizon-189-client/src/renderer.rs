@@ -25,7 +25,7 @@ pub struct Renderer {
     pose: PositionLook,
     entity_vertices: Vec<crate::terrain::Vertex>,
     /// See-through and depth-tested label vertices, reused between frames.
-    label_vertices: [Vec<crate::terrain::Vertex>; 3],
+    label_vertices: [Vec<crate::terrain::Vertex>; 4],
     ui: Option<crate::ui::Pass>,
     pub layout: crate::ui::Layout,
     gui_scale: u32,
@@ -291,6 +291,9 @@ impl Renderer {
         }
         let mut vertices = std::mem::take(&mut self.entity_vertices);
         vertices.clear();
+        let [mut glint, mut through, mut tested, mut lines] =
+            std::mem::take(&mut self.label_vertices);
+        glint.clear();
         crate::models::entities(
             &mut vertices,
             entities,
@@ -299,9 +302,10 @@ impl Renderer {
             self.registry.as_deref(),
             Some(&self.skins),
             self.pose,
+            &mut glint,
+            crate::models::millis(),
         );
         vertices.extend_from_slice(extra);
-        let [mut through, mut tested, mut lines] = std::mem::take(&mut self.label_vertices);
         through.clear();
         tested.clear();
         lines.clear();
@@ -322,10 +326,14 @@ impl Renderer {
         let result = scene
             .set_entities(&self.device, &self.queue, &vertices)
             .and_then(|()| {
-                scene.set_labels(&self.device, &self.queue, [&through, &tested, &lines])
+                scene.set_labels(
+                    &self.device,
+                    &self.queue,
+                    [&glint, &through, &tested, &lines],
+                )
             });
         self.entity_vertices = vertices;
-        self.label_vertices = [through, tested, lines];
+        self.label_vertices = [glint, through, tested, lines];
         result
     }
 
@@ -356,11 +364,11 @@ impl Renderer {
         let (Some(scene), Some(registry)) = (&mut self.scene, &self.registry) else {
             return Ok(());
         };
-        let mut vertices = Vec::new();
+        let (mut vertices, mut glint) = (Vec::new(), Vec::new());
         if let Some(frame) = frame {
-            crate::hand::draw(&mut vertices, frame, registry);
+            crate::hand::draw(&mut vertices, &mut glint, frame, registry);
         }
-        scene.set_hand(&self.device, &self.queue, &self.config, &vertices)
+        scene.set_hand(&self.device, &self.queue, &self.config, &vertices, &glint)
     }
 
     pub fn world_ready(&self) -> bool {

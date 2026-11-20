@@ -190,6 +190,17 @@ the angler), sagging by `(f*f + f) / 2`. Another player's line starts from their
 `Shared`. They draw as depth-tested line lists in the label pass. Whoever has a bobber out holds
 `fishing_rod_cast`, in first and third person. A capture checked another player's line to a bobber.
 
+Enchantment glint: `ItemStack.hasEffect` (enchanted stacks, stored-enchantment books, enchanted
+golden apples, potions with effects, bottles o' enchanting, nether stars) adds the
+`enchanted_item_glint` passes. Held items, in first and third person, use `RenderItem.renderEffect`
+(two additive passes in 0x8040CC, coordinates as a 1024x512 items atlas scaled by 8, scrolled by the
+clock and turned -50 and 10 degrees); armour uses `LayerArmorBase.renderGlint` (a third scale, 30 and
+-30 degrees, scrolled by entity age, 0.76 of (0.5, 0.25, 0.8)). Glint vertices copy the item's
+positions and draw with an equal depth test and `GL_SRC_COLOR, GL_ONE` blending: world glint in the
+gamma label pass, the hand's in the hand pass. A capture checked an enchanted chestplate on another
+player and the held enchanted sword. Known gaps: no glint on interface icons, and the atlas size is
+assumed, so the stripe spacing is approximate.
+
 Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
@@ -243,7 +254,7 @@ Next (in order): live Hypixel PvP play test with the release build.
    unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
    skin/cape bindings are present, as are first-person hands and first-person item display transforms.
-   Third-person item display transforms are ported; enchantment glint remains pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
+   Third-person item display transforms and world enchantment glint are ported; interface glint remains pending. Cape motion currently uses limb/sneak pose; vanilla chasing-
    position cape dynamics and additional HD texture layouts require further parity.
 3. Standard zombie, skeleton, wither skeleton, creeper, pig, cow, villager, sheep, chicken, wolf, spider,
    cave spider, slime and enderman meshes are present. Age, sheep shearing/color, slime size, wolf texture

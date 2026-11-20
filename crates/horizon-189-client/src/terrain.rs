@@ -429,6 +429,23 @@ impl Registry {
                 sprite_edges(&entity_textures[layer as usize].rgba, size),
             );
         }
+        // `RenderItem.RES_ITEM_GLINT`, sampled with wrapping by the glint pass.
+        if let Ok(image) = assets.texture("minecraft:misc/enchanted_item_glint") {
+            let w = image.width.min(size as u32) as usize;
+            let h = image.height.min(size as u32) as usize;
+            let mut canvas = vec![0u8; size * size * 4];
+            for y in 0..h {
+                let start = y * image.width as usize * 4;
+                canvas[y * size * 4..y * size * 4 + w * 4]
+                    .copy_from_slice(&image.rgba[start..start + w * 4]);
+            }
+            overlays.insert("enchanted_item_glint", entity_textures.len() as u32);
+            entity_textures.push(Texture {
+                width: size as u32,
+                height: size as u32,
+                rgba: canvas,
+            });
+        }
         let grass = colormap("minecraft:colormap/grass")?;
         let foliage = colormap("minecraft:colormap/foliage")?;
         let water = layer_for("minecraft:blocks/water_still", &mut textures);

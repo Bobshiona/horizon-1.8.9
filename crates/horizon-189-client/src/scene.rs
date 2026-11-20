@@ -38,14 +38,17 @@ struct GpuColumn {
 pub struct Scene {
     pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
-    /// `renderLivingLabel`: one pipeline ignores depth (the see-through
-    /// pass), the next tests it, and the last draws `RenderFish` lines;
-    /// all blend in gamma space.
-    label_pipelines: [wgpu::RenderPipeline; 3],
+    /// In gamma space after the world: the enchantment glint over entity
+    /// geometry it matches in depth, `renderLivingLabel` without and with a
+    /// depth test, and `RenderFish` lines.
+    label_pipelines: [wgpu::RenderPipeline; 4],
     labels: wgpu::Buffer,
     labels_capacity: u64,
-    /// Vertices drawn through walls, depth-tested ones, then line points.
-    label_counts: [u32; 3],
+    /// Vertex counts for each of `label_pipelines`, stored in that order.
+    label_counts: [u32; 4],
+    hand_glint: wgpu::RenderPipeline,
+    /// First-person vertices, then their glint.
+    hand_glint_count: u32,
     fixture: Option<GpuMesh>,
     columns: HashMap<(i32, i32), GpuColumn>,
     origin: [i64; 3],
@@ -287,13 +290,28 @@ impl Scene {
         };
         let pipeline = make_pipeline(false);
         let translucent_pipeline = make_pipeline(true);
-        let make_label_pipeline = |through: bool, lines: bool| {
+        // Overlays drawn after the world: labels, lines and the glint.
+        let additive = wgpu::BlendState {
+            // `glBlendFunc(GL_SRC_COLOR, GL_ONE)`.
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Src,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let make_overlay = |label: &str,
+                            compare: wgpu::CompareFunction,
+                            topology: wgpu::PrimitiveTopology,
+                            blend: wgpu::BlendState,
+                            entry: &str,
+                            format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(match (through, lines) {
-                    (true, _) => "See-through labels",
-                    (false, false) => "Depth-tested labels",
-                    (false, true) => "Fishing lines",
-                }),
+                label: Some(label),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
@@ -306,32 +324,24 @@ impl Scene {
                     })],
                 },
                 primitive: wgpu::PrimitiveState {
-                    topology: if lines {
-                        wgpu::PrimitiveTopology::LineList
-                    } else {
-                        wgpu::PrimitiveTopology::TriangleList
-                    },
+                    topology,
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: Some(false),
-                    depth_compare: Some(if through {
-                        wgpu::CompareFunction::Always
-                    } else {
-                        wgpu::CompareFunction::GreaterEqual
-                    }),
+                    depth_compare: Some(compare),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("label_fragment"),
+                    entry_point: Some(entry),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format.remove_srgb_suffix(),
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        format,
+                        blend: Some(blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -339,11 +349,51 @@ impl Scene {
                 cache: None,
             })
         };
+        let plain = config.format.remove_srgb_suffix();
+        let triangles = wgpu::PrimitiveTopology::TriangleList;
         let label_pipelines = [
-            make_label_pipeline(true, false),
-            make_label_pipeline(false, false),
-            make_label_pipeline(false, true),
+            make_overlay(
+                "Enchantment glint",
+                wgpu::CompareFunction::Equal,
+                triangles,
+                additive,
+                "glint_gamma",
+                plain,
+            ),
+            make_overlay(
+                "See-through labels",
+                wgpu::CompareFunction::Always,
+                triangles,
+                wgpu::BlendState::ALPHA_BLENDING,
+                "label_fragment",
+                plain,
+            ),
+            make_overlay(
+                "Depth-tested labels",
+                wgpu::CompareFunction::GreaterEqual,
+                triangles,
+                wgpu::BlendState::ALPHA_BLENDING,
+                "label_fragment",
+                plain,
+            ),
+            make_overlay(
+                "Fishing lines",
+                wgpu::CompareFunction::GreaterEqual,
+                wgpu::PrimitiveTopology::LineList,
+                wgpu::BlendState::ALPHA_BLENDING,
+                "label_fragment",
+                plain,
+            ),
         ];
+        // The hand pass draws to the sRGB view, so its glint outputs linear.
+        let hand_glint = make_overlay(
+            "First-person glint",
+            wgpu::CompareFunction::Equal,
+            triangles,
+            additive,
+            "glint_linear",
+            config.format,
+        );
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -494,7 +544,9 @@ impl Scene {
             label_pipelines,
             labels,
             labels_capacity,
-            label_counts: [0; 3],
+            label_counts: [0; 4],
+            hand_glint,
+            hand_glint_count: 0,
             fixture: None,
             columns: HashMap::new(),
             origin: [0; 3],
@@ -665,14 +717,14 @@ impl Scene {
         Ok(())
     }
 
-    /// Replace this frame's name labels and fishing lines: the first list
-    /// draws over everything, the second only where nothing nearer hides
-    /// it, the third is depth-tested line segments.
+    /// Replace this frame's overlays, in `label_pipelines` order: glint,
+    /// labels drawn over everything, labels only where nothing nearer hides
+    /// them, and depth-tested line segments.
     pub fn set_labels(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        lists: [&[Vertex]; 3],
+        lists: [&[Vertex]; 4],
     ) -> Result<(), Box<dyn Error>> {
         let size: usize = lists.iter().map(|list| std::mem::size_of_val(*list)).sum();
         if size as u64 > self.labels_capacity {
@@ -732,6 +784,7 @@ impl Scene {
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
         vertices: &[Vertex],
+        glint: &[Vertex],
     ) -> Result<(), Box<dyn Error>> {
         let projection = Mat4::perspective_infinite_reverse_rh(
             70f32.to_radians(),
@@ -745,11 +798,13 @@ impl Scene {
         };
         queue.write_buffer(&self.hand_camera, 0, bytemuck::bytes_of(&uniforms));
         let bytes: &[u8] = bytemuck::cast_slice(vertices);
-        if bytes.len() as u64 > self.hand_capacity {
-            self.hand_capacity = (bytes.len() as u64)
+        let glint_bytes: &[u8] = bytemuck::cast_slice(glint);
+        let total = (bytes.len() + glint_bytes.len()) as u64;
+        if total > self.hand_capacity {
+            self.hand_capacity = total
                 .next_power_of_two()
                 .min(device.limits().max_buffer_size);
-            if bytes.len() as u64 > self.hand_capacity {
+            if total > self.hand_capacity {
                 return Err("Hand mesh exceeds device buffer limit".into());
             }
             self.hand = device.create_buffer(&wgpu::BufferDescriptor {
@@ -762,7 +817,11 @@ impl Scene {
         if !bytes.is_empty() {
             queue.write_buffer(&self.hand, 0, bytes);
         }
+        if !glint_bytes.is_empty() {
+            queue.write_buffer(&self.hand, bytes.len() as u64, glint_bytes);
+        }
         self.hand_count = u32::try_from(vertices.len())?;
+        self.hand_glint_count = u32::try_from(glint.len())?;
         Ok(())
     }
 
@@ -773,6 +832,13 @@ impl Scene {
             pass.set_bind_group(0, &self.hand_bindings, &[]);
             pass.set_vertex_buffer(0, self.hand.slice(..));
             pass.draw(0..self.hand_count, 0..1);
+            if self.hand_glint_count > 0 {
+                pass.set_pipeline(&self.hand_glint);
+                pass.draw(
+                    self.hand_count..self.hand_count + self.hand_glint_count,
+                    0..1,
+                );
+            }
         }
     }
 

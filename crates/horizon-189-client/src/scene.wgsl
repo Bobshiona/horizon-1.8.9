@@ -68,3 +68,22 @@ fn label_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(texel.rgb * in.color, texel.a * in.hurt);
 }
+
+// `RenderItem.renderEffect` and `LayerArmorBase.renderGlint`: the glint
+// texture tiled (`hurt` is its share of the layer), times the pass colour,
+// added where the entity geometry lies (depth equal).
+fn glint(in: VertexOut) -> vec3<f32> {
+    let uv = fract(in.uv) * in.hurt;
+    let sampled = textureSampleLevel(block_texture, block_sampler, uv, in.layer, 0.0);
+    return linear_to_srgb(sampled.rgb) * in.color;
+}
+
+@fragment
+fn glint_gamma(in: VertexOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(glint(in), 1.0);
+}
+
+@fragment
+fn glint_linear(in: VertexOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(srgb_to_linear(glint(in)), 1.0);
+}

@@ -799,6 +799,7 @@ impl ApplicationHandler for App {
                                 invisible: s.vitals.effects & (1 << 14) != 0,
                                 bobbing: self.view_bobbing,
                                 look: [pose.pitch, pose.yaw],
+                                millis: models::millis(),
                                 cast: entities.iter().any(|(_, entity)| {
                                     entity.kind == horizon_world_189::entities::Kind::Object(90)
                                         && entity.data == s.entity_id
