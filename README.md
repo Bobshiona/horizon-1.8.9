@@ -95,12 +95,15 @@ target/aarch64-apple-darwin/release/horizon-189-client --login --server <host>
 | `--assets JAR` | 1.8.9 jar to read (defaults to the launcher's install) |
 | `--render-distance N` | View distance in chunks, 2–16 (default 8) |
 | `--sensitivity F` | Mouse sensitivity 0.0–1.0 (vanilla default 0.5) |
+| `--pvp-hud` | Optional FPS and left/right CPS counters; disabled by default |
+| `--fov F` | Vertical world field of view, 30–110° (default 70°) |
 | `--help` | Every option |
 
 Controls: the cursor captures on join; **WASD** move, **Space** jumps (double-tap to fly where allowed),
 **Shift** sneaks, **Control** or **Left Option** sprints, **Escape** releases the cursor.
 
-`--login` signs in with a Microsoft device code; tokens stay in memory and are never written to disk or logs.
+`--login` signs in with a Microsoft device code. Minecraft access tokens stay in memory; Microsoft's
+refresh token is kept in macOS Keychain for later launches. Tokens never appear in logs.
 It uses a public Microsoft client ID unless `HORIZON_MSA_CLIENT_ID` names your own approved Azure app
 registration. Horizon's own registration is never used.
 

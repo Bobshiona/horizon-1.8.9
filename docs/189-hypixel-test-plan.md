@@ -170,7 +170,11 @@ C0B actions, C07/C08 dig/use, C0E/C0F clicks/transactions, keepalives and S08 co
 
 P1: explosion/smoke and fuse readability, drag-split/collect, basic FPS/CPS/FOV and readable server text.
 Raise missing label glyphs/bold if they hide NPC navigation or server-supplied PvP information. The current
-CLI has no adjustable FOV, zoom, FPS/CPS or keystrokes switches; treat these as work to implement.
+CLI now supports `--pvp-hud` (off by default) and `--fov F` (30–110°, default 70°). CPS is left/right
+button-down transitions over the last second, excluding GUI/dead/unfocused/recapture clicks; held actions
+are not extra clicks. FPS uses visible render completions, not GPU timestamps or display scanout. Use
+`--pvp-hud --fov 90` for an optional live readability check, keeping the same settings across comparisons.
+Zoom and keystrokes remain deferred.
 
 Defer keystroke visuals and zoom first if gates slip; also brewing, inventory player model, URL confirmation,
 Tab heart artwork, exact glint stripe spacing, rare mob variants/cape dynamics, full AO/light/fluid polish,

@@ -227,7 +227,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 131 scoped tests pass with `--include-ignored` (client 52, login CLI 2, assets 1, auth 6, physics 16,
+- 137 scoped tests pass with `--include-ignored` (client 58, login CLI 2, assets 1, auth 6, physics 16,
   protocol 37, world 17 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -325,7 +325,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest recorded gate outcomes are 131 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 137 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -475,8 +475,9 @@ No claim of manual Hypixel testing or successful real-account Keychain refresh i
 
 Review the user's release sign-in/relaunch, Lobby → Duels → BedWars logs/screenshots first. Reproduce
 any movement/packet/knockback/hit/respawn/shop failure locally, fix it and rerun this full gate before
-requesting a targeted live retest. If gameplay passes, the next implementation milestone is minimal own
-FPS/CPS HUD plus adjustable FOV, with physical-event counting and unchanged reach/movement semantics.
+requesting a targeted live retest. The passive FPS/CPS HUD and configurable FOV are now implemented
+(Section 10). If gameplay passes, continue repeated full-game validation and the planned display/resize/
+focus regression checks before feature freeze.
 Do not start deferred zoom, keystrokes, brewing, inventory player model or cosmetic polish. The fallback
 queue of explosion/smoke, block fragments and inventory gestures is complete; Section 8 remains its
 original task specification rather than a request to repeat it.
@@ -488,3 +489,37 @@ with different NBT. Final full gate: 131 scoped tests (52 client; remaining pack
 strict Clippy/fmt/layers/public-tree/privacy and managed reference gate passing. The separate
 `horizon-client-input` suite also passes 209 tests. Static release captures are recorded above; the last
 change affects gesture admission, covered by the added GUI unit and the repeated reference gate.
+
+
+## 10. Passive PvP metrics and world FOV checkpoint — `2190653827`
+
+`--pvp-hud` enables two translated top-left labels, FPS and left/right CPS; it is off by default.
+CPS measures OS left/right button-down transitions over a rolling second while focused, captured and
+alive in the world. Duplicate downs, held actions, GUI/chat input and recapture clicks do not count.
+Focus/cursor release clears click state. Metrics have bounded 4,096-event queues and never send actions.
+FPS samples only visible render completions (offscreen frames excluded), includes idle/stall time and
+shows a warm-up marker until a 250 ms span exists. It does not measure GPU duration or physical scanout.
+
+`--fov F` configures vertical world FOV from 30 through 110 degrees, default 70; values outside that
+range and non-finite values fail parsing. It is a launch setting, with no new runtime key bindings or
+settings screen. The value survives mesh-origin changes and surface recovery. Only projection/culling
+changes: centre selection ray, reach, movement, outgoing actions and the hand's existing fixed 70-degree
+projection remain unchanged. Zoom, keystrokes and other deferred features remain outside this milestone.
+
+Verified: 137 scoped tests (58 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 37 protocol, 17 world),
+strict scoped Clippy, fmt, layer/public-tree and diff privacy checks, native ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`. New regressions cover transition counting, expiry, ineligible input,
+focus release, bounded storage, 60/240 Hz windows with stalls, FOV validation and centre-ray/near-plane
+invariance. The prior 209-test input-suite result remains recorded in Section 9; this milestone does not
+change that crate.
+
+Private release captures `h189-sprint-pvp70/capture.png` and `h189-sprint-pvp100/capture.png` were inspected:
+both show readable FPS and idle 0/0 CPS; 100 degrees exposes more of the same coloured-pillar fixture,
+while the sword remains the same screen size. Each renders 500 frames, 25 columns, one offscreen frame.
+These are stationary visual tests, not a live-match FPS promise or manual CPS validation. Evidence logs
+use the private `h189-pvp-*`, `h189-pvp70-*` and `h189-pvp100-*` prefixes, outside git.
+
+Next: user release sign-in/relaunch and Lobby → Duels → BedWars testing from the live-test plan. Triage
+any returned gameplay/packet/inventory failure before widening public play. If that passes, repeat complete
+games and available Retina/60/120/240 Hz focus/resize checks; address demonstrated regressions and
+release blockers before the November 30 freeze. No new live login or real-account refresh was attempted.
