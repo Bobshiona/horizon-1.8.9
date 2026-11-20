@@ -25,7 +25,7 @@ pub struct Renderer {
     pose: PositionLook,
     entity_vertices: Vec<crate::terrain::Vertex>,
     /// See-through and depth-tested label vertices, reused between frames.
-    label_vertices: [Vec<crate::terrain::Vertex>; 2],
+    label_vertices: [Vec<crate::terrain::Vertex>; 3],
     ui: Option<crate::ui::Pass>,
     pub layout: crate::ui::Layout,
     gui_scale: u32,
@@ -229,6 +229,7 @@ impl Renderer {
         board: &crate::scoreboard::Scoreboard,
         own_name: &str,
         own: Option<&(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
+        angler: Option<&crate::models::Angler>,
         extra: &[crate::terrain::Vertex],
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
@@ -300,9 +301,11 @@ impl Renderer {
             self.pose,
         );
         vertices.extend_from_slice(extra);
-        let [mut through, mut tested] = std::mem::take(&mut self.label_vertices);
+        let [mut through, mut tested, mut lines] = std::mem::take(&mut self.label_vertices);
         through.clear();
         tested.clear();
+        lines.clear();
+        crate::models::fishing_lines(&mut lines, entities, partial, scene.origin(), angler);
         if let Some(registry) = &self.registry {
             crate::models::nametags(
                 &mut through,
@@ -318,9 +321,11 @@ impl Renderer {
         }
         let result = scene
             .set_entities(&self.device, &self.queue, &vertices)
-            .and_then(|()| scene.set_labels(&self.device, &self.queue, &through, &tested));
+            .and_then(|()| {
+                scene.set_labels(&self.device, &self.queue, [&through, &tested, &lines])
+            });
         self.entity_vertices = vertices;
-        self.label_vertices = [through, tested];
+        self.label_vertices = [through, tested, lines];
         result
     }
 

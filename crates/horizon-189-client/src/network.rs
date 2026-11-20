@@ -92,6 +92,8 @@ pub struct Shared {
     pub effects: Vec<(i32, bool)>,
     /// The local player's UUID and tab-list profile (for the hand's skin).
     pub own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
+    /// The local player's entity ID from the last join.
+    pub entity_id: i32,
 }
 
 /// A server message for the window: chat, the action bar or completions.
@@ -512,7 +514,11 @@ fn run_actor(
                     play::Packet::Join(join) => {
                         entity_id = join.entity_id;
                         game_mode = join.game_mode & 7;
-                        lock(shared)?.hardcore = join.game_mode & 8 != 0;
+                        {
+                            let mut state = lock(shared)?;
+                            state.hardcore = join.game_mode & 8 != 0;
+                            state.entity_id = join.entity_id;
+                        }
                         // A new WorldClient brings a new scoreboard.
                         board = crate::scoreboard::Scoreboard::default();
                         board_dirty = true;

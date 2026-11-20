@@ -108,6 +108,7 @@ struct Snapshot {
     hand: hand::Tracked,
     effects: Vec<(i32, bool)>,
     own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
+    entity_id: i32,
 }
 
 impl App {
@@ -713,6 +714,7 @@ impl ApplicationHandler for App {
                         hand: s.hand.clone(),
                         effects: std::mem::take(&mut s.effects),
                         own: s.own.clone(),
+                        entity_id: s.entity_id,
                     })
                 });
                 let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
@@ -803,9 +805,27 @@ impl ApplicationHandler for App {
                             self.fail(event_loop, error);
                             return;
                         }
-                        if let Err(error) =
-                            renderer.set_entities(&entities, partial, board, own_name, own, &extra)
-                        {
+                        // `RenderFish` draws the local player's line from the camera.
+                        let angler = snapshot.as_ref().filter(|s| s.game_mode != 3).map(|s| {
+                            models::Angler {
+                                id: s.entity_id,
+                                eye: pose.position,
+                                yaw: pose.yaw,
+                                pitch: pose.pitch,
+                                swing: s
+                                    .swing
+                                    .map_or(0.0, |v| ((f32::from(v) + partial) / 6.0).min(1.0)),
+                            }
+                        });
+                        if let Err(error) = renderer.set_entities(
+                            &entities,
+                            partial,
+                            board,
+                            own_name,
+                            own,
+                            angler.as_ref(),
+                            &extra,
+                        ) {
                             self.fail(event_loop, error);
                             return;
                         }

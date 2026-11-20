@@ -39,12 +39,13 @@ pub struct Scene {
     pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
     /// `renderLivingLabel`: one pipeline ignores depth (the see-through
-    /// pass), the other tests it; both blend in gamma space.
-    label_pipelines: [wgpu::RenderPipeline; 2],
+    /// pass), the next tests it, and the last draws `RenderFish` lines;
+    /// all blend in gamma space.
+    label_pipelines: [wgpu::RenderPipeline; 3],
     labels: wgpu::Buffer,
     labels_capacity: u64,
-    /// Vertices drawn through walls, then depth-tested ones.
-    label_counts: [u32; 2],
+    /// Vertices drawn through walls, depth-tested ones, then line points.
+    label_counts: [u32; 3],
     fixture: Option<GpuMesh>,
     columns: HashMap<(i32, i32), GpuColumn>,
     origin: [i64; 3],
@@ -286,12 +287,12 @@ impl Scene {
         };
         let pipeline = make_pipeline(false);
         let translucent_pipeline = make_pipeline(true);
-        let make_label_pipeline = |through: bool| {
+        let make_label_pipeline = |through: bool, lines: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(if through {
-                    "See-through labels"
-                } else {
-                    "Depth-tested labels"
+                label: Some(match (through, lines) {
+                    (true, _) => "See-through labels",
+                    (false, false) => "Depth-tested labels",
+                    (false, true) => "Fishing lines",
                 }),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -304,7 +305,14 @@ impl Scene {
                         attributes: &wgpu::vertex_attr_array![0=>Float32x3, 1=>Float32x2, 2=>Uint32, 3=>Float32x3, 4=>Float32],
                     })],
                 },
-                primitive: Default::default(),
+                primitive: wgpu::PrimitiveState {
+                    topology: if lines {
+                        wgpu::PrimitiveTopology::LineList
+                    } else {
+                        wgpu::PrimitiveTopology::TriangleList
+                    },
+                    ..Default::default()
+                },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: Some(false),
@@ -331,7 +339,11 @@ impl Scene {
                 cache: None,
             })
         };
-        let label_pipelines = [make_label_pipeline(true), make_label_pipeline(false)];
+        let label_pipelines = [
+            make_label_pipeline(true, false),
+            make_label_pipeline(false, false),
+            make_label_pipeline(false, true),
+        ];
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -482,7 +494,7 @@ impl Scene {
             label_pipelines,
             labels,
             labels_capacity,
-            label_counts: [0; 2],
+            label_counts: [0; 3],
             fixture: None,
             columns: HashMap::new(),
             origin: [0; 3],
@@ -653,16 +665,16 @@ impl Scene {
         Ok(())
     }
 
-    /// Replace this frame's name labels: `through` draws over everything,
-    /// `tested` only where nothing nearer hides it.
+    /// Replace this frame's name labels and fishing lines: the first list
+    /// draws over everything, the second only where nothing nearer hides
+    /// it, the third is depth-tested line segments.
     pub fn set_labels(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        through: &[Vertex],
-        tested: &[Vertex],
+        lists: [&[Vertex]; 3],
     ) -> Result<(), Box<dyn Error>> {
-        let size = std::mem::size_of_val(through) + std::mem::size_of_val(tested);
+        let size: usize = lists.iter().map(|list| std::mem::size_of_val(*list)).sum();
         if size as u64 > self.labels_capacity {
             self.labels_capacity = (size as u64)
                 .next_power_of_two()
@@ -677,15 +689,15 @@ impl Scene {
                 mapped_at_creation: false,
             });
         }
-        let through_bytes: &[u8] = bytemuck::cast_slice(through);
-        if !through_bytes.is_empty() {
-            queue.write_buffer(&self.labels, 0, through_bytes);
+        let mut offset = 0;
+        for (index, list) in lists.iter().enumerate() {
+            let bytes: &[u8] = bytemuck::cast_slice(list);
+            if !bytes.is_empty() {
+                queue.write_buffer(&self.labels, offset, bytes);
+            }
+            offset += bytes.len() as u64;
+            self.label_counts[index] = u32::try_from(list.len())?;
         }
-        let tested_bytes: &[u8] = bytemuck::cast_slice(tested);
-        if !tested_bytes.is_empty() {
-            queue.write_buffer(&self.labels, through_bytes.len() as u64, tested_bytes);
-        }
-        self.label_counts = [u32::try_from(through.len())?, u32::try_from(tested.len())?];
         Ok(())
     }
 
@@ -695,16 +707,15 @@ impl Scene {
 
     /// Labels, in a gamma-space pass that keeps the world's depth.
     pub fn draw_labels(&self, pass: &mut wgpu::RenderPass<'_>) {
-        let [through, tested] = self.label_counts;
         pass.set_bind_group(0, &self.entity_bindings, &[]);
         pass.set_vertex_buffer(0, self.labels.slice(..));
-        if through > 0 {
-            pass.set_pipeline(&self.label_pipelines[0]);
-            pass.draw(0..through, 0..1);
-        }
-        if tested > 0 {
-            pass.set_pipeline(&self.label_pipelines[1]);
-            pass.draw(through..through + tested, 0..1);
+        let mut start = 0;
+        for (pipeline, &count) in self.label_pipelines.iter().zip(&self.label_counts) {
+            if count > 0 {
+                pass.set_pipeline(pipeline);
+                pass.draw(start..start + count, 0..1);
+            }
+            start += count;
         }
     }
 

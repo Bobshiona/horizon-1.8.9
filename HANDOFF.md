@@ -140,7 +140,7 @@ projection. Camera effects follow `EntityRenderer`: hurt tilt, death roll and vi
 ground, not in water or blind) and enchanted hits, S0B animations 4/5 from the server, and arrow crit
 trails. Physics now tracks fall distance, distance walked and camera yaw/pitch for these effects. A
 capture checked dropped items, a stuck arrow, swelling TNT, a landed falling block, collected XP orbs and
-the held sword, bow, fishing rod and wool block. Known gaps: no fishing line, no item pickup animation, no explosion/smoke/block-break particles, and the cast fishing
+the held sword, bow, fishing rod and wool block. Known gaps: no item pickup animation, no explosion/smoke/block-break particles, and the cast fishing
 rod model is not swapped in.
 
 Saved sign-in and release pacing checkpoint. A device-code sign-in now keeps Microsoft's refresh token
@@ -183,6 +183,13 @@ depth-tested backing and faint text (`RendererLivingEntity.renderName`). Labels 
 pass on the non-sRGB view, after the world and before the hand, keeping the world's depth, so the
 translucency blends in gamma space as vanilla. A capture checked a label behind a wall, a sneaking
 label and the backing over sky.
+
+Fishing lines follow `RenderFish`: 16 black segments from the rod to the bobber (its spawn data names
+the angler), sagging by `(f*f + f) / 2`. Another player's line starts from their body yaw at
+(0.35, eye - 0.45, 0.8), lowered 0.1875 while sneaking; the local player's starts at the camera's
+(-0.36, 0.03, 0.35) turned by pitch, yaw and the swing, so it needs the local entity ID, now kept in
+`Shared`. They draw as depth-tested line lists in the label pass. A capture checked another player's
+line to a bobber.
 
 Next (in order): live Hypixel PvP play test with the release build.
 

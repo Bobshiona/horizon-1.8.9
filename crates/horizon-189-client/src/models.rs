@@ -1571,6 +1571,102 @@ pub fn glyph_widths(font: &[u8], width: u32) -> [u8; 256] {
     widths
 }
 
+/// The local player, for a line from their own fishing rod.
+pub struct Angler {
+    pub id: i32,
+    pub eye: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    /// Arm swing progress, 0 to 1.
+    pub swing: f32,
+}
+
+/// `Vec3.rotatePitch`.
+fn rotate_pitch(v: Vec3, angle: f32) -> Vec3 {
+    let (sin, cos) = angle.sin_cos();
+    Vec3::new(v.x, v.y * cos + v.z * sin, v.z * cos - v.y * sin)
+}
+
+/// `Vec3.rotateYaw`.
+fn rotate_yaw(v: Vec3, angle: f32) -> Vec3 {
+    let (sin, cos) = angle.sin_cos();
+    Vec3::new(v.x * cos + v.z * sin, v.y, v.z * cos - v.x * sin)
+}
+
+/// `RenderFish`'s line: 16 black segments from the rod tip to the bobber,
+/// as line-list pairs. The local player's line starts beside the camera;
+/// another player's starts at their right hand, from body yaw.
+pub fn fishing_lines(
+    out: &mut Vec<Vertex>,
+    entities: &[(i32, Entity)],
+    partial: f32,
+    origin: [i64; 3],
+    angler: Option<&Angler>,
+) {
+    let to_radians = PI / 180.0;
+    for (_, bobber) in entities {
+        if bobber.kind != Kind::Object(90) {
+            continue;
+        }
+        let owner = bobber.data;
+        let (start, lift) = if let Some(own) = angler.filter(|own| own.id == owner) {
+            let swing = (own.swing.sqrt() * PI).sin();
+            let mut v = Vec3::new(-0.36, 0.03, 0.35);
+            v = rotate_pitch(v, -own.pitch * to_radians);
+            v = rotate_yaw(v, -own.yaw * to_radians);
+            v = rotate_yaw(v, swing * 0.5);
+            v = rotate_pitch(v, -swing * 0.7);
+            let eye = Vec3::new(
+                (own.eye[0] - origin[0] as f64) as f32,
+                (own.eye[1] - origin[1] as f64) as f32,
+                (own.eye[2] - origin[2] as f64) as f32,
+            );
+            (eye + v, 0.0)
+        } else if let Some((_, player)) = entities
+            .iter()
+            .find(|(id, entity)| *id == owner && matches!(entity.kind, Kind::Player { .. }))
+        {
+            let body = lerp_angle(player.previous_body_yaw, player.body_yaw, partial) * to_radians;
+            let (sin, cos) = body.sin_cos();
+            let eye_height = if player.sneaking() { 1.54 } else { 1.62 };
+            let feet = position(player, partial, origin);
+            let start = Vec3::new(
+                feet.x - cos * 0.35 - sin * 0.8,
+                feet.y + eye_height - 0.45,
+                feet.z - sin * 0.35 + cos * 0.8,
+            );
+            (start, if player.sneaking() { -0.1875 } else { 0.0 })
+        } else {
+            continue;
+        };
+        let at = position(bobber, partial, origin);
+        let delta = Vec3::new(
+            start.x - at.x,
+            start.y - (at.y + 0.25) + lift,
+            start.z - at.z,
+        );
+        let point = |step: u32| {
+            let f = step as f32 / 16.0;
+            Vec3::new(
+                at.x + delta.x * f,
+                at.y + delta.y * (f * f + f) * 0.5 + 0.25,
+                at.z + delta.z * f,
+            )
+        };
+        for step in 0..16 {
+            for end in [point(step), point(step + 1)] {
+                out.push(Vertex {
+                    position: end.to_array(),
+                    uv: [0.0; 2],
+                    layer: u32::MAX,
+                    color: [0.0; 3],
+                    hurt: 1.0,
+                });
+            }
+        }
+    }
+}
+
 /// `FontRenderer.getStringWidth` over ascii glyphs, skipping `§` codes.
 fn text_width(text: &str, widths: &[u8; 256]) -> i32 {
     let mut total = 0;
