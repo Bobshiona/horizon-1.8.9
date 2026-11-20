@@ -473,8 +473,9 @@ impl Inventory {
     }
     pub fn items(&mut self, window: u8, items: Vec<Option<Item>>) {
         if window == 0 {
-            for (to, item) in self.player.iter_mut().zip(&items) {
-                *to = item.clone();
+            for (index, item) in items.iter().take(self.player.len()).enumerate() {
+                // InventoryPlayer is shared by the player and active container slots.
+                self.player_slot(index, item.clone());
             }
         }
         if window == self.view.window {
@@ -843,6 +844,7 @@ impl Inventory {
         }
         if let Some(saved) = saved {
             self.view = saved;
+            self.sync_player();
         }
         self.drag = None;
         self.pending.clear();
@@ -954,6 +956,82 @@ mod tests {
             damage: 0,
             nbt: None,
         })
+    }
+
+    #[test]
+    fn full_player_update_reaches_visible_rows_of_an_open_chest() {
+        let mut inv = Inventory {
+            view: View {
+                open: true,
+                window: 1,
+                container_slots: 27,
+                kind: Kind::Chest(3),
+                slots: vec![None; 63],
+                ..View::default()
+            },
+            ..Inventory::default()
+        };
+        let mut chest = vec![None; 63];
+        chest[0] = stack(264, 3);
+        chest[54] = stack(276, 1);
+        inv.items(1, chest);
+        let mut player = vec![None; 45];
+        player[9] = stack(264, 7);
+        player[36] = stack(260, 5);
+        player[5] = stack(310, 1);
+        inv.items(0, player);
+        assert_eq!(
+            inv.view.slots[54],
+            stack(260, 5),
+            "hotbar view retained the old sword"
+        );
+        assert_eq!(inv.view.slots[27], stack(264, 7));
+        assert_eq!(
+            inv.view.slots[0],
+            stack(264, 3),
+            "player update must preserve chest contents"
+        );
+        assert_eq!(inv.held().unwrap().id, 260);
+        assert_eq!(inv.player[5], stack(310, 1));
+        assert_eq!(inv.view.window, 1);
+    }
+
+    #[test]
+    fn rejected_pickup_restores_the_held_item_mirror_before_full_resync() {
+        for chest in [false, true] {
+            let mut inv = Inventory::default();
+            inv.player[36] = stack(1, 9);
+            inv.local_open();
+            let slot = if chest {
+                inv.view = View {
+                    open: true,
+                    window: 1,
+                    container_slots: 27,
+                    kind: Kind::Chest(3),
+                    slots: vec![None; 63],
+                    ..View::default()
+                };
+                inv.view.slots[54] = stack(1, 9);
+                54
+            } else {
+                36
+            };
+            inv.click(slot, false).unwrap().unwrap();
+            assert!(inv.held().is_none());
+            let [a, b] = inv.transaction.to_be_bytes();
+            let window = inv.view.window;
+            inv.confirm(&[window, a, b, 0]).unwrap().unwrap();
+            assert_eq!(
+                inv.held().map(|i| (i.id, i.count)),
+                Some((1, 9)),
+                "rejected click left a ghost held item"
+            );
+            assert!(inv.view.cursor.is_none());
+            assert!(
+                inv.click(slot, false).unwrap().is_none(),
+                "clicks stay blocked pending authoritative slots"
+            );
+        }
     }
 
     fn quick_craft(inv: &mut Inventory, slots: &[i16], right: bool) {

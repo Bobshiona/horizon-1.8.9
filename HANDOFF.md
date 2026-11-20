@@ -227,7 +227,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 141 scoped tests pass with `--include-ignored` (client 60, login CLI 2, assets 1, auth 6, physics 16,
+- 144 scoped tests pass with `--include-ignored` (client 63, login CLI 2, assets 1, auth 6, physics 16,
   protocol 38, world 18 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -325,7 +325,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest recorded gate outcomes are 141 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 144 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -564,3 +564,27 @@ Next: actual account sign-in/relaunch and complete Lobby → Duels → BedWars s
 Use returned failures to choose the next P0 fix. Remaining manual evidence includes successful real-token
 refresh, shops/knockback under live latency, complete matches and the remaining display/backing-scale
 matrix. Deferred features remain deferred; this pass made no public-server connection.
+
+
+## 12. Inventory synchronization checkpoint
+
+Two regressions reproduced stale player rows and stale held-item prediction. S30 window 0 now updates
+InventoryPlayer through the same slot-mirroring path as individual S2F changes, so an open chest/shop
+reflects player main-inventory and hotbar updates without replacing its own contents. Rejected C0E
+prediction now restores both the visible snapshot and the held/player mirror immediately, while further
+clicks remain blocked until the authoritative window resync. This follows `bcy.a(gd)`'s routing to the
+shared InventoryPlayer slots in the owned 1.8.9 client.
+
+The units failed before the fix and pass afterward, including rollback in player and chest windows.
+A framed actor test sends open-window, chest items, full player items, an unrelated window update and
+server close, and verifies the correct rows through the whole sequence. A private loopback proxy then
+exercised the same window-0 update against the native release client over an official server connection.
+Its inspected 960x600 capture shows three diamonds retained in the chest, seven in the updated player
+row and five apples in the hotbar/cursor hand. It rendered 800 frames, 25 columns, one offscreen frame.
+The synthetic window packets are localhost-only; the server does not interpret this visual fixture as
+actual shop transactions. Raw evidence remains under private `h189-inventory-sync-*` paths outside git.
+
+Full gate: 144 scoped tests (63 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world),
+strict scoped Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`. Deferred container features remain deferred. Real-account saved
+refresh and complete live matches still require the user's manual session.

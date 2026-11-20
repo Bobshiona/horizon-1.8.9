@@ -267,3 +267,58 @@ fn respawn_relative_rotation_uses_new_player_and_invalid_positions_are_not_echoe
     let error = actor.worker.take().unwrap().join().unwrap().unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }
+
+#[test]
+fn full_player_inventory_packets_update_the_visible_shop_rows() {
+    use horizon_protocol_47::nbt::{Item, write_slot};
+    let item = |id, count| {
+        Some(Item {
+            id,
+            count,
+            damage: 0,
+            nbt: None,
+        })
+    };
+    let items = |window: u8, slots: Vec<Option<Item>>| {
+        let mut body = vec![0x30, window];
+        body.extend((slots.len() as i16).to_be_bytes());
+        for slot in slots {
+            write_slot(&mut body, slot.as_ref()).unwrap();
+        }
+        body
+    };
+    let mut actor = Actor::new();
+    actor.join();
+    actor.position();
+    actor.grounded();
+    let mut open = vec![0x2d, 1];
+    write_string(&mut open, "minecraft:chest", 32).unwrap();
+    write_string(&mut open, r#"{"text":"Shop"}"#, 32767).unwrap();
+    open.push(27);
+    actor.send(open);
+    let mut chest = vec![None; 63];
+    chest[0] = item(264, 3);
+    chest[54] = item(276, 1);
+    actor.send(items(1, chest));
+    let mut player = vec![None; 45];
+    player[9] = item(264, 7);
+    player[36] = item(260, 5);
+    actor.send(items(0, player));
+    actor.send(items(2, vec![item(1, 64); 63])); // A different window is not this active container.
+    actor.barrier(340);
+    actor.grounded();
+    {
+        let state = actor.shared.lock().unwrap();
+        let view = &state.inventory;
+        assert_eq!(view.window, 1);
+        assert_eq!(view.slots[0], item(264, 3));
+        assert_eq!(view.slots[27], item(264, 7));
+        assert_eq!(view.slots[54], item(260, 5));
+    }
+    actor.send(vec![0x2e, 1]);
+    actor.barrier(341);
+    actor.grounded();
+    let state = actor.shared.lock().unwrap();
+    assert_eq!(state.inventory.window, 0);
+    assert_eq!(state.inventory.slots[36], item(260, 5));
+}
