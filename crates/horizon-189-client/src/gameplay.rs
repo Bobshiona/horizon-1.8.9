@@ -88,6 +88,8 @@ pub struct Controller {
     pub broken: Vec<[i32; 3]>,
     pub haste: Option<i8>,
     pub fatigue: Option<i8>,
+    /// `PlayerCapabilities.disableDamage`, from S39.
+    pub invulnerable: bool,
     raycaster: raycast::Raycaster,
 }
 
@@ -117,6 +119,7 @@ impl Controller {
     fn use_held(
         &mut self,
         inventory: &Inventory,
+        food: i32,
         game_mode: u8,
         writer: &mut PacketWriter<impl Read + Write>,
     ) -> io::Result<()> {
@@ -128,7 +131,21 @@ impl Controller {
         }
         self.sync_slot(inventory.view.selected, writer)?;
         writer.send(&packet::place([-1, -1, -1], 255, [0.0; 3], Some(item))?)?;
-        self.using = has_use_action(item);
+        // Item.onItemRightClick: ItemFood needs PlayerCapabilities and
+        // FoodStats to allow eating, ItemBow an arrow outside creative.
+        self.using = has_use_action(item)
+            && match item.id {
+                261 => {
+                    game_mode == 1
+                        || inventory.player[9..45]
+                            .iter()
+                            .flatten()
+                            .any(|i| i.id == 262)
+                }
+                322 => !self.invulnerable,
+                id if is_food(id) => food < 20 && !self.invulnerable,
+                _ => true,
+            };
         Ok(())
     }
 
@@ -351,7 +368,7 @@ impl Controller {
                             Some(horizon_world_189::entities::Kind::Mob(100 | 120))
                         );
                     if !consumed {
-                        self.use_held(inventory, game_mode, writer)?;
+                        self.use_held(inventory, player.food, game_mode, writer)?;
                     }
                 }
                 Some(Hit::Block { at, face, point }) => {
@@ -378,10 +395,10 @@ impl Controller {
                     if consumed {
                         self.swing(writer)?;
                     } else {
-                        self.use_held(inventory, game_mode, writer)?;
+                        self.use_held(inventory, player.food, game_mode, writer)?;
                     }
                 }
-                None => self.use_held(inventory, game_mode, writer)?,
+                None => self.use_held(inventory, player.food, game_mode, writer)?,
             }
         }
         // onItemUseFinish: food and drinks end after 32 ticks without a
@@ -605,25 +622,30 @@ fn has_use_action(item: &Item) -> bool {
         || item.id == 261
         || item.id == 335
         || (item.id == 373 && item.damage & 16384 == 0)
-        || matches!(
-            item.id,
-            260 | 282
-                | 297
-                | 319
-                | 320
-                | 322
-                | 349
-                | 350
-                | 357
-                | 360
-                | 363..=367
-                | 391..=394
-                | 400
-                | 412
-                | 413
-                | 423
-                | 424
-        )
+        || is_food(item.id)
+}
+
+/// `ItemFood` and its subclasses (soups, fish, golden apples).
+fn is_food(id: i16) -> bool {
+    matches!(
+        id,
+        260 | 282
+            | 297
+            | 319
+            | 320
+            | 322
+            | 349
+            | 350
+            | 357
+            | 360
+            | 363..=367
+            | 391..=394
+            | 400
+            | 412
+            | 413
+            | 423
+            | 424
+    )
 }
 
 fn is_sword(id: i16) -> bool {
@@ -653,6 +675,89 @@ mod tests {
         });
         world
     }
+    /// Item.onItemRightClick decides whether use starts: food needs hunger
+    /// (golden apples excepted) and a vulnerable player, a bow needs an
+    /// arrow outside creative. C08 is sent either way.
+    #[test]
+    fn use_starts_only_when_on_item_right_click_would() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let world = world();
+        let entities = Entities::default();
+        let item = |id| {
+            Some(Item {
+                id,
+                count: 1,
+                damage: 0,
+                nbt: None,
+            })
+        };
+        // (held, food, game mode, invulnerable, arrow in main inventory)
+        for (held, food, mode, invulnerable, arrow, expected) in [
+            (364, 20, 0, false, false, false),
+            (364, 19, 0, false, false, true),
+            (364, 10, 0, true, false, false),
+            (322, 20, 0, false, false, true),
+            (322, 10, 1, true, false, false),
+            (261, 20, 0, false, false, false),
+            (261, 20, 0, false, true, true),
+            (261, 20, 1, true, false, true),
+            (276, 20, 0, false, false, true),
+            (335, 20, 0, false, false, true),
+        ] {
+            let mut player = Player::default();
+            player.set_position(0.5, 4.0, 0.5);
+            player.pitch = -90.0;
+            player.food = food;
+            let mut inventory = Inventory::default();
+            inventory.player[36] = item(held);
+            if arrow {
+                inventory.player[20] = item(262);
+            }
+            let mut controller = Controller {
+                invulnerable,
+                ..Controller::default()
+            };
+            let mut input = Input {
+                attack: false,
+                using: true,
+                actions: VecDeque::from([Action::Use]),
+            };
+            controller
+                .tick(
+                    &mut input,
+                    &mut player,
+                    &world,
+                    &entities,
+                    &mut inventory,
+                    mode,
+                    &mut writer,
+                )
+                .unwrap();
+            assert_eq!(peer.receive().unwrap()[0], 0x08, "{held}");
+            assert_eq!(controller.using, expected, "{held} food {food} mode {mode}");
+            if controller.using {
+                input.using = false;
+                controller
+                    .tick(
+                        &mut input,
+                        &mut player,
+                        &world,
+                        &entities,
+                        &mut inventory,
+                        mode,
+                        &mut writer,
+                    )
+                    .unwrap();
+                assert_eq!(peer.receive().unwrap()[0], 0x07);
+            }
+        }
+    }
+
     /// EntityPlayerSP.dropOneItem sends DROP_ITEM/DROP_ALL_ITEMS whatever is
     /// held and changes nothing locally: the server's slot update follows.
     #[test]

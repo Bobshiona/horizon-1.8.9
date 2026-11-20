@@ -894,3 +894,18 @@ server the result slot only appears after a window resync. Regression
 `taking_a_crafting_result_uses_the_grid` failed first. Gate: 167 scoped tests (86 client, 2 login CLI,
 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff
 privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 28. Item use starts only when `onItemRightClick` allows it
+
+Section 27's crafting-grid fix is `defc197cf0`.
+
+`PlayerControllerMP.sendUseItem` sends C08 for any held item, but the item decides whether use
+starts: `ItemFood` only when `canEat` (hunger below 20, or always for golden apples, and never while
+`disableDamage`), `ItemBow` only in creative or with an arrow in the main inventory. The client started
+use for every food and bow, so right-clicking food at full hunger or a bow without arrows slowed the
+player to use speed, stopped sprinting and dropped attacks while held, none of which the server
+applied. Use now starts as in the jar; `Controller::invulnerable` mirrors S39. C08 is still sent in
+every case. Regression `use_starts_only_when_on_item_right_click_would` failed first (steak at full
+hunger). Gate: 168 scoped tests (87 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol,
+18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.

@@ -1181,6 +1181,7 @@ fn run_actor(
                 input.attack = false;
                 input.using = false;
             }
+            controller.invulnerable = capabilities.invulnerable;
             controller.tick(
                 &mut input,
                 &mut player,
