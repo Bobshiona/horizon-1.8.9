@@ -987,3 +987,16 @@ Regression `downloading_terrain_sends_keepalive_zero_each_second` failed first (
 Gate: 172 scoped tests (89 client, 2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world),
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 34. Held-item sync without a ticking player
+
+Section 33's keepalive fix is `639e91d6be`.
+
+`Minecraft.runTick` calls `PlayerControllerMP.updateController` (and so `syncCurrentPlayItem`)
+before the open screen's `updateScreen`, whether or not the player itself ticks. The client synced C09
+only inside a player tick, which waits for the first S08 and a loaded chunk, so a forced or reset
+slot was not synced while downloading terrain. C09 sync now runs first in every client tick. The
+respawn regression now expects that C09 before the S08 reply instead of relying on timing. Regression
+`hotbar_sync_runs_before_the_first_position` failed first. Gate: 173 scoped tests (90 client, 2 login
+CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and
+diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

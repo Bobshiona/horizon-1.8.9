@@ -555,8 +555,9 @@ fn forced_hotbar_changes_sync_once_and_survive_respawn() {
     // A new player starts at slot zero, but the controller's last sent slot persists.
     actor.send(respawn(0));
     actor.barrier(382);
+    // updateController syncs it on the next tick, before any position.
+    assert_eq!(actor.next(0x09), vec![0x09, 0, 0]);
     actor.position();
-    assert_eq!(actor.peer.receive().unwrap(), vec![0x09, 0, 0]);
     actor.grounded();
     // Vanilla ignores values outside InventoryPlayer.getHotbarSize().
     for slot in [9, 127, 255] {
@@ -807,4 +808,15 @@ fn downloading_terrain_sends_keepalive_zero_each_second() {
             break;
         }
     }
+}
+
+/// PlayerControllerMP.updateController runs from Minecraft.runTick whatever
+/// the screen, so a forced slot is synced before the first position too.
+#[test]
+fn hotbar_sync_runs_before_the_first_position() {
+    let mut actor = Actor::new();
+    actor.join();
+    actor.send(vec![0x09, 3]);
+    assert_eq!(actor.next(0x09), vec![0x09, 0, 3]);
+    actor.position();
 }

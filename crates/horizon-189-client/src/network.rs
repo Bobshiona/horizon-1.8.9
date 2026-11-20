@@ -1179,6 +1179,10 @@ fn run_actor(
         // Vanilla's timer executes at most ten accumulated client ticks.
         let world_view = read(world)?;
         for _ in 0..due.min(10) {
+            // Minecraft.runTick: updateController, then the open screen's
+            // updateScreen, even without a ticking player (downloading
+            // terrain, unloaded chunk).
+            controller.sync_slot(inventory.view.selected, writer)?;
             // GuiDownloadTerrain.updateScreen: C00 with key 0 every second.
             if let Some(progress) = &mut terrain {
                 *progress += 1;

@@ -101,7 +101,8 @@ impl Controller {
         };
     }
 
-    fn sync_slot(
+    /// `PlayerControllerMP.syncCurrentPlayItem`.
+    pub fn sync_slot(
         &mut self,
         slot: u8,
         writer: &mut PacketWriter<impl Read + Write>,
