@@ -726,3 +726,24 @@ Regressions written first: `hit_slowdown_needs_knockback_and_a_player_target` (f
 Knockback case) and `spectator_attack_sends_c02_to_spectate` (no C02). Gate: 157 scoped tests
 (76 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt,
 layers, public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+
+## 18. Transaction ping parity
+
+Section 17's hit fix is `e85df02ee5`.
+
+`handleConfirmTransaction` answers an unaccepted S32 with C0F (accepted) when the window is 0 (the
+player's own container, even while a chest is open) or the open window. Before, a window-0 S32 under an
+open container got no reply, and any unaccepted S32 on the current window, including server pings with
+action numbers this client never used, restored a stale view, dropped pending clicks and blocked
+further clicks until the next S30. Now only a transaction this client numbered for the open window
+undoes a predicted click; pings are answered and change nothing. Accepted confirmations and other
+windows still get no reply. Regression `transaction_pings_are_answered_without_touching_clicks` failed
+first ("the ping blocked clicks").
+
+Audited without change: C0B sprint/sneak actions are sent from `onUpdateWalkingPlayer` order (sprint,
+then sneak, then movement) against the last sent states, reset on respawn; a hit's `setSprinting(false)`
+is followed in the same tick by the walking update's sprint-key re-sprint, as vanilla; attacks are
+drained while an item is in use. Gate: 158 scoped tests (77 client, 2 login CLI, 1 assets, 6 auth,
+16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks,
+ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

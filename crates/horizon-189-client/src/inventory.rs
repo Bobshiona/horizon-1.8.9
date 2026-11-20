@@ -830,8 +830,17 @@ impl Inventory {
             return Err(io::Error::other("Invalid transaction confirmation"));
         }
         let transaction = i16::from_be_bytes([fields[1], fields[2]]);
-        if fields[0] != self.view.window {
+        // handleConfirmTransaction: window 0 is always the player's own
+        // container; any other window must be the open one.
+        let open = fields[0] == self.view.window;
+        if !open && fields[0] != 0 {
             return Ok(None);
+        }
+        // Only a transaction this client numbered can undo a predicted click;
+        // server pings (often negative numbers, or window 0 under a chest)
+        // are answered and change nothing.
+        if !open || !self.pending.contains_key(&transaction) {
+            return Ok((fields[3] == 0).then(|| interaction::confirm(fields[0], transaction)));
         }
         let saved = self.pending.remove(&transaction);
         if fields[3] != 0 {
@@ -958,6 +967,53 @@ mod tests {
         assert!(inv.view.slots[37].is_none());
         assert_eq!(inv.view.cursor.as_ref().unwrap().count, 5);
         assert!(inv.click(38, false).unwrap().is_none());
+    }
+
+    /// NetHandlerPlayClient.handleConfirmTransaction answers an unaccepted
+    /// S32 for window 0 (the player inventory, whatever is open) or the open
+    /// window. Server pings that match none of our clicks must not discard
+    /// pending clicks or block the next ones.
+    #[test]
+    fn transaction_pings_are_answered_without_touching_clicks() {
+        let mut inv = Inventory::default();
+        inv.player[36] = stack(1, 9);
+        inv.local_open();
+        inv.click(36, false).unwrap().unwrap();
+        let ours = inv.transaction;
+        // A ping on window 0 with a foreign (negative) action number.
+        assert_eq!(
+            inv.confirm(&[0, 0xff, 0xfe, 0]).unwrap().unwrap(),
+            [0x0f, 0, 0xff, 0xfe, 1]
+        );
+        assert!(inv.view.cursor.is_some(), "the ping undid our click");
+        assert!(
+            inv.click(37, false).unwrap().is_some(),
+            "the ping blocked clicks"
+        );
+        assert!(inv.pending.contains_key(&ours));
+        // With a chest open, window 0 pings are still answered.
+        let mut chest = Inventory {
+            view: View {
+                open: true,
+                window: 5,
+                container_slots: 27,
+                kind: Kind::Chest(3),
+                slots: vec![None; 63],
+                ..View::default()
+            },
+            ..Inventory::default()
+        };
+        chest.view.slots[54] = stack(1, 9);
+        chest.click(54, false).unwrap().unwrap();
+        assert_eq!(
+            chest.confirm(&[0, 0x80, 0x00, 0]).unwrap().unwrap(),
+            [0x0f, 0, 0x80, 0x00, 1]
+        );
+        assert!(chest.view.cursor.is_some());
+        assert_eq!(chest.view.window, 5);
+        // Accepted confirmations and other windows get no reply.
+        assert!(chest.confirm(&[0, 0, 9, 1]).unwrap().is_none());
+        assert!(chest.confirm(&[9, 0, 9, 0]).unwrap().is_none());
     }
 
     fn stack(id: i16, count: i8) -> Option<Item> {
