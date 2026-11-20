@@ -832,3 +832,18 @@ stack, furnace fuel, other generic windows) are still not sent, as before. Regre
 `number_keys_follow_slot_click_mode_two` failed first. Gate: 163 scoped tests (82 client, 2 login CLI,
 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff
 privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 24. Pickup clicks respect slot rules
+
+Section 23's number-key fix is `1812ca6de7`.
+
+`slotClick` mode 0 returns the clicked slot's original stack, so the server accepts a pickup click
+whatever the client predicted and never resends the slots. The client ignored `Slot.isItemValid`:
+clicking dirt onto an armour slot, a crafting result or a furnace output showed it there while the
+server kept it on the cursor, and a stack of pumpkins went whole onto the head. Prediction now follows
+the jar: placing, merging and swapping need a valid slot, armour slots hold one item, and an output
+slot only empties into a matching cursor that can take it all. Windows this client does not model still
+accept anything, as before. Regression `pickup_clicks_respect_slot_validity_and_limits` failed first.
+Known gap: taking a crafting result does not predict the grid's ingredient use. Gate: 164 scoped tests
+(83 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt,
+layers, public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

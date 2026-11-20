@@ -833,37 +833,72 @@ impl Inventory {
         self.view.cursor = Some(cursor);
     }
 
+    /// `Container.slotClick` mode 0 on a slot, with `Slot.isItemValid` and
+    /// the armour slots' limit of one. Slots of windows this client does not
+    /// model accept anything.
     fn pick_up(&mut self, index: usize, right: bool) {
-        let target = &mut self.view.slots[index];
-        match (&mut self.view.cursor, target) {
-            (cursor @ None, target) => {
-                *cursor = target.take();
-                if right && let Some(item) = cursor {
-                    let take = (item.count + 1) / 2;
-                    if item.count > take {
-                        let mut rest = item.clone();
-                        rest.count -= take;
-                        *target = Some(rest);
-                    }
-                    item.count = take;
+        let limit: i8 = if self.view.window == 0 && (5..=8).contains(&index) {
+            1
+        } else {
+            64
+        };
+        let valid = self
+            .view
+            .cursor
+            .as_ref()
+            .is_some_and(|held| self.slot_accepts(index, held).unwrap_or(true));
+        let (slots, cursor) = (&mut self.view.slots, &mut self.view.cursor);
+        match (cursor.take(), slots[index].take()) {
+            (None, None) => {}
+            (None, Some(mut item)) => {
+                let mut taken = item.clone();
+                taken.count = if right {
+                    (item.count + 1) / 2
+                } else {
+                    item.count
+                };
+                item.count -= taken.count;
+                *cursor = Some(taken);
+                slots[index] = (item.count > 0).then_some(item);
+            }
+            (Some(mut held), None) => {
+                let count = (if right { 1 } else { held.count }).min(limit);
+                if valid && held.count >= count {
+                    let mut placed = held.clone();
+                    placed.count = count;
+                    held.count -= count;
+                    slots[index] = Some(placed);
+                }
+                *cursor = (held.count > 0).then_some(held);
+            }
+            (Some(mut held), Some(mut item)) => {
+                let max = stack_limit(held.id);
+                if valid && same_kind(&held, &item) {
+                    let count = (if right { 1 } else { held.count })
+                        .min(limit - item.count)
+                        .min(max - item.count)
+                        .max(0);
+                    held.count -= count;
+                    item.count += count;
+                    slots[index] = Some(item);
+                    *cursor = (held.count > 0).then_some(held);
+                } else if valid && held.count <= limit {
+                    slots[index] = Some(held);
+                    *cursor = Some(item);
+                } else if !valid
+                    && same_kind(&held, &item)
+                    && max > 1
+                    && item.count > 0
+                    && item.count + held.count <= max
+                {
+                    // An output slot empties into a matching cursor.
+                    held.count += item.count;
+                    *cursor = Some(held);
+                } else {
+                    slots[index] = Some(item);
+                    *cursor = Some(held);
                 }
             }
-            (Some(cursor), target @ None) => {
-                let mut placed = cursor.clone();
-                placed.count = if right { 1 } else { cursor.count };
-                cursor.count -= placed.count;
-                *target = Some(placed);
-            }
-            (Some(cursor), Some(target)) if same_kind(cursor, target) => {
-                let transfer = (if right { 1 } else { cursor.count })
-                    .min(stack_limit(target.id).saturating_sub(target.count));
-                target.count += transfer;
-                cursor.count -= transfer;
-            }
-            (cursor, target) => std::mem::swap(cursor, target),
-        }
-        if self.view.cursor.as_ref().is_some_and(|i| i.count <= 0) {
-            self.view.cursor = None;
         }
     }
 
@@ -1366,6 +1401,51 @@ mod tests {
         assert_eq!(chest.view.slot_at(6.5, 18.0), None);
         assert_eq!(chest.view.slot_at(25.5, 18.0), Some(1));
         assert_eq!(chest.view.slot_at(7.5, 17.5), Some(0));
+    }
+
+    /// Container.slotClick mode 0 respects Slot.isItemValid and the armour
+    /// slots' stack limit of one; the server accepts the click either way.
+    #[test]
+    fn pickup_clicks_respect_slot_validity_and_limits() {
+        let mut inv = Inventory::default();
+        inv.player[6] = stack(307, 1);
+        inv.local_open();
+        inv.view.cursor = stack(3, 64);
+        for slot in [5, 6, 0] {
+            let before = inv.view.clone();
+            assert!(inv.click_mode(slot, 0, 0).unwrap().is_some());
+            assert_eq!(inv.view.slots, before.slots, "slot {slot}");
+            assert_eq!(inv.view.cursor, before.cursor, "slot {slot}");
+        }
+        inv.view.cursor = stack(86, 64);
+        inv.click_mode(5, 0, 0).unwrap();
+        assert_eq!(inv.view.slots[5], stack(86, 1));
+        assert_eq!(inv.view.cursor, stack(86, 63));
+        // Same item over a full armour slot: nothing more fits.
+        inv.click_mode(5, 0, 0).unwrap();
+        assert_eq!(inv.view.slots[5], stack(86, 1));
+        // A valid chestplate swaps with the worn one.
+        inv.view.cursor = stack(311, 1);
+        inv.click_mode(6, 0, 0).unwrap();
+        assert_eq!(inv.view.slots[6], stack(311, 1));
+        assert_eq!(inv.view.cursor, stack(307, 1));
+
+        // A furnace output takes nothing, but merges into a matching cursor.
+        let mut fields = vec![2];
+        horizon_protocol_47::write_string(&mut fields, "minecraft:furnace", 32).unwrap();
+        horizon_protocol_47::write_string(&mut fields, r#"{"text":"Furnace"}"#, 32767).unwrap();
+        fields.push(3);
+        let mut furnace = Inventory::default();
+        furnace.open_packet(&fields, &|_| "Furnace".into()).unwrap();
+        furnace.view.slots[2] = stack(265, 5);
+        furnace.view.cursor = stack(3, 1);
+        furnace.click_mode(2, 0, 0).unwrap();
+        assert_eq!(furnace.view.slots[2], stack(265, 5));
+        assert_eq!(furnace.view.cursor, stack(3, 1));
+        furnace.view.cursor = stack(265, 10);
+        furnace.click_mode(2, 0, 1).unwrap();
+        assert!(furnace.view.slots[2].is_none());
+        assert_eq!(furnace.view.cursor, stack(265, 15));
     }
 
     /// Container.slotClick mode 2: a hotbar stack that may not go into the
