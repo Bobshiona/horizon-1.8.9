@@ -147,8 +147,8 @@ trails. Physics now tracks fall distance, distance walked and camera yaw/pitch f
 capture checked dropped items, a stuck arrow, swelling TNT, a landed falling block, collected XP orbs and
 the held sword, bow, fishing rod and wool block. S0D `Collect Item` marks an item, arrow or orb with its
 collector: it skips its destroy packet, flies along `EntityPickupFX`'s squared progress to the
-collector's feet plus half a block for three ticks, then goes. Known gaps: no explosion, smoke or
-block-break particles.
+collector's feet plus half a block for three ticks, then goes. Known gaps: no explosion or smoke
+particles.
 
 Saved sign-in and release pacing checkpoint. A device-code sign-in now keeps Microsoft's refresh token
 in the macOS Keychain (generic password, service "Horizon 1.8.9 Microsoft sign-in", account = client
@@ -217,11 +217,19 @@ and each draws the block's model with `destroy_stage_N` in the overlay pass, alp
 blended `GL_DST_COLOR, GL_SRC_COLOR` in gamma space and pushed toward the eye by a depth bias. A capture
 checked two injected S25 stages on the floor and a wall.
 
+Block-break particles follow `addBlockDestroyEffects`: S28 effect 2001 (state id `id + meta << 12`) and
+the local player's own breaks (survival completion and creative hits, resolved against the world before
+the server's change) spawn 64 `EntityDiggingFX` on a 4x4x4 grid, flung from the centre, a 4-pixel patch
+of the block texture at 0.6 brightness, falling at 0.04 with per-axis block collision (the window
+`try_read`s the world at 20 Hz and skips collision if the network thread is writing), 0.98 drag and 0.7
+ground friction. The particle texture is the model's first face, as the particle sprite is not baked. A
+capture checked red wool particles from injected 2001 effects landing on the floor.
+
 Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 114 scoped tests pass with `--include-ignored` (client 37, login CLI 2, assets 1, auth 6, physics 16,
+- 115 scoped tests pass with `--include-ignored` (client 38, login CLI 2, assets 1, auth 6, physics 16,
   protocol 35, world 17 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -265,7 +273,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
    block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
    includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
-   prediction and break particles, crafting/shift-click
+   prediction, crafting/shift-click
    and special-container rules. Adventure restrictions are enforced conservatively. Live Hypixel remains
    unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous

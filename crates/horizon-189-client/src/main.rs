@@ -110,6 +110,7 @@ struct Snapshot {
     own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
     entity_id: i32,
     cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
+    breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
 }
 
 impl App {
@@ -717,6 +718,7 @@ impl ApplicationHandler for App {
                         own: s.own.clone(),
                         entity_id: s.entity_id,
                         cracks: s.cracks.clone(),
+                        breaks: std::mem::take(&mut s.breaks),
                     })
                 });
                 let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
@@ -744,11 +746,20 @@ impl ApplicationHandler for App {
                     for &(entity, magic) in &snapshot.effects {
                         self.particles.emit(entity, magic);
                     }
+                    if let Some(registry) = &registry {
+                        for &(at, state) in &snapshot.breaks {
+                            if let Some((layer, color)) = registry.particle(state) {
+                                self.particles.destroy(at, layer, color);
+                            }
+                        }
+                    }
                 }
                 if let Some((_, _, entities)) = &pose {
                     let now = tick.floor() as u64;
+                    // Collisions only when the network thread is not writing.
+                    let world = self.network.as_ref().and_then(|n| n.world.try_read().ok());
                     for _ in 0..now.saturating_sub(self.particle_tick).min(10) {
-                        self.particles.tick(entities);
+                        self.particles.tick(entities, world.as_deref());
                     }
                     self.particle_tick = now;
                 }

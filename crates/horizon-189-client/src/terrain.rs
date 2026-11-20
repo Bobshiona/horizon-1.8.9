@@ -639,6 +639,28 @@ impl Registry {
         }
     }
 
+    /// `EntityDiggingFX`'s texture and tint for a block: the first face of
+    /// its model (the particle texture is not baked) and leaf colours.
+    pub fn particle(&self, state: BlockState) -> Option<(u32, [f32; 3])> {
+        let model = self.resolve(&World::default(), [0; 3], state)?;
+        let face = self.models[model as usize]
+            .alternatives
+            .first()?
+            .0
+            .first()?;
+        let tint = match (state.block_id(), state.metadata() & 3) {
+            (18, 1) => [0x61, 0x99, 0x61],
+            (18, 2) => [0x80, 0xA7, 0x55],
+            (18 | 161, _) => [0x48u8, 0xB5, 0x18],
+            _ => [0xFF; 3],
+        }
+        .map(|c| f32::from(c) / 255.0);
+        Some((
+            self.block_layers[face.layer as usize],
+            if face.tint { tint } else { [1.0; 3] },
+        ))
+    }
+
     /// A block state's inventory model centred on the origin (one block
     /// wide), with item tints: the default grass and leaf colours.
     pub fn block_model(

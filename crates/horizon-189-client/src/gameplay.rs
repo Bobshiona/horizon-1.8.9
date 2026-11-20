@@ -78,6 +78,8 @@ pub struct Controller {
     pub use_ticks: u32,
     /// Critical-hit particles to show: target and whether magic (Sharpness).
     pub effects: Vec<(i32, bool)>,
+    /// Blocks this player just broke, for `addBlockDestroyEffects`.
+    pub broken: Vec<[i32; 3]>,
     pub haste: Option<i8>,
     pub fatigue: Option<i8>,
     raycaster: raycast::Raycaster,
@@ -217,6 +219,7 @@ impl Controller {
                             }
                             writer.send(&packet::dig(0, at, face)?)?;
                             if game_mode == 1 {
+                                self.broken.push(at);
                                 self.delay = 5;
                             } else {
                                 self.digging = Some((at, face, 0.0, inventory.held().cloned()));
@@ -406,6 +409,7 @@ impl Controller {
         *damage += progress;
         if *damage >= 1.0 {
             writer.send(&packet::dig(2, at, face)?)?;
+            self.broken.push(at);
             self.digging = None;
             self.delay = 5;
         }

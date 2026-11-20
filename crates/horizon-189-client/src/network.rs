@@ -97,6 +97,9 @@ pub struct Shared {
     /// Blocks showing cracks: position, state and stage 0 to 9 (S25 from
     /// others, `curBlockDamageMP` for the local player).
     pub cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
+    /// Blocks broken since the window last looked (effect 2001 and the
+    /// local player's own breaks), for break particles.
+    pub breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
 }
 
 /// A server message for the window: chat, the action bar or completions.
@@ -119,6 +122,8 @@ const INBOX_LIMIT: usize = 512;
 
 pub struct Network {
     pub meshes: Receiver<MeshUpdate>,
+    /// The world, for the window's particle collisions (`try_read` only).
+    pub world: Arc<RwLock<World>>,
     pub errors: Receiver<String>,
     pub shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
@@ -140,6 +145,7 @@ impl Network {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let state = shared.clone();
         let language = registry.gui.language.clone();
+        let window_world = world.clone();
         let mesher = {
             let (world, stop) = (world.clone(), stop.clone());
             thread::Builder::new()
@@ -159,6 +165,7 @@ impl Network {
             })?;
         Ok(Self {
             meshes,
+            world: window_world,
             errors,
             shared,
             stop,
@@ -852,6 +859,31 @@ fn run_actor(
                             entities.set_velocity(entity, [x, y, z]);
                         }
                     }
+                    play::Packet::Other { id: 0x28, fields } => {
+                        // S28 Effect: id, position, data, global.
+                        if let [a, b, c, d, rest @ ..] = fields
+                            && i32::from_be_bytes([*a, *b, *c, *d]) == 2001
+                            && rest.len() >= 12
+                        {
+                            let mut packed = [0u8; 8];
+                            packed.copy_from_slice(&rest[..8]);
+                            let packed = i64::from_be_bytes(packed);
+                            let data = i32::from_be_bytes([rest[8], rest[9], rest[10], rest[11]]);
+                            let at = [
+                                (packed >> 38) as i32,
+                                ((packed << 26) >> 52) as i32,
+                                ((packed << 38) >> 38) as i32,
+                            ];
+                            // Block.getStateId: id + (meta << 12).
+                            let state = horizon_world_189::BlockState(
+                                (((data & 0xfff) as u16) << 4) | ((data >> 12) & 15) as u16,
+                            );
+                            let mut shared_state = lock(shared)?;
+                            if shared_state.breaks.len() < 64 {
+                                shared_state.breaks.push((at, state));
+                            }
+                        }
+                    }
                     play::Packet::Other { id: 0x25, fields } => {
                         // S25 Block Break Animation: breaker, position, stage.
                         let mut input = std::io::Cursor::new(fields);
@@ -1121,6 +1153,15 @@ fn run_actor(
                     let stage = (damage * 10.0) as i32 - 1;
                     (0..10).contains(&stage).then_some((at, stage as u8))
                 });
+                for at in controller.broken.drain(..) {
+                    if let Some(block) = world_view
+                        .block(at[0], at[1], at[2])
+                        .filter(|block| block.block_id() != 0)
+                        && state.breaks.len() < 64
+                    {
+                        state.breaks.push((at, block));
+                    }
+                }
                 state.cracks.clear();
                 for (at, stage) in breaking.values().copied().chain(own) {
                     if let Some(block) = world_view
