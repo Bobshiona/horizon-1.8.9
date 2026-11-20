@@ -756,6 +756,16 @@ fn run_actor(
                             inventory.close();
                         }
                     }
+                    play::Packet::Other { id: 0x31, fields } => {
+                        let (window, property, value) = crate::inventory::window_property(fields)?;
+                        if window == inventory.view.window
+                            && let Some(slot) = usize::try_from(property)
+                                .ok()
+                                .and_then(|index| inventory.view.properties.get_mut(index))
+                        {
+                            *slot = value;
+                        }
+                    }
                     play::Packet::Other { id: 0x32, fields } => {
                         if let Some(packet) = inventory.confirm(fields)? {
                             writer.send(&packet)?;

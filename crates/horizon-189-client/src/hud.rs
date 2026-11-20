@@ -798,6 +798,39 @@ pub fn inventory(canvas: &mut Canvas<'_>, registry: &Registry, view: &View, mous
     for [x, y, u, v, pw, ph] in &screen.parts {
         canvas.sprite(screen.sheet, left + x, top + y, *u, *v, *pw, *ph, [1.0; 4]);
     }
+    if view.kind == crate::inventory::Kind::Furnace {
+        // `GuiFurnace`: the flame (burn left of 13) and the arrow (cook of 24).
+        let [burn, item_burn, cook, total] = view.properties.map(i32::from);
+        if burn > 0 {
+            let full = if item_burn == 0 { 200 } else { item_burn };
+            let k = (burn * 13 / full) as f32;
+            canvas.sprite(
+                screen.sheet,
+                left + 56.0,
+                top + 36.0 + 12.0 - k,
+                176.0,
+                12.0 - k,
+                14.0,
+                k + 1.0,
+                [1.0; 4],
+            );
+        }
+        let l = if total != 0 && cook != 0 {
+            cook * 24 / total
+        } else {
+            0
+        } as f32;
+        canvas.sprite(
+            screen.sheet,
+            left + 79.0,
+            top + 34.0,
+            176.0,
+            14.0,
+            l + 1.0,
+            16.0,
+            [1.0; 4],
+        );
+    }
     let hovered = view.slot_at(mouse.0 - left, mouse.1 - top);
     for &(slot, x, y) in &screen.slots {
         let (x, y) = (left + x, top + y);

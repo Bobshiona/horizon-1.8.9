@@ -122,7 +122,8 @@ Y, then the item model's own `gui` turn: 90 for fences, 180 for stairs), project
 drawn back to front with back faces culled. Fences, walls, buttons, pressure plates and pistons use the
 `*_inventory` block models their item models name, in the hand, on the ground and in slots. Known gaps:
 no player model in the inventory, no drag-splitting or double-click
-collect, furnace/brewing progress not drawn, and other window types have no shift-click prediction.
+collect, no brewing stand screen, and other window types have no shift-click prediction. Furnaces draw
+`GuiFurnace`'s flame and arrow from S31 window properties.
 
 Combat entities and first-person checkpoint. Spawn Object velocity and S12 velocity now reach non-living
 entities, which simulate locally between server updates: arrows and throwables (0.99 drag, per-kind
@@ -211,7 +212,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 112 scoped tests pass with `--include-ignored` (client 36, login CLI 2, assets 1, auth 6, physics 16,
+- 113 scoped tests pass with `--include-ignored` (client 37, login CLI 2, assets 1, auth 6, physics 16,
   protocol 35, world 16 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.

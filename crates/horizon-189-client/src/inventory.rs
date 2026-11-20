@@ -62,6 +62,9 @@ pub struct View {
     pub kind: Kind,
     /// The window title as `getUnformattedText`.
     pub title: String,
+    /// S31 window properties: a furnace's burn time, item burn time, cook
+    /// time and total cook time.
+    pub properties: [i16; 4],
 }
 
 fn player_slots(out: &mut Vec<(i16, f32, f32)>, first: usize, main_y: f32, hotbar_y: f32) {
@@ -351,6 +354,7 @@ impl Inventory {
             selected: self.view.selected,
             kind,
             title,
+            properties: [0; 4],
         };
         Ok(())
     }
@@ -652,8 +656,18 @@ impl Inventory {
     }
 }
 
-/// Window property packets are read by the transport but remain available
-/// for future furnace/enchantment UI implementations.
+/// S31 `Window Property`: (window, property, value).
+pub fn window_property(fields: &[u8]) -> io::Result<(u8, i16, i16)> {
+    let [window, a, b, c, d] = fields else {
+        return Err(io::Error::other("Invalid window property"));
+    };
+    Ok((
+        *window,
+        i16::from_be_bytes([*a, *b]),
+        i16::from_be_bytes([*c, *d]),
+    ))
+}
+
 pub fn server_hotbar(fields: &[u8]) -> io::Result<u8> {
     let mut input = Cursor::new(fields);
     let value = read_varint(&mut input)?;
@@ -666,6 +680,13 @@ pub fn server_hotbar(fields: &[u8]) -> io::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_properties_decode_big_endian_shorts() {
+        assert_eq!(window_property(&[3, 0, 2, 0, 200]).unwrap(), (3, 2, 200));
+        assert_eq!(window_property(&[1, 255, 255, 0, 1]).unwrap(), (1, -1, 1));
+        assert!(window_property(&[1, 0, 2]).is_err());
+    }
     #[test]
     fn direct_inventory_indices_and_container_hotbar_stay_synchronized() {
         let mut inv = Inventory::default();
