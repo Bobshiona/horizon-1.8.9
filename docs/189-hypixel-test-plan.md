@@ -94,14 +94,17 @@ login gate failure, even if fallback sign-in subsequently works.
 2. **BedWars, one complete game**, after Duels works: shop purchases, chest pickup/shift-click/number-key
    swaps, close/reopen authoritative contents, world drops, bridging with held sneak, block placement,
    mining/cracks/break fragments, combat and respawn. Observe naturally used TNT/fireballs, fuse,
-   explosion and knockback. Missing explosion/smoke visuals are a known defect. SkyWars can supplement
+   explosion and knockback. Explosion/smoke visuals now have local reference coverage; inspect them live. SkyWars can supplement
    coverage but does not replace BedWars shop/placement checks.
 3. Mark unavailable cases as untested. Check Depth Strider or permitted flight only where the server
    legitimately provides them. Do not enable abilities or synthesize actions for coverage.
 
 Stop advancing to matches on a kick/warning, repeated rubberbanding, missing terrain/collision,
 incorrect knockback or ghost inventory. Save exact disconnect text and the preceding physical actions;
-reproduce on the local server before another public attempt. A clean short session is compatibility
+reproduce on the local server before another public attempt. The client now retains disconnect text on
+a connection-lost screen. Capture it before using Reconnect (or Enter); retry reuses the current session,
+so an expired session requires a normal relaunch/sign-in. Check that old HUD/world/input state does not
+survive a local retry. Native button interaction remains a manual gate. A clean short session is compatibility
 evidence, not an anticheat certification.
 
 For each screenshot, run in the same terminal and select the client window:

@@ -899,6 +899,18 @@ impl Scene {
         self.fixture = old.fixture.or(self.fixture.take());
     }
 
+    /// Drop all geometry from a finished connection while retaining GPU resources.
+    pub fn clear_world(&mut self) {
+        self.columns.clear();
+        self.fixture = None;
+        self.origin = [0; 3];
+        self.entity_count = 0;
+        self.label_counts = [0; 5];
+        self.hand_count = 0;
+        self.hand_glint_count = 0;
+        self.effects = Mat4::IDENTITY;
+    }
+
     pub fn column_count(&self) -> usize {
         self.columns.len()
     }

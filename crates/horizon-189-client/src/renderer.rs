@@ -397,6 +397,21 @@ impl Renderer {
         scene.set_hand(&self.device, &self.queue, &self.config, &vertices, &glint)
     }
 
+    pub fn clear_world(&mut self) {
+        self.entity_vertices.clear();
+        for list in &mut self.label_vertices {
+            list.clear();
+        }
+        self.pose = PositionLook::default();
+        self.skins.clear();
+        self.skin_images.clear();
+        self.skin_loader.retain(std::iter::empty());
+        if let Some(scene) = &mut self.scene {
+            scene.clear_world();
+            scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
+        }
+    }
+
     pub fn world_ready(&self) -> bool {
         self.scene.as_ref().is_some_and(Scene::has_geometry)
     }

@@ -615,3 +615,39 @@ capture is recorded in Section 12. No new visual feature or public-server script
 Next: manual real-account saved-login/relaunch and complete live Duels/BedWars sessions using the test
 plan. Saved-login error handling was reviewed; no new account sign-in was started in this pass. Use
 actual live failures to choose further P0 work, and complete the remaining display/backing-scale matrix.
+
+
+## 14. Disconnect recovery checkpoint
+
+Normal connected sessions retain a login/play disconnect or transport failure reason in a translated,
+opaque connection-lost screen instead of exiting. Server JSON components and plain IO errors use the
+same text formatter. Reconnect (button or Enter) deliberately starts a new connection to the original
+host/port; Quit, Escape and Command-Q exit. A connecting screen disables duplicate retries and blocks
+gameplay input until the first authoritative player position. Bounded smoke sessions still fail fast.
+
+Retry shares the original memory-only Session via Arc; it does not reopen Keychain, refresh an expired
+access token, or request Microsoft approval. An expired session still requires normal application
+relaunch/sign-in. Disconnect cancels and joins the old transport/mesher, releases all input/cursor
+state, clears world/entity/label/hand geometry and skin bindings, and resets HUD/chat/particles. The
+new actor owns independent world, inventory and player state. GPU resources and display settings stay.
+
+Verification: 150 scoped tests (69 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol,
+18 world), strict Clippy/fmt, layer/public-tree/diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`. The full loopback retry test rejects the first login, accepts the
+second using the same Session, checks fresh input/chat state and the immediate S08/C06 acknowledgement,
+and joins both transports on drop. Metal readback proves old fixture geometry disappears and captures
+the recovery screen: title, red formatted reason, highlighted Reconnect and Quit are readable in the
+inspected 256x256 image. Private evidence remains under `h189-reconnect-*`, including
+`h189-reconnect-ui/connection.png`; no assets or captures enter git.
+
+A normal native release run retained a connection-refused failure with the window alive and later
+exited with status zero; its paired bounded run returned failure as required. Computer-use controls
+were unavailable for this pass: no native button-click/reconnect-after-kick interaction is claimed.
+The reconnect transport and button hit/state transitions have automated coverage, while that native
+interaction remains manual. No public-server connection or new Microsoft approval was attempted.
+
+Next: manual actual-account saved-login/relaunch, then complete Lobby → Duels → BedWars sessions from
+the test plan. On a naturally occurring disconnect, capture the retained reason before any deliberate
+retry; stop live testing on warnings/rubberbanding/inventory faults and reproduce locally first.
+Successful real-token refresh, complete live matches, native retry interaction and the remaining
+Retina/high-refresh display matrix remain unverified. Deferred features remain deferred.

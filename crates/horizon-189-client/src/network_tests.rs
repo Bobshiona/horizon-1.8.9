@@ -1,5 +1,6 @@
 //! Real actor/transport regressions on a private loopback socket; no login,
-//! credentials, assets, JVM or window are required.
+//! credentials, assets, JVM or window are required for actor tests. The ignored
+//! full retry test additionally loads an owned registry.
 use super::*;
 use horizon_protocol_47::{write_string, write_varint};
 use horizon_world_189::{ColumnData, ColumnUpdate};
@@ -51,7 +52,7 @@ impl Actor {
             let config = Config {
                 host: "127.0.0.1".into(),
                 port: 0,
-                session: Session::offline("NativeActor", None).unwrap(),
+                session: Arc::new(Session::offline("NativeActor", None).unwrap()),
                 offline: true,
                 autopilot: false,
                 autopilot_fly: false,
@@ -404,4 +405,125 @@ fn game_mode_capabilities_preserve_speeds_and_creative_flight_choice() {
         assert!(!p.abilities_changed);
         assert_eq!(normalized, if mode == 99 { 0 } else { mode as u8 });
     }
+}
+
+#[test]
+#[ignore = "Requires HORIZON_189_TEST_JAR pointing at an owned 1.8.9 jar"]
+fn retry_after_login_rejection_uses_fresh_state_and_same_session() {
+    let jar = std::path::PathBuf::from(std::env::var_os("HORIZON_189_TEST_JAR").unwrap());
+    let registry = Arc::new(Registry::open(&jar).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let config = Config {
+        host: "127.0.0.1".into(),
+        port,
+        session: Arc::new(Session::offline("NativeRetry", None).unwrap()),
+        offline: true,
+        autopilot: false,
+        autopilot_fly: false,
+        view_distance: 2,
+    };
+    let copy = config.clone();
+    assert!(Arc::ptr_eq(&config.session, &copy.session));
+    let server = thread::spawn(move || {
+        for attempt in 0..2 {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut peer = Connection::new(socket);
+            assert_eq!(peer.receive().unwrap()[0], 0); // handshake
+            assert_eq!(
+                peer.receive().unwrap(),
+                login::start("NativeRetry").unwrap()
+            );
+            if attempt == 0 {
+                let mut rejected = vec![0];
+                write_string(
+                    &mut rejected,
+                    r#"{"text":"Retry fixture","color":"red"}"#,
+                    32767,
+                )
+                .unwrap();
+                peer.send(&rejected).unwrap();
+                continue;
+            }
+            let mut success = vec![2];
+            write_string(&mut success, "00000000000000000000000000000001", 36).unwrap();
+            write_string(&mut success, "NativeRetry", 16).unwrap();
+            peer.send(&success).unwrap();
+            let mut join = vec![1];
+            join.extend(9i32.to_be_bytes());
+            join.extend([0, 0, 1, 20]);
+            write_string(&mut join, "default", 16).unwrap();
+            join.push(0);
+            peer.send(&join).unwrap();
+            assert_eq!(peer.receive().unwrap(), play::client_settings(2));
+            assert_eq!(peer.receive().unwrap(), play::brand().unwrap());
+            let mut position = vec![8];
+            for v in [4.5f64, 70.0, 8.5] {
+                position.extend(v.to_be_bytes());
+            }
+            position.extend(0f32.to_be_bytes());
+            position.extend(0f32.to_be_bytes());
+            position.push(0);
+            peer.send(&position).unwrap();
+            let expected = Movement::PositionLook {
+                location: PositionLook {
+                    position: [4.5, 70.0, 8.5],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                },
+                on_ground: false,
+            }
+            .encode()
+            .unwrap();
+            loop {
+                let packet = peer.receive().unwrap();
+                if packet.first() == Some(&6) {
+                    assert_eq!(packet, expected);
+                    break;
+                }
+            }
+            // Drop must shut the reader and actor down, including their socket.
+            while peer.receive().is_ok() {}
+        }
+    });
+    let first = Network::start(config, registry.clone()).unwrap();
+    assert!(
+        first
+            .errors
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .contains("Retry fixture")
+    );
+    let old_shared = first.shared.clone();
+    {
+        let mut state = old_shared.lock().unwrap();
+        state.input.attack = true;
+        state.keys.forward = true;
+        state.chat_inbox.push(ChatEvent::ActionBar("stale".into()));
+    }
+    drop(first);
+    let second = Network::start(copy, registry).unwrap();
+    assert!(!Arc::ptr_eq(&old_shared, &second.shared));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(error) = second.errors.try_recv() {
+            panic!("{error}");
+        }
+        let state = second.shared.lock().unwrap();
+        assert!(!state.input.attack && !state.keys.forward && state.chat_inbox.is_empty());
+        if state.positioned {
+            assert_eq!(state.username, "NativeRetry");
+            assert_eq!(state.entity_id, 9);
+            assert_eq!(state.current, [4.5, 70.0, 8.5]);
+            break;
+        }
+        drop(state);
+        assert!(Instant::now() < deadline, "retry never positioned");
+        thread::sleep(Duration::from_millis(2));
+    }
+    drop(second);
+    server.join().unwrap();
 }

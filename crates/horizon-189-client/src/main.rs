@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod chat;
+mod connection;
 mod container_input;
 mod frame_stats;
 mod gameplay;
@@ -75,6 +76,7 @@ struct App {
     assets: Option<std::path::PathBuf>,
     capture: Option<std::path::PathBuf>,
     server: Option<network::Config>,
+    connection: connection::Screen,
     network: Option<network::Network>,
     chat: chat::Chat,
     hud: hud::Hud,
@@ -125,6 +127,45 @@ struct Snapshot {
 }
 
 impl App {
+    fn disconnected(&mut self, event_loop: &ActiveEventLoop, reason: String) {
+        if self.smoke_frames.is_some() {
+            self.fail(event_loop, reason);
+            return;
+        }
+        eprintln!("NETWORK_DISCONNECTED {reason}");
+        self.release_cursor();
+        self.network.take();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.clear_world();
+        }
+        self.chat = chat::Chat::default();
+        self.hud = hud::Hud::default();
+        self.particles = particles::Particles::default();
+        self.metrics = pvp_metrics::Metrics::default();
+        self.player_epoch = 0;
+        self.world_epoch = 0;
+        self.menu_open = false;
+        self.auto_captured = false;
+        self.wheel_pixels = 0.0;
+        self.connection.lost(reason);
+    }
+
+    fn reconnect(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.connection.disconnected() {
+            return;
+        }
+        let config = self.server.clone();
+        let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
+        if let (Some(config), Some(registry)) = (config, registry) {
+            self.connection.connecting();
+            eprintln!("NETWORK_RECONNECTING");
+            match network::Network::start(config, registry) {
+                Ok(network) => self.network = Some(network),
+                Err(error) => self.disconnected(event_loop, error.to_string()),
+            }
+        }
+    }
+
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
         self.failure = Some(error.to_string());
         event_loop.exit();
@@ -381,7 +422,7 @@ impl ApplicationHandler for App {
             });
         match result {
             Ok(renderer) => {
-                if let Some(config) = self.server.take() {
+                if let Some(config) = self.server.clone() {
                     let Some(registry) = renderer.registry.clone() else {
                         self.fail(event_loop, "Connected viewport requires owned assets");
                         return;
@@ -446,6 +487,17 @@ impl ApplicationHandler for App {
                 }
                 if let PhysicalKey::Code(key) = event.physical_key {
                     let pressed = event.state == ElementState::Pressed;
+                    if self.connection.active() {
+                        if pressed && !event.repeat {
+                            match key {
+                                KeyCode::Escape => event_loop.exit(),
+                                KeyCode::KeyQ if self.modifiers.super_key() => event_loop.exit(),
+                                KeyCode::Enter | KeyCode::NumpadEnter => self.reconnect(event_loop),
+                                _ => {}
+                            }
+                        }
+                        return;
+                    }
                     if self.chat.open {
                         if !pressed {
                             self.keyboard.release(key);
@@ -575,6 +627,7 @@ impl ApplicationHandler for App {
                     );
                 }
             }
+            WindowEvent::MouseWheel { .. } if self.connection.active() => {}
             WindowEvent::MouseWheel { delta, .. } if self.chat.open => {
                 let notches = self.notches(delta);
                 if notches != 0 {
@@ -614,6 +667,19 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let pressed = button_state == ElementState::Pressed;
+                if self.connection.active() {
+                    if pressed
+                        && button == MouseButton::Left
+                        && let Some(renderer) = &self.renderer
+                    {
+                        match self.connection.action_at(renderer.layout, self.mouse_gui()) {
+                            Some(connection::Action::Reconnect) => self.reconnect(event_loop),
+                            Some(connection::Action::Quit) => event_loop.exit(),
+                            None => {}
+                        }
+                    }
+                    return;
+                }
                 if self.pvp_hud
                     && let Some(index) = match button {
                         MouseButton::Left => Some(0),
@@ -758,6 +824,9 @@ impl ApplicationHandler for App {
                 let pose = self.camera_pose();
                 let tick = self.tick();
                 let mouse = self.mouse_gui();
+                if pose.is_some() {
+                    self.connection.connected();
+                }
                 let mut snapshot = self.network.as_ref().and_then(|n| {
                     n.shared.lock().ok().map(|mut s| Snapshot {
                         view: s.inventory.clone(),
@@ -972,6 +1041,15 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    if self.connection.active() {
+                        let screen = &self.connection;
+                        if let Err(error) =
+                            renderer.draw_ui(tick, |canvas, _, _| screen.draw(canvas, mouse))
+                        {
+                            self.fail(event_loop, error);
+                            return;
+                        }
+                    }
                     let last = self
                         .smoke_frames
                         .is_some_and(|limit| self.frames + 1 >= limit)
@@ -1107,7 +1185,7 @@ impl ApplicationHandler for App {
             .as_ref()
             .and_then(|network| network.errors.try_recv().ok())
         {
-            self.fail(event_loop, error);
+            self.disconnected(event_loop, error);
             return;
         }
         if self
@@ -1202,6 +1280,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         failure: None,
         assets: options.assets,
         capture: options.capture,
+        connection: connection::Screen::new(server.is_some()),
         server,
         network: None,
         chat: chat::Chat::default(),

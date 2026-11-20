@@ -28,10 +28,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone)]
 pub struct Config {
     pub host: String,
     pub port: u16,
-    pub session: Session,
+    pub session: Arc<Session>,
     pub offline: bool,
     /// Scripted inputs for unattended validation against a reference server.
     pub autopilot: bool,

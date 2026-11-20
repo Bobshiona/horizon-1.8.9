@@ -642,7 +642,9 @@ mod tests {
             crate::network::Config {
                 host: "127.0.0.1".into(),
                 port: 25565,
-                session: horizon_auth::Session::offline("NativeCombat", None).unwrap(),
+                session: std::sync::Arc::new(
+                    horizon_auth::Session::offline("NativeCombat", None).unwrap(),
+                ),
                 offline: true,
                 autopilot: false,
                 autopilot_fly: false,

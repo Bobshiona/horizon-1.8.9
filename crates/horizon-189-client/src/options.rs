@@ -371,7 +371,7 @@ impl Options {
             return Ok(Startup::Window(Some(crate::network::Config {
                 host: host.clone(),
                 port: self.port.unwrap_or(25565),
-                session,
+                session: std::sync::Arc::new(session),
                 offline: self.offline,
                 autopilot: self.autopilot,
                 autopilot_fly: self.autopilot_fly,

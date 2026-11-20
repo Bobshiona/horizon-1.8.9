@@ -1,4 +1,7 @@
 {
   "horizon.pvp.fps": "%s FPS",
-  "horizon.pvp.cps": "%s / %s CPS"
+  "horizon.pvp.cps": "%s / %s CPS",
+  "horizon.connection.lost": "Connection lost",
+  "horizon.connection.reconnect": "Reconnect",
+  "horizon.connection.quit": "Quit"
 }

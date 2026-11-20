@@ -29,7 +29,7 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
         alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![],
     };
-    let scene = Scene::new(&device, &queue, &config, &jar)?;
+    let mut scene = Scene::new(&device, &queue, &config, &jar)?;
     let size = wgpu::Extent3d {
         width: 256,
         height: 256,
@@ -127,5 +127,159 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
     eprintln!("METAL_READBACK_PASS visible_pixels={visible}");
     drop(pixels);
     readback.unmap();
+    // Reusing the window after a lost connection must not render its old fixture.
+    scene.clear_world();
+    assert_eq!(scene.column_count(), 0);
+    assert!(!scene.has_geometry());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Disconnected world verification"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &scene.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        scene.draw(&mut pass, &config);
+    }
+    encoder.copy_texture_to_buffer(
+        target.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1024),
+                rows_per_image: None,
+            },
+        },
+        size,
+    );
+    let submission = queue.submit([encoder.finish()]);
+    let (send, receive) = std::sync::mpsc::channel();
+    readback.map_async(wgpu::MapMode::Read, .., move |result| {
+        let _ = send.send(result);
+    });
+    device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission),
+        timeout: Some(Duration::from_secs(5)),
+    })?;
+    receive.recv_timeout(Duration::from_secs(5))??;
+    let pixels = readback.get_mapped_range(..)?;
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 0, 0, 255]),
+        "stale world survived disconnect"
+    );
+    drop(pixels);
+    readback.unmap();
+    eprintln!("METAL_DISCONNECT_CLEAR_PASS");
+
+    let resources = crate::ui::Resources::load(&horizon_assets_189::Assets::open(&jar)?)?;
+    let mut ui = crate::ui::Pass::new(
+        &device,
+        &queue,
+        config.format,
+        &resources,
+        scene.entity_texture(),
+    );
+    let layout = crate::ui::Layout::new((256, 256), 1.0, 1);
+    let mut canvas = crate::ui::Canvas::new(&resources, layout, 0, &ui.pages);
+    let mut screen = crate::connection::Screen::default();
+    screen.lost(r#"{"text":"Reference server closed","color":"red"}"#.into());
+    screen.draw(&mut canvas, (128.0, 205.0));
+    let (vertices, inverted, missing) = canvas.finish();
+    ui.upload(
+        &device,
+        &queue,
+        layout,
+        scene.entity_layers(),
+        &inverted,
+        &vertices,
+    )?;
+    ui.load_pages(&queue, &resources, &missing);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Connection recovery screen"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        ui.draw(&mut pass);
+    }
+    encoder.copy_texture_to_buffer(
+        target.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1024),
+                rows_per_image: None,
+            },
+        },
+        size,
+    );
+    let submission = queue.submit([encoder.finish()]);
+    let (send, receive) = std::sync::mpsc::channel();
+    readback.map_async(wgpu::MapMode::Read, .., move |result| {
+        let _ = send.send(result);
+    });
+    device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission),
+        timeout: Some(Duration::from_secs(5)),
+    })?;
+    receive.recv_timeout(Duration::from_secs(5))??;
+    let pixels = readback.get_mapped_range(..)?;
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255)
+    );
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[0] > 150 && p[1] < 120)
+            .count()
+            > 100,
+        "formatted reason absent"
+    );
+    if let Some(path) = std::env::var_os("HORIZON_189_CONNECTION_CAPTURE") {
+        let file = std::fs::File::create(path)?;
+        let mut encoder = png::Encoder::new(file, 256, 256);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header()?.write_image_data(&pixels)?;
+    }
+    drop(pixels);
+    readback.unmap();
+    eprintln!("METAL_CONNECTION_SCREEN_PASS");
     Ok(())
 }
