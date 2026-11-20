@@ -681,3 +681,30 @@ build and `VANILLA_189_REFERENCE_GATE_PASS`.
 
 Noted for the parity audit: spectator left-clicks on an entity send no C02 here, while vanilla's
 attackEntity sends one (spectate target).
+
+
+## 16. Right-click use parity and stairs re-verification
+
+Section 15's C09 fix is `43a7b19e26`.
+
+`Minecraft.rightClickMouse` is followed more closely. A block click sends C08 for the block; when
+neither `onBlockActivated` (unless sneaking with an item) nor the item's `onItemUse` consumes it, the
+held item's `sendUseItem` follows for any item, so a golden apple, food or potion aimed at the floor is
+now eaten or drunk (previously only swords and bows were used). The swing now happens only for a
+consumed block click, as vanilla. `item_use_on_block` models which items consume: block items,
+flint and steel, fire charges, spawn eggs, fireworks, armour stands, and the conditional ones only on
+their targets (hoes on dirt/grass, seeds/carrots/potatoes on farmland, wart on soul sand, paintings and
+frames on sides, doors/beds on tops, signs/skulls not on bottoms, minecarts on rails, bone meal on
+growable blocks, cocoa on jungle log sides, leads on fences). An entity click sends INTERACT_AT; an
+armour stand's interactAt consumes it (no INTERACT, no use), villagers and horses consume INTERACT,
+and otherwise any held item is used. `sendUseItem` sends nothing in spectator.
+
+Regression `right_click_uses_held_food_after_unconsumed_block_and_entity_clicks` failed first (a swing
+where the apple's C08 belonged). Gate: 155 scoped tests (74 client, 2 login CLI, 1 assets, 6 auth,
+16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks,
+ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+Stairs: a rebuilt private reflection harness on the official server jar (`kb.c()` bootstrap, a proxy
+`adq` block access, `aju.e`/`h`/`i` with bounds fields `B`-`G`) prints all 8 stairs metadata against
+every air/stairs mix on four sides; its 52,488 lines are byte-identical to
+`cargo run -p horizon-physics-189 --example stairs_probe`. The harness stays private.

@@ -111,6 +111,27 @@ impl Controller {
         Ok(())
     }
 
+    /// `PlayerControllerMP.sendUseItem` for the held stack: nothing in
+    /// spectator, otherwise sync, then C08 at (-1, -1, -1) for any item, and
+    /// items with a use duration start being used.
+    fn use_held(
+        &mut self,
+        inventory: &Inventory,
+        game_mode: u8,
+        writer: &mut PacketWriter<impl Read + Write>,
+    ) -> io::Result<()> {
+        let Some(item) = inventory.held() else {
+            return Ok(());
+        };
+        if game_mode == 3 {
+            return Ok(());
+        }
+        self.sync_slot(inventory.view.selected, writer)?;
+        writer.send(&packet::place([-1, -1, -1], 255, [0.0; 3], Some(item))?)?;
+        self.using = has_use_action(item);
+        Ok(())
+    }
+
     /// The block being dug and `curBlockDamageMP`, 0 to 1.
     pub fn dig_progress(&self) -> Option<([i32; 3], f32)> {
         self.digging
@@ -302,24 +323,23 @@ impl Controller {
                         .get(id)
                         .map(|e| std::array::from_fn(|a| (point[a] - e.position[a]) as f32))
                         .unwrap_or([0.0; 3]);
-                    // isPlayerRightClickingOnEntity syncs first.
+                    let kind = entities.get(id).map(|e| e.kind);
+                    // isPlayerRightClickingOnEntity syncs first; an armour
+                    // stand's interactAt consumes the click, so INTERACT and
+                    // the item use follow only for other entities.
                     self.sync_slot(inventory.view.selected, writer)?;
                     writer.send(&packet::use_entity(id, 2, Some(relative))?)?;
-                    writer.send(&packet::use_entity(id, 0, None)?)?;
-                    let consumes_interaction = entities.get(id).is_some_and(|e| {
-                        matches!(
-                            e.kind,
-                            horizon_world_189::entities::Kind::Mob(100 | 120)
-                                | horizon_world_189::entities::Kind::Object(78)
-                        )
-                    });
-                    if !consumes_interaction
-                        && game_mode != 3
-                        && let Some(item) = inventory.held()
-                        && (is_sword(item.id) || item.id == 261)
-                    {
-                        writer.send(&packet::place([-1, -1, -1], 255, [0.0; 3], Some(item))?)?;
-                        self.using = true;
+                    let stand = kind == Some(horizon_world_189::entities::Kind::Object(78));
+                    if !stand {
+                        writer.send(&packet::use_entity(id, 0, None)?)?;
+                    }
+                    let consumed = stand
+                        || matches!(
+                            kind,
+                            Some(horizon_world_189::entities::Kind::Mob(100 | 120))
+                        );
+                    if !consumed {
+                        self.use_held(inventory, game_mode, writer)?;
                     }
                 }
                 Some(Hit::Block { at, face, point }) => {
@@ -329,68 +349,27 @@ impl Controller {
                     // onPlayerRightClick syncs first.
                     self.sync_slot(inventory.view.selected, writer)?;
                     writer.send(&packet::place(at, face, relative, inventory.held())?)?;
-                    if inventory.held().is_some() {
-                        self.swing(writer)?;
-                    }
                     let block = world
                         .block(at[0], at[1], at[2])
                         .unwrap_or_default()
                         .block_id();
-                    if let Some(item) = inventory.held()
-                        && (is_sword(item.id) || item.id == 261)
-                        && (player.sneaking
-                            || !matches!(
-                                block,
-                                23 | 25
-                                    | 26
-                                    | 54
-                                    | 58
-                                    | 61
-                                    | 62
-                                    | 64
-                                    | 69
-                                    | 71
-                                    | 77
-                                    | 84
-                                    | 92
-                                    | 93
-                                    | 94
-                                    | 96
-                                    | 107
-                                    | 116
-                                    | 117
-                                    | 120
-                                    | 130
-                                    | 137
-                                    | 143
-                                    | 145
-                                    | 146
-                                    | 149
-                                    | 150
-                                    | 154
-                                    | 158
-                                    | 167
-                                    | 183..=197
-                            ))
-                    {
-                        writer.send(&packet::place([-1, -1, -1], 255, [0.0; 3], Some(item))?)?;
-                        self.using = true;
+                    // onBlockActivated runs unless sneaking with an item;
+                    // otherwise the item's onItemUse may consume the click.
+                    let activated = (!player.sneaking || inventory.held().is_none())
+                        && interactive_block(block);
+                    let consumed = activated
+                        || inventory
+                            .held()
+                            .is_some_and(|item| item_use_on_block(item, block, face));
+                    // rightClickMouse swings only for a consumed click and
+                    // otherwise falls through to sendUseItem.
+                    if consumed {
+                        self.swing(writer)?;
+                    } else {
+                        self.use_held(inventory, game_mode, writer)?;
                     }
                 }
-                None => {
-                    if let Some(item) = inventory.held() {
-                        // sendUseItem syncs first (not in spectator).
-                        if game_mode != 3 {
-                            self.sync_slot(inventory.view.selected, writer)?;
-                        }
-                        writer.send(&packet::place([-1, -1, -1], 255, [0.0; 3], Some(item))?)?;
-                        self.using = is_sword(item.id)
-                            || item.id == 261
-                            || item.id == 335
-                            || (item.id == 373 && item.damage & 16384 == 0)
-                            || matches!(item.id,260|282|297|319|320|322|349|350|357|360|363..=367|391..=394|400|412|413|423|424);
-                    }
-                }
+                None => self.use_held(inventory, game_mode, writer)?,
             }
         }
         // onItemUseFinish: food and drinks end after 32 ticks without a
@@ -533,6 +512,108 @@ fn same_tool(a: Option<&Item>, b: Option<&Item>) -> bool {
 fn stack_durable(id: i16) -> bool {
     matches!(id,256..=259|261|267..=279|283..=286|290..=294|298..=317|346|359|398)
 }
+/// Blocks whose `onBlockActivated` handles a right-click (containers,
+/// doors, levers, beds, crafting and the like).
+fn interactive_block(block: u16) -> bool {
+    matches!(
+        block,
+        23 | 25
+            | 26
+            | 54
+            | 58
+            | 61
+            | 62
+            | 64
+            | 69
+            | 71
+            | 77
+            | 84
+            | 92
+            | 93
+            | 94
+            | 96
+            | 107
+            | 116
+            | 117
+            | 120
+            | 130
+            | 137
+            | 143
+            | 145
+            | 146
+            | 149
+            | 150
+            | 154
+            | 158
+            | 167
+            | 183..=197
+    )
+}
+
+/// Whether `Item.onItemUse` normally consumes a click on `block` (placing a
+/// block or applying the item), so rightClickMouse sends no use after it.
+/// Items without onItemUse (swords, bows, food, potions, buckets, rods,
+/// throwables) and conditional ones off their target fall through to
+/// sendUseItem.
+fn item_use_on_block(item: &Item, block: u16, face: u8) -> bool {
+    let rail = matches!(block, 27 | 28 | 66 | 157);
+    let side = (2..=5).contains(&face);
+    match item.id {
+        1..=255 => true,
+        // Flint and steel, fire charges, spawn eggs, fireworks, armour stands.
+        259 | 383 | 385 | 401 | 416 => true,
+        // Hoes till dirt and grass from above or the side.
+        290..=294 => matches!(block, 2 | 3) && face != 0,
+        // Seeds, carrots and potatoes plant on farmland; wart on soul sand.
+        295 | 361 | 362 | 391 | 392 => block == 60 && face == 1,
+        372 => block == 88 && face == 1,
+        // Paintings and item frames hang on sides.
+        321 | 389 => side,
+        // Doors and beds go on top faces; signs and skulls on any but the
+        // bottom; ItemReed-style blocks and redstone on any face.
+        324 | 330 | 355 | 427..=431 => face == 1,
+        323 | 397 => face != 0,
+        331 | 338 | 354 | 356 | 379 | 380 | 390 | 404 => true,
+        // Minecarts need rails.
+        328 | 342 | 343 | 407 | 408 => rail,
+        // Bone meal on growing plants, cocoa beans on jungle log sides.
+        351 if item.damage == 15 => {
+            matches!(block, 2 | 6 | 31 | 59 | 104 | 105 | 141 | 142 | 175)
+        }
+        351 if item.damage == 3 => block == 17 && side,
+        // Leads tie to fences.
+        420 => matches!(block, 85 | 113 | 188..=192),
+        _ => false,
+    }
+}
+
+/// Items with a use duration: swords block, bows draw, food and drinks.
+fn has_use_action(item: &Item) -> bool {
+    is_sword(item.id)
+        || item.id == 261
+        || item.id == 335
+        || (item.id == 373 && item.damage & 16384 == 0)
+        || matches!(
+            item.id,
+            260 | 282
+                | 297
+                | 319
+                | 320
+                | 322
+                | 349
+                | 350
+                | 357
+                | 360
+                | 363..=367
+                | 391..=394
+                | 400
+                | 412
+                | 413
+                | 423
+                | 424
+        )
+}
+
 fn is_sword(id: i16) -> bool {
     matches!(id, 267 | 268 | 272 | 276 | 283)
 }
@@ -706,6 +787,106 @@ mod tests {
             false,
         );
         assert_eq!(peer.receive().unwrap(), [0x09, 0, 2]);
+    }
+
+    /// Minecraft.rightClickMouse: an unconsumed block or entity click is
+    /// followed by sendUseItem for whatever is held (eating a golden apple
+    /// at the floor or at a player); an armour stand's INTERACT_AT consumes
+    /// the click, so no INTERACT or use follows.
+    #[test]
+    fn right_click_uses_held_food_after_unconsumed_block_and_entity_clicks() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let mut world = world();
+        world.set_block(0, 3, 0, BlockState(1 << 4));
+        let mut player = Player::default();
+        player.set_position(0.5, 4.0, 0.5);
+        player.on_ground = true;
+        player.pitch = 90.0;
+        let mut inventory = Inventory::default();
+        inventory.player[36] = Some(Item {
+            id: 322,
+            count: 1,
+            damage: 0,
+            nbt: None,
+        });
+        let mut controller = Controller::default();
+        let mut use_once = |controller: &mut Controller,
+                            player: &mut Player,
+                            entities: &Entities,
+                            inventory: &mut Inventory| {
+            let mut input = Input {
+                attack: false,
+                using: true,
+                actions: VecDeque::from([Action::Use]),
+            };
+            controller
+                .tick(
+                    &mut input,
+                    player,
+                    &world,
+                    entities,
+                    inventory,
+                    0,
+                    &mut writer,
+                )
+                .unwrap();
+        };
+        // The floor: block placement, then the apple's use.
+        let none = Entities::default();
+        use_once(&mut controller, &mut player, &none, &mut inventory);
+        let place = peer.receive().unwrap();
+        assert_eq!(place[0], 0x08);
+        assert_ne!(place[1..9], [0xff; 8][..]);
+        let used = peer.receive().unwrap();
+        assert_eq!(used[0], 0x08);
+        assert_eq!(
+            used[1..9],
+            packet::place([-1, -1, -1], 255, [0.0; 3], None).unwrap()[1..9]
+        );
+        assert!(controller.using);
+        // A player ahead: INTERACT_AT, INTERACT, then the apple's use.
+        controller.using = false;
+        controller.right_delay = 0;
+        player.pitch = 0.0;
+        let mut entities = Entities::default();
+        entities.apply(EntityPacket::SpawnPlayer {
+            id: 7,
+            uuid: 0,
+            position: [16, 4 * 32, 2 * 32],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        use_once(&mut controller, &mut player, &entities, &mut inventory);
+        assert_eq!(peer.receive().unwrap()[..3], [0x02, 7, 2]);
+        assert_eq!(peer.receive().unwrap(), [0x02, 7, 0]);
+        assert_eq!(peer.receive().unwrap()[0], 0x08);
+        assert!(controller.using);
+        // An armour stand: INTERACT_AT only.
+        controller.using = false;
+        controller.right_delay = 0;
+        let mut stands = Entities::default();
+        stands.apply(EntityPacket::SpawnObject {
+            id: 9,
+            kind: 78,
+            position: [16, 4 * 32, 2 * 32],
+            pitch: 0,
+            yaw: 0,
+            data: 0,
+            velocity: None,
+        });
+        use_once(&mut controller, &mut player, &stands, &mut inventory);
+        assert_eq!(peer.receive().unwrap()[..3], [0x02, 9, 2]);
+        assert!(!controller.using);
+        // Nothing else was sent: the next packet is a fresh swing.
+        controller.swing(&mut writer).unwrap();
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
     }
 
     #[test]
