@@ -205,7 +205,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 111 scoped tests pass with `--include-ignored` (client 35, login CLI 2, assets 1, auth 6, physics 16,
+- 112 scoped tests pass with `--include-ignored` (client 36, login CLI 2, assets 1, auth 6, physics 16,
   protocol 35, world 16 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
