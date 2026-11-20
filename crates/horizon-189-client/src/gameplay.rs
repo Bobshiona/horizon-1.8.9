@@ -230,10 +230,9 @@ impl Controller {
                 }
                 Action::Drop { all } if !inventory.view.open && game_mode != 3 => {
                     // EntityPlayerSP.dropOneItem: DROP_ALL_ITEMS or DROP_ITEM
-                    // at the origin, facing down.
-                    if inventory.drop_held(all) {
-                        writer.send(&packet::dig(if all { 3 } else { 4 }, [0; 3], 0)?)?;
-                    }
+                    // at the origin, facing down, even with an empty hand. The
+                    // stack is not changed locally; the server's S2F follows.
+                    writer.send(&packet::dig(if all { 3 } else { 4 }, [0; 3], 0)?)?;
                 }
                 Action::Attack if !inventory.view.open && self.miss_delay == 0 && !self.using => {
                     self.swing(writer)?;
@@ -653,6 +652,69 @@ mod tests {
             }),
         });
         world
+    }
+    /// EntityPlayerSP.dropOneItem sends DROP_ITEM/DROP_ALL_ITEMS whatever is
+    /// held and changes nothing locally: the server's slot update follows.
+    #[test]
+    fn drop_key_sends_c07_without_predicting_the_stack() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let entities = Entities::default();
+        let world = world();
+        let mut player = Player::default();
+        player.set_position(0.5, 4.0, 0.5);
+        let mut inventory = Inventory::default();
+        let pearls = Some(Item {
+            id: 368,
+            count: 4,
+            damage: 0,
+            nbt: None,
+        });
+        inventory.player[36] = pearls.clone();
+        inventory.view.slots[36] = pearls.clone();
+        let mut controller = Controller::default();
+        for (selected, all, mode, status) in [
+            (0, false, 0, 4),
+            (0, true, 0, 3),
+            (1, false, 0, 4),
+            (0, false, 3, 4),
+        ] {
+            inventory.view.selected = selected;
+            let mut input = Input {
+                attack: false,
+                using: false,
+                actions: VecDeque::from([Action::Drop { all }]),
+            };
+            controller
+                .tick(
+                    &mut input,
+                    &mut player,
+                    &world,
+                    &entities,
+                    &mut inventory,
+                    mode,
+                    &mut writer,
+                )
+                .unwrap();
+            if mode == 3 {
+                break;
+            }
+            let mut packet = peer.receive().unwrap();
+            if packet[0] == 0x09 {
+                packet = peer.receive().unwrap();
+            }
+            assert_eq!(packet, packet::dig(status, [0; 3], 0).unwrap());
+            assert_eq!(inventory.player[36], pearls);
+            assert_eq!(inventory.view.slots[36], pearls);
+        }
+        // Spectators drop nothing: only the tick's own sync precedes the next.
+        controller.sync_slot(5, &mut writer).unwrap();
+        assert_eq!(peer.receive().unwrap(), [0x09, 0, 0]);
+        assert_eq!(peer.receive().unwrap(), [0x09, 0, 5]);
     }
     /// PlayerControllerMP.syncCurrentPlayItem: a selection only changes
     /// `currentItem`; C09 follows at the next updateController or just

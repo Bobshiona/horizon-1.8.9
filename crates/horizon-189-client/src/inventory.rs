@@ -502,15 +502,6 @@ impl Inventory {
     }
 
     /// `EntityPlayerSP.dropOneItem`'s local half: the held stack shrinks.
-    pub fn drop_held(&mut self, all: bool) -> bool {
-        let index = 36 + usize::from(self.view.selected);
-        let Some(mut item) = self.player.get(index).cloned().flatten() else {
-            return false;
-        };
-        item.count = if all { 0 } else { item.count - 1 };
-        self.player_slot(index, (item.count > 0).then_some(item));
-        true
-    }
     pub fn close(&mut self) -> Vec<u8> {
         let packet = interaction::close_window(self.view.window);
         self.view.open = false;
@@ -1277,11 +1268,5 @@ mod tests {
         assert_eq!(inv.view.cursor.as_ref().unwrap().count, 2);
         inv.click_mode(-999, 0, 0).unwrap();
         assert!(inv.view.cursor.is_none());
-        inv.close();
-        inv.player[36] = stack(332, 4);
-        assert!(inv.drop_held(false));
-        assert_eq!(inv.player[36].as_ref().unwrap().count, 3);
-        assert!(inv.drop_held(true));
-        assert!(inv.player[36].is_none());
     }
 }

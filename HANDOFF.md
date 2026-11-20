@@ -798,3 +798,17 @@ button; reconnect builds a new actor with fresh world, inventory, controller and
 start returns to the lost screen. Gate: 161 scoped tests (80 client, 2 login CLI, 1 assets, 6 auth,
 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks,
 ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 22. Drop key without local prediction
+
+Section 21's connection-key fix is `aa4f8fa7cb`.
+
+`EntityPlayerSP.dropOneItem` sends C07 DROP_ITEM (Q) or DROP_ALL_ITEMS (Control-Q) at the origin
+facing down and returns without touching the inventory; the hotbar changes when the server's S2F
+arrives. The client removed one item (or the stack) locally and sent nothing for an empty hand. On a
+server that cancels the drop and restores the stack unchanged, no S2F is sent, so the predicted
+removal left a phantom missing item. Now C07 is always sent outside spectator and the stack waits for
+the server. Regression `drop_key_sends_c07_without_predicting_the_stack` failed first (count 3, not 4).
+Gate: 162 scoped tests (81 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world),
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.
