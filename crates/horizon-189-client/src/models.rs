@@ -983,6 +983,7 @@ pub fn entities(
     camera: horizon_protocol_47::play::PositionLook,
     glint: &mut Vec<Vertex>,
     millis: u64,
+    angler: Option<&Angler>,
 ) {
     // Whose bobbers are out: they hold `fishing_rod_cast`.
     let anglers: Vec<i32> = entities
@@ -994,6 +995,17 @@ pub fn entities(
         if entity.invisible() {
             continue;
         }
+        let picked;
+        let entity = match pickup(entity, entities, partial, angler) {
+            Some(at) => {
+                let mut moved = entity.clone();
+                moved.previous = at;
+                moved.position = at;
+                picked = moved;
+                &picked
+            }
+            None => entity,
+        };
         let start = out.len();
         let binding = bindings.and_then(|b| b.get(&entity.uuid));
         match entity.kind {
@@ -1675,6 +1687,34 @@ fn armor_glint(out: &mut Vec<Vertex>, armor: &[Vertex], layer: u32, age: f32) {
     }
 }
 
+/// `EntityPickupFX`: over three ticks an item being collected moves from
+/// where it lay toward the collector's feet plus half a block, along the
+/// square of the progress. None when nothing is collecting it.
+fn pickup(
+    entity: &Entity,
+    entities: &[(i32, Entity)],
+    partial: f32,
+    angler: Option<&Angler>,
+) -> Option<[f64; 3]> {
+    let (collector, ticks) = entity.collector?;
+    let p = f64::from(partial);
+    let mut target = match angler.filter(|own| own.id == collector) {
+        Some(own) => [own.eye[0], own.eye[1] - 1.62, own.eye[2]],
+        None => {
+            let (_, other) = entities.iter().find(|(id, _)| *id == collector)?;
+            std::array::from_fn(|axis| {
+                other.previous[axis] + (other.position[axis] - other.previous[axis]) * p
+            })
+        }
+    };
+    target[1] += 0.5;
+    let f = ((f64::from(ticks) + p) / 3.0).min(1.0);
+    let f = f * f;
+    Some(std::array::from_fn(|axis| {
+        entity.position[axis] + (target[axis] - entity.position[axis]) * f
+    }))
+}
+
 /// The local player, for a line from their own fishing rod.
 pub struct Angler {
     pub id: i32,
@@ -2090,6 +2130,7 @@ mod tests {
             Default::default(),
             &mut Vec::new(),
             0,
+            None,
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().any(|v| v.layer == 1001));
@@ -2108,6 +2149,7 @@ mod tests {
             Default::default(),
             &mut Vec::new(),
             0,
+            None,
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().all(|v| v.layer != 1001));
@@ -2147,6 +2189,7 @@ mod tests {
                 Default::default(),
                 &mut Vec::new(),
                 0,
+                None,
             );
             assert!(out.iter().any(|v| v.layer == texture as u32));
             assert!(out.iter().flat_map(|v| v.position).all(f32::is_finite));
@@ -2167,6 +2210,7 @@ mod tests {
                     Default::default(),
                     &mut Vec::new(),
                     0,
+                    None,
                 );
                 assert!(out.iter().all(|v| v.layer != Texture::Wool as u32));
             }
@@ -2214,6 +2258,7 @@ mod tests {
             Default::default(),
             &mut Vec::new(),
             0,
+            None,
         );
         for layer in [Texture::Diamond1, Texture::Diamond2, Texture::DiamondSword] {
             assert!(vertices.iter().any(|v| v.layer == layer as u32));
@@ -2234,6 +2279,7 @@ mod tests {
             Default::default(),
             &mut Vec::new(),
             0,
+            None,
         );
         assert!(vertices.is_empty());
     }

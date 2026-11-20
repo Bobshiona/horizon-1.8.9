@@ -70,6 +70,9 @@ pub struct Entity {
     pub stuck: bool,
     /// S0E object data: a falling block's `id | meta << 12`, a shooter...
     pub data: i32,
+    /// S0D: who is picking this up and the ticks since (`EntityPickupFX`
+    /// runs three). The entity outlives its destroy packet until then.
+    pub collector: Option<(i32, u8)>,
 }
 
 fn solid(world: &crate::World, at: [f64; 3]) -> bool {
@@ -87,6 +90,9 @@ impl Entity {
         let Kind::Object(kind) = self.kind else {
             return;
         };
+        if self.collector.is_some() {
+            return;
+        }
         let step = |position: [f64; 3], motion: [f64; 3]| {
             [
                 position[0] + motion[0],
@@ -206,6 +212,7 @@ impl Entity {
             flags: 0,
             equipment: Default::default(),
             use_ticks: 0,
+            collector: None,
             swing: None,
             age: 0,
             hurt_time: 0,
@@ -447,6 +454,20 @@ impl Entities {
         for entity in self.map.values_mut() {
             entity.tick();
             entity.simulate(world);
+            if let Some((_, ticks)) = &mut entity.collector {
+                *ticks += 1;
+            }
+        }
+        self.map
+            .retain(|_, entity| entity.collector.is_none_or(|(_, ticks)| ticks < 3));
+    }
+
+    /// S0D `Collect Item`: the item, arrow or orb flies to its collector.
+    pub fn collect(&mut self, collected: i32, collector: i32) {
+        if let Some(entity) = self.map.get_mut(&collected)
+            && matches!(entity.kind, Kind::Object(2 | 60) | Kind::Orb)
+        {
+            entity.collector = Some((collector, 0));
         }
     }
 
@@ -541,7 +562,10 @@ impl Entities {
             }
             EntityPacket::Destroy(ids) => {
                 for id in ids {
-                    self.map.remove(&id);
+                    // A pickup in flight stays for its three ticks.
+                    if self.map.get(&id).is_some_and(|e| e.collector.is_none()) {
+                        self.map.remove(&id);
+                    }
                 }
             }
             EntityPacket::Move {
@@ -733,6 +757,31 @@ mod tests {
         assert!(!slim_skin(0));
         assert!(slim_skin(1));
         assert!(!slim_skin(1 | 1 << 64));
+    }
+
+    #[test]
+    fn collected_items_outlive_their_destroy_for_the_pickup_flight() {
+        let world = crate::World::default();
+        let mut entities = Entities::default();
+        entities.apply(EntityPacket::SpawnOrb {
+            id: 7,
+            position: [0, 64 * 32, 0],
+        });
+        entities.collect(7, 99);
+        entities.apply(EntityPacket::Destroy(vec![7]));
+        assert!(entities.get(7).is_some());
+        entities.tick(&world);
+        entities.tick(&world);
+        assert_eq!(entities.get(7).and_then(|e| e.collector), Some((99, 2)));
+        entities.tick(&world);
+        assert!(entities.get(7).is_none());
+        // Without a collector, a destroy removes at once.
+        entities.apply(EntityPacket::SpawnOrb {
+            id: 8,
+            position: [0, 64 * 32, 0],
+        });
+        entities.apply(EntityPacket::Destroy(vec![8]));
+        assert!(entities.get(8).is_none());
     }
 
     #[test]

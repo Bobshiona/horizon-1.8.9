@@ -847,6 +847,12 @@ fn run_actor(
                             entities.set_velocity(entity, [x, y, z]);
                         }
                     }
+                    play::Packet::Other { id: 0x0d, fields } => {
+                        let mut input = std::io::Cursor::new(fields);
+                        let collected = horizon_protocol_47::read_varint(&mut input)?;
+                        let collector = horizon_protocol_47::read_varint(&mut input)?;
+                        entities.collect(collected, collector);
+                    }
                     play::Packet::Other { id: 0x27, fields } => {
                         let [x, y, z] = fields::decode_explosion(fields)?;
                         player.add_velocity(x, y, z);

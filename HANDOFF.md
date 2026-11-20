@@ -145,7 +145,10 @@ projection. Camera effects follow `EntityRenderer`: hurt tilt, death roll and vi
 ground, not in water or blind) and enchanted hits, S0B animations 4/5 from the server, and arrow crit
 trails. Physics now tracks fall distance, distance walked and camera yaw/pitch for these effects. A
 capture checked dropped items, a stuck arrow, swelling TNT, a landed falling block, collected XP orbs and
-the held sword, bow, fishing rod and wool block. Known gaps: no item pickup animation and no explosion/smoke/block-break particles.
+the held sword, bow, fishing rod and wool block. S0D `Collect Item` marks an item, arrow or orb with its
+collector: it skips its destroy packet, flies along `EntityPickupFX`'s squared progress to the
+collector's feet plus half a block for three ticks, then goes. Known gaps: no explosion, smoke or
+block-break particles.
 
 Saved sign-in and release pacing checkpoint. A device-code sign-in now keeps Microsoft's refresh token
 in the macOS Keychain (generic password, service "Horizon 1.8.9 Microsoft sign-in", account = client
@@ -212,8 +215,8 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 113 scoped tests pass with `--include-ignored` (client 37, login CLI 2, assets 1, auth 6, physics 16,
-  protocol 35, world 16 — counts include the Metal readback and the owned-jar registry test).
+- 114 scoped tests pass with `--include-ignored` (client 37, login CLI 2, assets 1, auth 6, physics 16,
+  protocol 35, world 17 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata

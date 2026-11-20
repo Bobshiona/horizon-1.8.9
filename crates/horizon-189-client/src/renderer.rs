@@ -304,6 +304,7 @@ impl Renderer {
             self.pose,
             &mut glint,
             crate::models::millis(),
+            angler,
         );
         vertices.extend_from_slice(extra);
         through.clear();
