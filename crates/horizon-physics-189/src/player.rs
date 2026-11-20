@@ -143,6 +143,9 @@ pub struct Player {
     pub abilities_changed: bool,
     /// Highest Depth Strider level on worn armour.
     pub depth_strider: i32,
+    /// `Entity.width`/`height`: 0.6 by 1.8 until `EntityPlayer.onDeath`.
+    pub width: f32,
+    pub height: f32,
     /// `fallDistance`, for critical hits.
     pub fall_distance: f32,
     /// `distanceWalkedModified` and its previous tick, for view bobbing.
@@ -188,6 +191,8 @@ impl Default for Player {
             fly_speed: 0.05,
             abilities_changed: false,
             depth_strider: 0,
+            width: WIDTH,
+            height: HEIGHT,
             fall_distance: 0.0,
             distance_walked: 0.0,
             previous_distance_walked: 0.0,
@@ -319,11 +324,25 @@ impl Player {
     /// `Entity.setPosition`.
     pub fn set_position(&mut self, x: f64, y: f64, z: f64) {
         self.position = [x, y, z];
-        let half = f64::from(WIDTH / 2.0);
+        let half = f64::from(self.width / 2.0);
         self.bounds = bb(
             [x - half, y, z - half],
-            [x + half, y + f64::from(HEIGHT), z + half],
+            [x + half, y + f64::from(self.height), z + half],
         );
+    }
+
+    /// `EntityPlayer.onDeath` on the client (S19 status 3, a generic cause):
+    /// a 0.2 box recentred on the position, a small hop, and a drift away
+    /// from the yaw (`attackedAtYaw` stays zero on the client).
+    pub fn on_death(&mut self) {
+        self.width = 0.2;
+        self.height = 0.2;
+        let [x, y, z] = self.position;
+        self.set_position(x, y, z);
+        self.motion[1] = 0.10000000149011612;
+        let angle = self.yaw * std::f32::consts::PI / 180.0;
+        self.motion[0] = f64::from(-trig::cos(angle) * 0.1);
+        self.motion[2] = f64::from(-trig::sin(angle) * 0.1);
     }
 
     /// `NetHandlerPlayClient.handlePlayerPosLook`. Returns the position and
@@ -567,7 +586,7 @@ impl Player {
         }
         self.input_forward = forward;
         self.input_strafe = strafe;
-        let half_width = f64::from(WIDTH) * 0.35;
+        let half_width = f64::from(self.width) * 0.35;
         let base = lo(self.bounds)[1] + 0.5;
         let [x, _, z] = self.position;
         self.push_out_of_blocks(world, x - half_width, base, z + half_width);

@@ -728,6 +728,8 @@ fn depth_strider_follows_predicted_armor_clicks() {
 /// EntityLivingBase.onDeathUpdate: a dead player keeps moving (with no
 /// input) and reporting for twenty ticks, then `setDead` removes it from the
 /// world's update loop and its movement packets stop until respawn.
+/// EntityPlayer.onDeath (S19 status 3) shrinks it to 0.2 and gives it a hop
+/// and a drift away from its yaw.
 #[test]
 fn dead_player_moves_for_twenty_ticks_then_stops_reporting() {
     let mut actor = Actor::new();
@@ -735,19 +737,18 @@ fn dead_player_moves_for_twenty_ticks_then_stops_reporting() {
     actor.position();
     actor.grounded();
     actor.barrier(420);
-    let mut velocity = vec![0x12, 7];
-    for v in [0i16, 8000, 0] {
-        velocity.extend(v.to_be_bytes());
-    }
+    let mut status = vec![0x1a];
+    status.extend(7i32.to_be_bytes());
+    status.push(3);
     let mut health = vec![0x06];
     health.extend(0f32.to_be_bytes());
     health.push(20);
     health.extend(5f32.to_be_bytes());
-    actor.send(velocity);
+    actor.send(status);
     actor.send(health);
     actor.barrier(421);
     let mut moves = 0;
-    let mut highest = 0f64;
+    let (mut highest, mut west) = (0f64, f64::MAX);
     // Thirty ticks later, a keepalive closes the count.
     thread::sleep(Duration::from_millis(1500));
     actor.send(play::keep_alive(422));
@@ -760,11 +761,14 @@ fn dead_player_moves_for_twenty_ticks_then_stops_reporting() {
             moves += 1;
         }
         if matches!(packet.first(), Some(4 | 6)) {
+            west = west.min(f64::from_be_bytes(packet[1..9].try_into().unwrap()));
             highest = highest.max(f64::from_be_bytes(packet[9..17].try_into().unwrap()));
         }
     }
     assert_eq!(moves, 20);
-    assert!(highest > 5.0, "the dead body should still fly: {highest}");
+    // motionY 0.1 and motionX -cos(0) * 0.1 at yaw 0.
+    assert!(highest > 4.05, "the body should hop: {highest}");
+    assert!(west < 0.45, "the body should drift: {west}");
     // Respawn brings a new, reporting player.
     actor.send(respawn(0));
     actor.barrier(423);

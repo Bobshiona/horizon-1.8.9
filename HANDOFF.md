@@ -909,3 +909,21 @@ every case. Regression `use_starts_only_when_on_item_right_click_would` failed f
 hunger). Gate: 168 scoped tests (87 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol,
 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 29. Client-side `EntityPlayer.onDeath`
+
+Section 28's item-use fix is `ac74a03308`.
+
+S19 status 3 for the player's own entity runs `handleStatusUpdate(3)`, which calls
+`EntityPlayer.onDeath`: the box shrinks to 0.2 by 0.2 (recentred), motionY becomes 0.1 and
+motionX/Z drift 0.1 away from the yaw (`attackedAtYaw` is zero on the client). The server's dead
+player uses the same 0.2 box. Since section 25 the dead body moves for twenty ticks, and with the
+client still colliding as a 0.6 player while the server collided as 0.2, the reference gate's
+spectator-in-the-floor death occasionally logged "moved wrongly" (about one run in twenty). The
+physics player now has a size (`Player::width`/`height`, 0.6 by 1.8 until `on_death`) and the
+client applies `onDeath` on S19 status 3. Not ported: the client-side `dropAllItems` of the same
+method. Regressions `death_shrinks_the_box_and_starts_a_hop_and_drift` (physics) and the extended
+`dead_player_moves_for_twenty_ticks_then_stops_reporting` (no hop or drift before) failed first.
+Gate: 169 scoped tests (87 client, 2 login CLI, 1 assets, 6 auth, 17 physics, 38 protocol, 18 world),
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`, plus repeated reference runs without movement flags.

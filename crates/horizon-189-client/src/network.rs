@@ -905,6 +905,12 @@ fn run_actor(
                                 {
                                     hand.hurt();
                                 }
+                                // handleStatusUpdate(3) runs EntityPlayer.onDeath.
+                                entity_packets::EntityPacket::Status { id, status: 3 }
+                                    if *id == entity_id =>
+                                {
+                                    player.on_death();
+                                }
                                 entity_packets::EntityPacket::Animation {
                                     id,
                                     animation: animation @ (4 | 5),

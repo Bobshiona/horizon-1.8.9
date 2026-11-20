@@ -293,3 +293,29 @@ fn spectator_flight_crosses_solid_blocks_and_stays_flying() {
     );
     assert!(player.flying);
 }
+
+#[test]
+fn death_shrinks_the_box_and_starts_a_hop_and_drift() {
+    let floor = world(&[]);
+    let mut player = standing(&floor, 0.5, 4.0, 0.5);
+    player.yaw = 90.0;
+    player.on_death();
+    assert!((lo(player.bounds)[0] - 0.4).abs() < 1e-6);
+    assert!((hi(player.bounds)[1] - 4.2).abs() < 1e-6);
+    assert_eq!(player.motion[1], 0.10000000149011612);
+    assert!(player.motion[0].abs() < 1e-6);
+    assert!((player.motion[2] + 0.1).abs() < 1e-6);
+    // Next to a hole, a 0.6 player is still held by the edge; the 0.2 body
+    // is not.
+    let gap = world(&[([1, 3, 0], 0)]);
+    let mut alive = standing(&gap, 1.15, 4.0, 0.5);
+    let mut body = standing(&gap, 1.15, 4.0, 0.5);
+    body.on_death();
+    body.motion = [0.0; 3];
+    for _ in 0..10 {
+        alive.tick(&gap, Keys::default());
+        body.tick(&gap, Keys::default());
+    }
+    assert_eq!(alive.position[1], 4.0);
+    assert!(body.position[1] < 4.0, "{:?}", body.position);
+}
