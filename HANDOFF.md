@@ -271,8 +271,8 @@ Next (in order): live Hypixel PvP play test with the release build.
 1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
    block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
    includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
-   prediction and crafting/special-container rules. Player/chest shift-click, drag-split
-   and double-click collect now work in player/chest windows (Section 9). Adventure restrictions are enforced conservatively. An
+   prediction and crafting/special-container rules. Player/chest shift-click, drag-split and double-click
+   collect now work (Section 9). Adventure restrictions are enforced conservatively. An
    authenticated Hypixel lobby smoke passed; full release PvP and saved-login reuse remain unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
    skin/cape bindings are present, as are first-person hands and first-person item display transforms.
@@ -445,7 +445,7 @@ stone-brick floor. Release smoke: 500 frames, 25 columns, one offscreen frame. L
 `h189-fragments-*` prefix. Next: drag-split and double-click collect.
 
 
-### Inventory drag and collect checkpoint
+### Inventory drag and collect checkpoint — `8e04e6bc48`
 
 `Container.slotClick` mode 5/6 follows the owned 1.8.9 `xi` bytecode: original-count equal shares or
 one per slot, stack/armour/output validity, duplicate filtering, remainder, and two-pass collect with
