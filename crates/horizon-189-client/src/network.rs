@@ -1165,9 +1165,18 @@ fn run_actor(
                 )
             };
             if vitals.health <= 0.0 {
-                input
-                    .actions
-                    .retain(|a| matches!(a, crate::gameplay::Action::Respawn));
+                // GuiContainer.updateScreen closes an open screen (C0D) for a
+                // dead player; GuiGameOver only appears once none is open.
+                if inventory.view.open {
+                    input.actions.clear();
+                    input
+                        .actions
+                        .push_back(crate::gameplay::Action::CloseInventory);
+                } else {
+                    input
+                        .actions
+                        .retain(|a| matches!(a, crate::gameplay::Action::Respawn));
+                }
                 input.attack = false;
                 input.using = false;
             }

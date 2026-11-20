@@ -589,3 +589,55 @@ fn mid_session_join_starts_a_fresh_controller_and_inventory_without_c09() {
         assert_ne!(packet.first(), Some(&0x09));
     }
 }
+
+#[test]
+fn dying_with_a_container_open_closes_it_like_gui_container_update_screen() {
+    let health = |value: f32| {
+        let mut p = vec![0x06];
+        p.extend(value.to_be_bytes());
+        p.push(20);
+        p.extend(5f32.to_be_bytes());
+        p
+    };
+    let mut actor = Actor::new();
+    actor.join();
+    actor.position();
+    actor.grounded();
+    let mut open = vec![0x2d, 3];
+    write_string(&mut open, "minecraft:chest", 32).unwrap();
+    write_string(&mut open, r#"{"text":"Shop"}"#, 32767).unwrap();
+    open.push(27);
+    actor.send(open);
+    actor.barrier(400);
+    actor.grounded();
+    assert!(actor.shared.lock().unwrap().inventory.open);
+    // GuiContainer.updateScreen: a dead player closes the screen (C0D) on
+    // the next tick, before the death screen can replace it.
+    actor.send(health(0.0));
+    assert_eq!(actor.next(0x0d), vec![0x0d, 3]);
+    actor.barrier(401);
+    {
+        let state = actor.shared.lock().unwrap();
+        assert!(!state.inventory.open);
+        assert_eq!(state.inventory.window, 0);
+    }
+    for _ in 0..3 {
+        let packet = actor.peer.receive().unwrap();
+        assert_ne!(packet.first(), Some(&0x0d));
+    }
+    // The player's own inventory (window 0) closes the same way.
+    actor.send(respawn(0));
+    actor.barrier(402);
+    actor.position();
+    actor.grounded();
+    actor
+        .shared
+        .lock()
+        .unwrap()
+        .input
+        .actions
+        .push_back(crate::gameplay::Action::OpenInventory);
+    assert_eq!(actor.next(0x16), vec![0x16, 2]);
+    actor.send(health(0.0));
+    assert_eq!(actor.next(0x0d), vec![0x0d, 0]);
+}

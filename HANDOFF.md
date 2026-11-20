@@ -747,3 +747,17 @@ is followed in the same tick by the walking update's sprint-key re-sprint, as va
 drained while an item is in use. Gate: 158 scoped tests (77 client, 2 login CLI, 1 assets, 6 auth,
 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks,
 ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 19. Death with a screen open
+
+Section 18's transaction fix is `0262333bf7`.
+
+`GuiContainer.updateScreen` calls `EntityPlayerSP.closeScreen` (C0D with the open window id, cursor
+cleared) once the player is not alive, and `Minecraft.runTick` shows `GuiGameOver` only after no screen
+is open. Before, dying with a chest or the player's own inventory open sent no C0D: the container stayed
+open (hidden) under the death screen and the server kept it open until respawn. Now the first dead tick
+with a container open sends C0D and closes it locally; the respawn button still waits for that tick.
+Regression `dying_with_a_container_open_closes_it_like_gui_container_update_screen` failed first (no C0D).
+Gate: 159 scoped tests (78 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world),
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.
