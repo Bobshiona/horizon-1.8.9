@@ -549,6 +549,8 @@ fn run_actor(
     // EntityLivingBase.deathTime: at 20 the dead player is set dead and no
     // longer updated, so it stops moving and reporting until respawn.
     let mut death_time = 0u32;
+    // GuiDownloadTerrain's tick count while it is open.
+    let mut terrain: Option<u32> = None;
     let tick = Duration::from_millis(50);
     let mut next_tick = Instant::now() + tick;
     let mut reports = 0u64;
@@ -586,6 +588,7 @@ fn run_actor(
                             state.world_epoch = state.world_epoch.wrapping_add(1);
                         }
                         entity_id = join.entity_id;
+                        terrain = Some(0);
                         game_mode = apply_game_mode(
                             &mut player,
                             &mut capabilities,
@@ -618,6 +621,8 @@ fn run_actor(
                             player.pitch = state.pitch;
                         }
                         player.teleport(location.position, location.yaw, location.pitch, relative);
+                        // The first S08 closes GuiDownloadTerrain.
+                        terrain = None;
                         let pose = PositionLook {
                             position: player.position,
                             yaw: player.yaw,
@@ -757,6 +762,7 @@ fn run_actor(
                         hand = crate::hand::Tracked::default();
                         sky_light = Some(respawn.dimension == 0);
                         if world_changed {
+                            terrain = Some(0);
                             let mut world = write(world)?;
                             let keys: Vec<_> = world.columns().map(|(key, _)| key).collect();
                             *world = World::default();
@@ -1173,6 +1179,13 @@ fn run_actor(
         // Vanilla's timer executes at most ten accumulated client ticks.
         let world_view = read(world)?;
         for _ in 0..due.min(10) {
+            // GuiDownloadTerrain.updateScreen: C00 with key 0 every second.
+            if let Some(progress) = &mut terrain {
+                *progress += 1;
+                if progress.is_multiple_of(20) {
+                    writer.send(&play::keep_alive(0))?;
+                }
+            }
             if !positioned || !player.chunk_loaded(&world_view) {
                 continue;
             }

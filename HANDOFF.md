@@ -974,3 +974,16 @@ so this path is rare. Regression `mid_session_join_keeps_the_player_but_starts_a
 (replacing the section 15 test) failed first (old chunks kept). Gate: 171 scoped tests (88 client,
 2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world), strict Clippy/fmt, layers,
 public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 33. Downloading-terrain keepalives
+
+Section 32's join fix is `3da7773e8c`.
+
+`handleJoinGame`, and `handleRespawn` when the dimension changes, open `GuiDownloadTerrain`, which
+`handlePlayerPosLook` closes on the first S08. While open, its `updateScreen` sends a C00 keepalive
+with key 0 every twenty ticks. The client sent none. The actor now counts those ticks and sends them;
+a same-dimension respawn opens no screen. The network test barrier skips these unsolicited replies.
+Regression `downloading_terrain_sends_keepalive_zero_each_second` failed first (no keepalive).
+Gate: 172 scoped tests (89 client, 2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world),
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.

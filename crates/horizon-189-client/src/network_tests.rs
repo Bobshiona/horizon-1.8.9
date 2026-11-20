@@ -96,7 +96,12 @@ impl Actor {
     }
     fn barrier(&mut self, nonce: i32) {
         self.send(play::keep_alive(nonce));
-        assert_eq!(self.next(0), play::keep_alive(nonce));
+        // GuiDownloadTerrain's own keepalive(0) packets are not replies.
+        let mut reply = self.next(0);
+        while reply == play::keep_alive(0) && nonce != 0 {
+            reply = self.next(0);
+        }
+        assert_eq!(reply, play::keep_alive(nonce));
     }
     fn join(&mut self) {
         let mut join = vec![1];
@@ -770,4 +775,36 @@ fn dead_player_moves_for_twenty_ticks_then_stops_reporting() {
     actor.barrier(423);
     actor.position();
     actor.grounded();
+}
+
+/// GuiDownloadTerrain, open from Join Game (and a dimension-changing
+/// Respawn) until the first S08, sends a C00 keepalive with key 0 every
+/// twenty ticks.
+#[test]
+fn downloading_terrain_sends_keepalive_zero_each_second() {
+    let mut actor = Actor::new();
+    actor.join();
+    thread::sleep(Duration::from_millis(1150));
+    actor.send(play::keep_alive(430));
+    let mut zeros = 0;
+    loop {
+        let packet = actor.peer.receive().unwrap();
+        if packet == play::keep_alive(430) {
+            break;
+        }
+        zeros += usize::from(packet == play::keep_alive(0));
+    }
+    assert_eq!(zeros, 1);
+    actor.position();
+    actor.grounded();
+    // Positioned: the screen is closed and no more zero keepalives follow.
+    thread::sleep(Duration::from_millis(1100));
+    actor.send(play::keep_alive(431));
+    loop {
+        let packet = actor.peer.receive().unwrap();
+        assert_ne!(packet, play::keep_alive(0));
+        if packet == play::keep_alive(431) {
+            break;
+        }
+    }
 }
