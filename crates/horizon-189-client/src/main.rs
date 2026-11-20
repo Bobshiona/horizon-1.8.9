@@ -544,7 +544,11 @@ impl ApplicationHandler for App {
                         {
                             use gameplay::Action;
                             let action = if state.vitals.health <= 0.0 {
-                                if matches!(key, KeyCode::Enter | KeyCode::NumpadEnter) {
+                                // Enter stands in for the Respawn button, which
+                                // GuiGameOver enables only after twenty ticks.
+                                if matches!(key, KeyCode::Enter | KeyCode::NumpadEnter)
+                                    && self.hud.respawn_ready(self.tick())
+                                {
                                     Some(Action::Respawn)
                                 } else {
                                     None

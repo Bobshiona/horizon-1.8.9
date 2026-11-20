@@ -201,14 +201,18 @@ impl Hud {
     }
 
     /// The death-screen button under the mouse, once buttons are enabled.
+    /// GuiGameOver enables its buttons twenty ticks after it opens.
+    pub fn respawn_ready(&self, tick: f64) -> bool {
+        self.died_at.is_some_and(|died_at| tick - died_at >= 20.0)
+    }
+
     pub fn death_button_at(
         &self,
         layout: Layout,
         mouse: (f32, f32),
         tick: f64,
     ) -> Option<DeathButton> {
-        let since = tick - self.died_at?;
-        if since < 20.0 {
+        if !self.respawn_ready(tick) {
             return None;
         }
         Self::death_buttons(layout)
@@ -1051,4 +1055,19 @@ pub fn pvp_overlay(
         .replacen("%s", &metrics.right.to_string(), 1);
     canvas.text(&fps, 3.0, 3.0, 0xFFFF_FFFF, true);
     canvas.text(&cps, 3.0, 13.0, 0xFFFF_FFFF, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn respawn_waits_for_the_death_screen_buttons() {
+        let mut hud = Hud::default();
+        assert!(!hud.respawn_ready(100.0));
+        hud.died_at = Some(100.0);
+        assert!(!hud.respawn_ready(100.0));
+        assert!(!hud.respawn_ready(119.9));
+        assert!(hud.respawn_ready(120.0));
+    }
 }

@@ -863,3 +863,15 @@ The S08 reply, keepalives, held-item sync and the death-time C0D are unaffected.
 Gate: 165 scoped tests (84 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world),
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 26. Respawn key waits for the death screen
+
+Section 25's dead-player fix is `b884c336b4`.
+
+`GuiGameOver` enables its Respawn and Title-screen buttons twenty ticks after it opens, so a click
+already in flight at the moment of death cannot respawn. The mouse path honoured that delay, but the
+Enter shortcut (not in vanilla) sent C16 immediately, so Enter pressed to send chat as the player
+died respawned at once. Enter now waits for the same delay through `Hud::respawn_ready`. Regression
+`respawn_waits_for_the_death_screen_buttons` failed first. Gate: 166 scoped tests (85 client, 2 login
+CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and
+diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
