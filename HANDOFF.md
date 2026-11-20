@@ -227,8 +227,8 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 137 scoped tests pass with `--include-ignored` (client 58, login CLI 2, assets 1, auth 6, physics 16,
-  protocol 37, world 17 — counts include the Metal readback and the owned-jar registry test).
+- 141 scoped tests pass with `--include-ignored` (client 60, login CLI 2, assets 1, auth 6, physics 16,
+  protocol 38, world 18 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
 - Registry: `variants=2557 texture_layers=361 model_failures=0 inexact_states=12` (the 12 are rail metadata
@@ -325,7 +325,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest recorded gate outcomes are 137 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 141 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -523,3 +523,44 @@ Next: user release sign-in/relaunch and Lobby → Duels → BedWars testing from
 any returned gameplay/packet/inventory failure before widening public play. If that passes, repeat complete
 games and available Retina/60/120/240 Hz focus/resize checks; address demonstrated regressions and
 release blockers before the November 30 freeze. No new live login or real-account refresh was attempted.
+
+
+## 11. Respawn lifecycle and native validation checkpoint — `5ce448bdf3`
+
+A real actor/socket regression first failed on the previous code: same-dimension S07 discarded its only
+loaded column. The owned 1.8.9 `bcy.a(he)` bytecode creates a WorldClient only when the dimension changes;
+`ave.a(int)` recreates the local player every time, and `bda.b(wn)` initializes its yaw to -180 degrees.
+The corrected actor preserves chunks/nearby entities on same-dimension respawn, recreates player physics,
+potions, attributes, controller, reporter and hand state, and applies new game-mode capabilities. On a
+dimension change it clears chunks, world entities, cracks and pending old-world effects; connection-level
+player profiles survive so new player spawns retain known skin properties. Player/world epochs cancel
+stale inventory gestures/CPS state and old-world particle/collision caches in the window.
+
+S07 now has a bounded complete decoder, including its signed dimension and level-type string. S08
+coordinates outside the block simulation's range are rejected before an acknowledgement is emitted.
+The actor tests exercise actual framed outgoing bytes: settings before brand, keep-alive echo,
+immediate C06 ground=false, retained same-world terrain/entities, ordinary jump height after an old
+Jump Boost effect, new-player relative rotation, invalid-position rejection and dimension cleanup.
+A separate world regression checks that a player spawned after a dimension change retains its profile,
+while a fresh connection clears it.
+
+Verified full gate: 141 scoped tests (60 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol,
+18 world), strict scoped Clippy/fmt, layers, public-tree/privacy, native ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`. The explicit `HORIZON_KEYCHAIN_TEST=1` throwaway-service test also
+passed its save/replace/read/delete cycle; it does not access or validate the real account's refresh.
+The previous separate 209 input tests remain recorded; input crate source is unchanged.
+
+Native macOS validation used a temporary app bundle containing a copy of the Rust executable, outside
+git, so accessibility tools could select its window. Maximize/restore was visually checked at drawable
+960x600 → 3440x1378 → 960x600, backing scale 1. Focus false/true events were logged and rendering/HUD
+recovery was observed. The completed local run rendered 12,000 frames over 52,424 ms, 25 columns, one
+offscreen frame; its final 960x600 capture was inspected. Frame statistics cover the last 1,024 samples,
+not every resize frame. No Retina/backing-scale-2 or complete 60/120/240 Hz matrix is claimed.
+The first unbundled attempt exited normally before its scheduled capture and is not counted as a
+completed capture gate. All app/server state, captures and logs remain private outside git, under the
+`h189-lifecycle-*` prefixes; the completed image is `h189-lifecycle-ui-app/capture.png`.
+
+Next: actual account sign-in/relaunch and complete Lobby → Duels → BedWars sessions from the test plan.
+Use returned failures to choose the next P0 fix. Remaining manual evidence includes successful real-token
+refresh, shops/knockback under live latency, complete matches and the remaining display/backing-scale
+matrix. Deferred features remain deferred; this pass made no public-server connection.
