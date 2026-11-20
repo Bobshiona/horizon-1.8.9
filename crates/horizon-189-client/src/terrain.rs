@@ -80,6 +80,20 @@ pub struct Registry {
     inventory: HashMap<(u16, u8), u32>,
 }
 
+/// The ten crack stages a block shows while it is broken.
+pub const DESTROY_STAGES: [&str; 10] = [
+    "destroy_stage_0",
+    "destroy_stage_1",
+    "destroy_stage_2",
+    "destroy_stage_3",
+    "destroy_stage_4",
+    "destroy_stage_5",
+    "destroy_stage_6",
+    "destroy_stage_7",
+    "destroy_stage_8",
+    "destroy_stage_9",
+];
+
 /// Item models that parent their own inventory block model rather than a
 /// blockstate variant.
 const INVENTORY_MODELS: [((u16, u8), &str); 16] = [
@@ -478,6 +492,23 @@ impl Registry {
                 layer,
                 sprite_edges(&entity_textures[layer as usize].rgba, size),
             );
+        }
+        // `RenderGlobal.destroyBlockIcons`, drawn over blocks being broken.
+        for name in DESTROY_STAGES {
+            if let Ok(image) = assets.texture(&format!("minecraft:blocks/{name}")) {
+                let mut canvas = vec![0u8; size * size * 4];
+                for y in 0..16usize.min(image.height as usize) {
+                    let start = y * image.width as usize * 4;
+                    canvas[y * size * 4..y * size * 4 + 64]
+                        .copy_from_slice(&image.rgba[start..start + 64]);
+                }
+                overlays.insert(name, entity_textures.len() as u32);
+                entity_textures.push(Texture {
+                    width: size as u32,
+                    height: size as u32,
+                    rgba: canvas,
+                });
+            }
         }
         // `RenderItem.RES_ITEM_GLINT`, sampled with wrapping by the glint pass.
         if let Ok(image) = assets.texture("minecraft:misc/enchanted_item_glint") {

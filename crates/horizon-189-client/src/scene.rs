@@ -38,14 +38,14 @@ struct GpuColumn {
 pub struct Scene {
     pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
-    /// In gamma space after the world: the enchantment glint over entity
+    /// In gamma space after the world: block cracks, the enchantment glint over entity
     /// geometry it matches in depth, `renderLivingLabel` without and with a
     /// depth test, and `RenderFish` lines.
-    label_pipelines: [wgpu::RenderPipeline; 4],
+    label_pipelines: [wgpu::RenderPipeline; 5],
     labels: wgpu::Buffer,
     labels_capacity: u64,
     /// Vertex counts for each of `label_pipelines`, stored in that order.
-    label_counts: [u32; 4],
+    label_counts: [u32; 5],
     hand_glint: wgpu::RenderPipeline,
     /// First-person vertices, then their glint.
     hand_glint_count: u32,
@@ -309,7 +309,8 @@ impl Scene {
                             topology: wgpu::PrimitiveTopology,
                             blend: wgpu::BlendState,
                             entry: &str,
-                            format: wgpu::TextureFormat| {
+                            format: wgpu::TextureFormat,
+                            bias: wgpu::DepthBiasState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -332,7 +333,7 @@ impl Scene {
                     depth_write_enabled: Some(false),
                     depth_compare: Some(compare),
                     stencil: Default::default(),
-                    bias: Default::default(),
+                    bias,
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -352,6 +353,32 @@ impl Scene {
         let plain = config.format.remove_srgb_suffix();
         let triangles = wgpu::PrimitiveTopology::TriangleList;
         let label_pipelines = [
+            // `drawBlockDamageTexture`: polygon offset toward the eye and
+            // `glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)`.
+            make_overlay(
+                "Block cracks",
+                wgpu::CompareFunction::GreaterEqual,
+                triangles,
+                wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Dst,
+                        dst_factor: wgpu::BlendFactor::Src,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Zero,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                },
+                "crack_fragment",
+                plain,
+                wgpu::DepthBiasState {
+                    constant: 3,
+                    slope_scale: 3.0,
+                    clamp: 0.0,
+                },
+            ),
             make_overlay(
                 "Enchantment glint",
                 wgpu::CompareFunction::Equal,
@@ -359,6 +386,7 @@ impl Scene {
                 additive,
                 "glint_gamma",
                 plain,
+                Default::default(),
             ),
             make_overlay(
                 "See-through labels",
@@ -367,6 +395,7 @@ impl Scene {
                 wgpu::BlendState::ALPHA_BLENDING,
                 "label_fragment",
                 plain,
+                Default::default(),
             ),
             make_overlay(
                 "Depth-tested labels",
@@ -375,6 +404,7 @@ impl Scene {
                 wgpu::BlendState::ALPHA_BLENDING,
                 "label_fragment",
                 plain,
+                Default::default(),
             ),
             make_overlay(
                 "Fishing lines",
@@ -383,6 +413,7 @@ impl Scene {
                 wgpu::BlendState::ALPHA_BLENDING,
                 "label_fragment",
                 plain,
+                Default::default(),
             ),
         ];
         // The hand pass draws to the sRGB view, so its glint outputs linear.
@@ -393,6 +424,7 @@ impl Scene {
             additive,
             "glint_linear",
             config.format,
+            Default::default(),
         );
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -544,7 +576,7 @@ impl Scene {
             label_pipelines,
             labels,
             labels_capacity,
-            label_counts: [0; 4],
+            label_counts: [0; 5],
             hand_glint,
             hand_glint_count: 0,
             fixture: None,
@@ -724,7 +756,7 @@ impl Scene {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        lists: [&[Vertex]; 4],
+        lists: [&[Vertex]; 5],
     ) -> Result<(), Box<dyn Error>> {
         let size: usize = lists.iter().map(|list| std::mem::size_of_val(*list)).sum();
         if size as u64 > self.labels_capacity {

@@ -87,3 +87,14 @@ fn glint_gamma(in: VertexOut) -> @location(0) vec4<f32> {
 fn glint_linear(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(srgb_to_linear(glint(in)), 1.0);
 }
+
+// `drawBlockDamageTexture`: the crack texture, alpha-tested at 0.1, in
+// gamma space for `GL_DST_COLOR, GL_SRC_COLOR` (twice texel times target).
+@fragment
+fn crack_fragment(in: VertexOut) -> @location(0) vec4<f32> {
+    let sampled = textureSampleLevel(block_texture, block_sampler, in.uv, in.layer, 0.0);
+    if sampled.a <= 0.1 {
+        discard;
+    }
+    return vec4<f32>(linear_to_srgb(sampled.rgb), 1.0);
+}

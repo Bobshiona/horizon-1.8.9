@@ -109,6 +109,7 @@ struct Snapshot {
     effects: Vec<(i32, bool)>,
     own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
     entity_id: i32,
+    cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
 }
 
 impl App {
@@ -715,6 +716,7 @@ impl ApplicationHandler for App {
                         effects: std::mem::take(&mut s.effects),
                         own: s.own.clone(),
                         entity_id: s.entity_id,
+                        cracks: s.cracks.clone(),
                     })
                 });
                 let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
@@ -829,6 +831,7 @@ impl ApplicationHandler for App {
                             own_name,
                             own,
                             angler.as_ref(),
+                            snapshot.as_ref().map_or(&[][..], |s| &s.cracks),
                             &extra,
                         ) {
                             self.fail(event_loop, error);

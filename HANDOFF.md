@@ -211,6 +211,12 @@ alpha and outputs its added colour with zero alpha. Potions mask by the bottle, 
 piece. A capture checked an enchanted chestplate on another player, the held enchanted sword and the
 hotbar. Known gap: the atlas size is assumed, so the stripe spacing is approximate.
 
+Block cracks follow `RenderGlobal.drawBlockDamageTexture`: the local player's stage is
+`(int)(curBlockDamageMP * 10) - 1`, other players' come from S25 (kept by breaker, cleared outside 0-9),
+and each draws the block's model with `destroy_stage_N` in the overlay pass, alpha-tested at 0.1,
+blended `GL_DST_COLOR, GL_SRC_COLOR` in gamma space and pushed toward the eye by a depth bias. A capture
+checked two injected S25 stages on the floor and a wall.
+
 Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
@@ -259,7 +265,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
    block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
    includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
-   prediction/crack effects, crafting/shift-click
+   prediction and break particles, crafting/shift-click
    and special-container rules. Adventure restrictions are enforced conservatively. Live Hypixel remains
    unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous

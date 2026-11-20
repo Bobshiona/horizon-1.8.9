@@ -94,6 +94,9 @@ pub struct Shared {
     pub own: Option<(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
     /// The local player's entity ID from the last join.
     pub entity_id: i32,
+    /// Blocks showing cracks: position, state and stage 0 to 9 (S25 from
+    /// others, `curBlockDamageMP` for the local player).
+    pub cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
 }
 
 /// A server message for the window: chat, the action bar or completions.
@@ -499,6 +502,8 @@ fn run_actor(
         walk_speed: 0.1,
     };
     let mut entity_id = 0;
+    // Other players' S25 crack stages, by breaker.
+    let mut breaking: std::collections::HashMap<i32, ([i32; 3], u8)> = Default::default();
     let mut positioned = false;
     let mut sky_light = None;
     let mut reporter = MovementReporter::default();
@@ -847,6 +852,26 @@ fn run_actor(
                             entities.set_velocity(entity, [x, y, z]);
                         }
                     }
+                    play::Packet::Other { id: 0x25, fields } => {
+                        // S25 Block Break Animation: breaker, position, stage.
+                        let mut input = std::io::Cursor::new(fields);
+                        let breaker = horizon_protocol_47::read_varint(&mut input)?;
+                        let mut packed = [0u8; 8];
+                        std::io::Read::read_exact(&mut input, &mut packed)?;
+                        let mut stage = [0u8; 1];
+                        std::io::Read::read_exact(&mut input, &mut stage)?;
+                        let packed = i64::from_be_bytes(packed);
+                        let at = [
+                            (packed >> 38) as i32,
+                            ((packed << 26) >> 52) as i32,
+                            ((packed << 38) >> 38) as i32,
+                        ];
+                        if stage[0] < 10 {
+                            breaking.insert(breaker, (at, stage[0]));
+                        } else {
+                            breaking.remove(&breaker);
+                        }
+                    }
                     play::Packet::Other { id: 0x0d, fields } => {
                         let mut input = std::io::Cursor::new(fields);
                         let collected = horizon_protocol_47::read_varint(&mut input)?;
@@ -1091,6 +1116,20 @@ fn run_actor(
                     vitals.health > 0.0,
                 );
                 state.hand = hand.clone();
+                // `RenderGlobal.drawBlockDamageTexture`'s list, own dig last.
+                let own = controller.dig_progress().and_then(|(at, damage)| {
+                    let stage = (damage * 10.0) as i32 - 1;
+                    (0..10).contains(&stage).then_some((at, stage as u8))
+                });
+                state.cracks.clear();
+                for (at, stage) in breaking.values().copied().chain(own) {
+                    if let Some(block) = world_view
+                        .block(at[0], at[1], at[2])
+                        .filter(|block| block.block_id() != 0)
+                    {
+                        state.cracks.push((at, block, stage));
+                    }
+                }
                 if state.effects.len() < 64 {
                     state.effects.append(&mut controller.effects);
                 }
@@ -1106,7 +1145,7 @@ fn run_actor(
                     player.position[2],
                     player.sprinting,
                     player.flying,
-                    entities.len()
+                    entities.len(),
                 );
             }
         }

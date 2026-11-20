@@ -84,6 +84,13 @@ pub struct Controller {
 }
 
 impl Controller {
+    /// The block being dug and `curBlockDamageMP`, 0 to 1.
+    pub fn dig_progress(&self) -> Option<([i32; 3], f32)> {
+        self.digging
+            .as_ref()
+            .map(|(at, _, damage, _)| (*at, *damage))
+    }
+
     fn swing(&mut self, writer: &mut PacketWriter<impl Read + Write>) -> io::Result<()> {
         if self.swing.is_none_or(|v| v >= 3) {
             self.swing = Some(0);

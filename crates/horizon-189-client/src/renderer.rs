@@ -25,7 +25,7 @@ pub struct Renderer {
     pose: PositionLook,
     entity_vertices: Vec<crate::terrain::Vertex>,
     /// See-through and depth-tested label vertices, reused between frames.
-    label_vertices: [Vec<crate::terrain::Vertex>; 4],
+    label_vertices: [Vec<crate::terrain::Vertex>; 5],
     ui: Option<crate::ui::Pass>,
     pub layout: crate::ui::Layout,
     gui_scale: u32,
@@ -230,6 +230,7 @@ impl Renderer {
         own_name: &str,
         own: Option<&(u128, Arc<horizon_protocol_47::player_list::Profile>)>,
         angler: Option<&crate::models::Angler>,
+        cracks: &[([i32; 3], horizon_world_189::BlockState, u8)],
         extra: &[crate::terrain::Vertex],
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
@@ -291,9 +292,30 @@ impl Renderer {
         }
         let mut vertices = std::mem::take(&mut self.entity_vertices);
         vertices.clear();
-        let [mut glint, mut through, mut tested, mut lines] =
+        let [mut crack, mut glint, mut through, mut tested, mut lines] =
             std::mem::take(&mut self.label_vertices);
+        crack.clear();
         glint.clear();
+        if let Some(registry) = &self.registry {
+            let origin = scene.origin();
+            for &(at, state, stage) in cracks {
+                let Some(layer) = registry.sprite(crate::terrain::DESTROY_STAGES[stage as usize])
+                else {
+                    continue;
+                };
+                let centre = glam::Vec3::new(
+                    (i64::from(at[0]) - origin[0]) as f32 + 0.5,
+                    (i64::from(at[1]) - origin[1]) as f32 + 0.5,
+                    (i64::from(at[2]) - origin[2]) as f32 + 0.5,
+                );
+                let start = crack.len();
+                registry.block_model(&mut crack, state, glam::Mat4::from_translation(centre), 1.0);
+                for vertex in &mut crack[start..] {
+                    vertex.layer = layer;
+                    vertex.color = [1.0; 3];
+                }
+            }
+        }
         crate::models::entities(
             &mut vertices,
             entities,
@@ -330,11 +352,11 @@ impl Renderer {
                 scene.set_labels(
                     &self.device,
                     &self.queue,
-                    [&glint, &through, &tested, &lines],
+                    [&crack, &glint, &through, &tested, &lines],
                 )
             });
         self.entity_vertices = vertices;
-        self.label_vertices = [glint, through, tested, lines];
+        self.label_vertices = [crack, glint, through, tested, lines];
         result
     }
 
