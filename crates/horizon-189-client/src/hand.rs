@@ -257,7 +257,14 @@ pub(crate) fn flat_block(id: i16) -> bool {
 }
 
 /// The held stack after its `FIRST_PERSON` camera transform.
-fn held_item(out: &mut Vec<Vertex>, m: Mat4, item: &Item, registry: &Registry, used: Option<f32>) {
+fn held_item(
+    out: &mut Vec<Vertex>,
+    m: Mat4,
+    item: &Item,
+    registry: &Registry,
+    used: Option<f32>,
+    cast: bool,
+) {
     if (1..198).contains(&item.id) && !flat_block(item.id) {
         // `ItemRenderer.renderItem` doubles 3D models, block item models
         // carry no first-person transform except these few, and
@@ -290,17 +297,19 @@ fn held_item(out: &mut Vec<Vertex>, m: Mat4, item: &Item, registry: &Registry, u
         * rotate(25.0, Z)
         * Mat4::from_scale(Vec3::splat(1.7 * 0.5))
         * Mat4::from_translation(Vec3::splat(-0.5));
-    generated_item(out, m, item, registry, used);
+    generated_item(out, m, item, registry, used, cast);
 }
 
-/// A generated item model's layers (bow pulling, potion and leather tints)
-/// in model space, 0 to 1 on each axis.
+/// A generated item model's layers (bow pulling, the cast fishing rod,
+/// potion and leather tints) in model space, 0 to 1 on each axis. `cast`:
+/// the holder's bobber is out (`RenderItem` swaps in `fishing_rod_cast`).
 fn generated_item(
     out: &mut Vec<Vertex>,
     m: Mat4,
     item: &Item,
     registry: &Registry,
     used: Option<f32>,
+    cast: bool,
 ) {
     let sprite = |name| registry.sprite(name);
     let tint = |color: u32| {
@@ -308,6 +317,7 @@ fn generated_item(
         [r, g, b]
     };
     let layers: Vec<(Option<u32>, [f32; 3])> = match item.id {
+        346 if cast => vec![(sprite("fishing_rod_cast"), [1.0; 3])],
         261 => {
             let pulling = used.map(|t| t as u32).and_then(|t| match t {
                 18.. => sprite("bow_pulling_2"),
@@ -420,6 +430,7 @@ pub(crate) fn third_person(
     registry: &Registry,
     sneaking: bool,
     used: Option<f32>,
+    cast: bool,
 ) {
     let block = (1..198).contains(&item.id) && !flat_block(item.id);
     if matches!(item.id, 54 | 130 | 146) {
@@ -445,6 +456,7 @@ pub(crate) fn third_person(
             item,
             registry,
             used,
+            cast,
         );
     }
 }
@@ -491,6 +503,8 @@ pub struct Frame<'a> {
     pub bobbing: bool,
     /// The camera's pitch and yaw this frame.
     pub look: [f32; 2],
+    /// The local player's bobber is out.
+    pub cast: bool,
 }
 
 /// The first-person hand and held item in view space.
@@ -518,7 +532,7 @@ pub fn draw(out: &mut Vec<Vertex>, frame: &Frame<'_>, registry: &Registry) {
                 }
                 _ => m = transform_item(swing_lunge(m, frame.swing), equip, frame.swing),
             }
-            held_item(out, m, item, registry, used);
+            held_item(out, m, item, registry, used, frame.cast);
         }
         None if !frame.invisible => {
             arm(

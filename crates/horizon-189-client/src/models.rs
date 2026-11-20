@@ -287,6 +287,7 @@ fn player(
     origin: [i64; 3],
     registry: Option<&crate::terrain::Registry>,
     binding: Option<&crate::skins::Binding>,
+    cast: bool,
 ) {
     let mut at = position(entity, partial, origin);
     let sneaking = entity.sneaking();
@@ -530,7 +531,7 @@ fn player(
             * Mat4::from_scale(Vec3::splat(16.0));
         if let Some(registry) = registry {
             let used = (entity.flags & 0x10 != 0).then_some(entity.use_ticks as f32);
-            crate::hand::third_person(out, hand, item, registry, sneaking, used);
+            crate::hand::third_person(out, hand, item, registry, sneaking, used, cast);
         } else if let Some(layer) = held_texture(item.id).map(|t| t as u32) {
             sprite(
                 out,
@@ -970,6 +971,12 @@ pub fn entities(
     bindings: Option<&std::collections::HashMap<u128, crate::skins::Binding>>,
     camera: horizon_protocol_47::play::PositionLook,
 ) {
+    // Whose bobbers are out: they hold `fishing_rod_cast`.
+    let anglers: Vec<i32> = entities
+        .iter()
+        .filter(|(_, entity)| entity.kind == Kind::Object(90))
+        .map(|(_, bobber)| bobber.data)
+        .collect();
     for (id, entity) in entities {
         if entity.invisible() {
             continue;
@@ -985,6 +992,7 @@ pub fn entities(
                 origin,
                 registry,
                 binding,
+                anglers.contains(id),
             ),
             Kind::Mob(51 | 54) => humanoid_mob(out, entity, partial, origin),
             Kind::Mob(50 | 90 | 92 | 120) => common_mob(out, entity, partial, origin),

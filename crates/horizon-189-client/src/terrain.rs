@@ -104,7 +104,8 @@ fn sprite_edges(rgba: &[u8], size: usize) -> Vec<[u8; 3]> {
 }
 
 /// Item sprites drawn in two tinted layers.
-const OVERLAY_SPRITES: [&str; 14] = [
+const OVERLAY_SPRITES: [&str; 15] = [
+    "fishing_rod_cast",
     "bow_pulling_0",
     "bow_pulling_1",
     "bow_pulling_2",

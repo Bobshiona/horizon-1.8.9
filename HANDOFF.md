@@ -140,8 +140,7 @@ projection. Camera effects follow `EntityRenderer`: hurt tilt, death roll and vi
 ground, not in water or blind) and enchanted hits, S0B animations 4/5 from the server, and arrow crit
 trails. Physics now tracks fall distance, distance walked and camera yaw/pitch for these effects. A
 capture checked dropped items, a stuck arrow, swelling TNT, a landed falling block, collected XP orbs and
-the held sword, bow, fishing rod and wool block. Known gaps: no item pickup animation, no explosion/smoke/block-break particles, and the cast fishing
-rod model is not swapped in.
+the held sword, bow, fishing rod and wool block. Known gaps: no item pickup animation and no explosion/smoke/block-break particles.
 
 Saved sign-in and release pacing checkpoint. A device-code sign-in now keeps Microsoft's refresh token
 in the macOS Keychain (generic password, service "Horizon 1.8.9 Microsoft sign-in", account = client
@@ -188,8 +187,8 @@ Fishing lines follow `RenderFish`: 16 black segments from the rod to the bobber 
 the angler), sagging by `(f*f + f) / 2`. Another player's line starts from their body yaw at
 (0.35, eye - 0.45, 0.8), lowered 0.1875 while sneaking; the local player's starts at the camera's
 (-0.36, 0.03, 0.35) turned by pitch, yaw and the swing, so it needs the local entity ID, now kept in
-`Shared`. They draw as depth-tested line lists in the label pass. A capture checked another player's
-line to a bobber.
+`Shared`. They draw as depth-tested line lists in the label pass. Whoever has a bobber out holds
+`fishing_rod_cast`, in first and third person. A capture checked another player's line to a bobber.
 
 Next (in order): live Hypixel PvP play test with the release build.
 
