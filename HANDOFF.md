@@ -273,9 +273,9 @@ Next (in order): live Hypixel PvP play test with the release build.
 1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
    block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
    includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
-   prediction, crafting/shift-click
-   and special-container rules. Adventure restrictions are enforced conservatively. Live Hypixel remains
-   unverified.
+   prediction and crafting/special-container rules. Player/chest shift-click is implemented; drag-split
+   and double-click collect remain missing. Adventure restrictions are enforced conservatively. An
+   authenticated Hypixel lobby smoke passed; full release PvP and saved-login reuse remain unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
    skin/cape bindings are present, as are first-person hands and first-person item display transforms.
    Third-person item display transforms and enchantment glint (world and interface) are ported. Cape motion currently uses limb/sneak pose; vanilla chasing-
@@ -327,7 +327,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest gate outcomes are 83 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 115 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -339,3 +339,71 @@ mouse drive attack/dig and interact/use. Number keys or the wheel select hotbar 
 inventory; E or Escape closes it. Container slots accept normal left/right pickup clicks. Minecraft
 access tokens stay in memory; only the Microsoft refresh token is kept, in the Keychain, so later
 `--server` launches sign in without a device code until `--sign-out`.
+
+
+## 8. Next Claude task — November 19 sprint cut
+
+Read [the live-test plan and sprint priorities](docs/189-hypixel-test-plan.md). The user is conducting
+manual public-server testing; do not start another login or rebuild their running test binary. Baseline
+is `133e2a9491`. This planning pass successfully built the canonical ARM64 release binary; it did not
+repeat the recorded 115-test/reference gate. Use a separate target directory for concurrent builds and
+coordinate file ownership before edits. Keep the client runtime pure Rust + Apple Metal.
+
+### Priority override: live failures
+
+Triage returned logs/screenshots first. Any reproducible packet ordering, movement, knockback, hit,
+respawn, shop desync or invisible block-entity failure takes precedence over particles/HUD. Record
+expected vanilla behavior, produce a local regression, fix it, then request a targeted manual retest.
+Do not treat no kick as Watchdog certification. Preserve f64/f32/update order and fixed 50 ms ticks.
+Audit that autopilot/scripted smoke actions cannot target a non-loopback destination; add a guard and
+rejection coverage if missing. Keep all synthetic packet fixtures local.
+
+### Self-contained parallel task: TNT/explosion/smoke
+
+1. Inspect `particles.rs`, `network.rs`, protocol `player.rs`, world `entities.rs`, model material
+   resolution and owned-jar 1.8.9 bytecode before implementing. Reuse existing primed-TNT fuse/flash
+   state and particle batching. Confirm legacy particle IDs against vanilla.
+2. Current S27/0x27 `decode_explosion` returns only knockback. Add bounded rich decoding/event delivery
+   for centre, strength and affected records, retaining the existing API where callers need it. Apply
+   explosion velocity exactly once; preserve vanilla affected-block handling and outbound behavior.
+   Handle S2A/0x2A particle packets for normal/large/huge explosion and normal/large smoke, with vanilla
+   extra-data rules, bounded counts and malformed/truncated-packet coverage. Add local fuse smoke.
+3. Port vanilla lifetimes, sizes, frame selection, tint and blend using owned textures, including the
+   large explosion animation sheet and huge-explosion child emission. Use bounded visual events and
+   reusable batches. Simulation stays at 20 Hz; no per-particle network locks or render-thread I/O.
+4. Resolve block-break fragments through the inherited model `particle` material, rather than its first
+   baked face. Fix floor tunnelling during world-write contention without blocking the Metal thread
+   or skipping collision. Choose a bounded cached collision snapshot or equivalent and document it.
+5. Tests: packet bounds/truncation and finite geometry; lifetimes/emission limits; signed explosion
+   velocity applied once; log/bark material inheritance; collision during world lock contention. Supply
+   a deterministic local capture/clip of fuse → explosion/smoke, fragments landing and unaffected
+   player knockback. Preserve the existing bounded particle budget; do not enable public injection.
+
+### Next highest-priority PvP usability gap
+
+Implement vanilla drag-to-split and double-click-to-collect in player/chest inventories after P0 reports
+and particles. Cover left/right drag start/add/end, valid slot and stack limits, cursor remainder,
+collect ordering, action numbers, rejected transaction recovery and authoritative slot resync. Compare
+with owned 1.8.9 behavior and validate against the official reference server. Keep unsupported windows
+on safe resync fallback. Do not expand to brewing or an inventory player model this sprint.
+
+Then add minimal own FPS/CPS and adjustable FOV. CPS counts physical click events without changing
+packet generation; FOV changes camera projection without changing reach, rays or movement semantics.
+Defer keystrokes/zoom if release gates are at risk. Promote unreadable server label symbols when live
+reports show lost navigation or gameplay information.
+
+### Acceptance and handoff
+
+- Run Section 7 scoped tests/strict Clippy/fmt/layer/public-tree checks and managed
+  `python3 tools/test_189_reference.py` after each implementation milestone. The managed runner supplies
+  the environment for `--include-ignored`; do not invoke fixture-dependent ignored tests bare.
+- Inspect a native release Metal capture and timing, with visible/offscreen counts separated. Do not
+  replace existing movement/entity coverage with a particle-only smoke. Re-run stair/Depth Strider or
+  flight parity when those paths change or a regression warrants it.
+- Inspect the staged diff and new commit range for credentials, account names and local paths. Keep
+  owned assets, server state and raw captures/logs outside public git. Use the configured GitHub noreply
+  identity. Commit only scoped work, push HEAD to origin/main after gates, verify the remote hash, and
+  leave the backup branch local. Do not include another agent's concurrent edits accidentally.
+- Update Sections 1/2/5 with actual results and return commit, exact gate commands/exit codes/test counts,
+  private evidence paths, remaining limitations and manual live-test status. Keep reported baseline
+  evidence distinct from checks performed for the new revision.
