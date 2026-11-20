@@ -617,7 +617,7 @@ plan. Saved-login error handling was reviewed; no new account sign-in was starte
 actual live failures to choose further P0 work, and complete the remaining display/backing-scale matrix.
 
 
-## 14. Disconnect recovery checkpoint
+## 14. Disconnect recovery checkpoint — `4707a5d149`
 
 Normal connected sessions retain a login/play disconnect or transport failure reason in a translated,
 opaque connection-lost screen instead of exiting. Server JSON components and plain IO errors use the
