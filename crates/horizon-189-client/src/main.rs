@@ -489,11 +489,10 @@ impl ApplicationHandler for App {
                     let pressed = event.state == ElementState::Pressed;
                     if self.connection.active() {
                         if pressed && !event.repeat {
-                            match key {
-                                KeyCode::Escape => event_loop.exit(),
-                                KeyCode::KeyQ if self.modifiers.super_key() => event_loop.exit(),
-                                KeyCode::Enter | KeyCode::NumpadEnter => self.reconnect(event_loop),
-                                _ => {}
+                            match self.connection.key_action(key, self.modifiers.super_key()) {
+                                Some(connection::Action::Reconnect) => self.reconnect(event_loop),
+                                Some(connection::Action::Quit) => event_loop.exit(),
+                                None => {}
                             }
                         }
                         return;

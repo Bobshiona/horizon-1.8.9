@@ -70,6 +70,17 @@ impl Screen {
             })
             .map(|(action, _)| action)
     }
+    /// A fresh key press while the screen is shown.
+    pub fn key_action(&self, key: winit::keyboard::KeyCode, command: bool) -> Option<Action> {
+        use winit::keyboard::KeyCode;
+        match key {
+            // GuiDisconnected and GuiConnecting ignore typed keys, Escape
+            // included; only Command-Q and Enter act here.
+            KeyCode::KeyQ if command => Some(Action::Quit),
+            KeyCode::Enter | KeyCode::NumpadEnter if self.disconnected() => Some(Action::Reconnect),
+            _ => None,
+        }
+    }
     fn reason(&self, translate: &dyn Fn(&str) -> Option<String>) -> String {
         match &self.phase {
             Phase::Disconnected(reason) => {
@@ -139,6 +150,24 @@ mod tests {
         s.connecting();
         s.connected();
         assert!(!s.active());
+    }
+    #[test]
+    fn escape_neither_quits_nor_retries_like_gui_disconnected() {
+        use winit::keyboard::KeyCode;
+        let mut s = Screen::new(true);
+        for disconnected in [false, true] {
+            if disconnected {
+                s.lost("Kicked".into());
+            }
+            // GuiDisconnected and GuiConnecting ignore typed keys: an Escape
+            // meant for a menu at the moment of a kick must not end the app.
+            assert_eq!(s.key_action(KeyCode::Escape, false), None);
+            assert_eq!(s.key_action(KeyCode::KeyQ, true), Some(Action::Quit));
+            assert_eq!(s.key_action(KeyCode::KeyQ, false), None);
+        }
+        assert_eq!(s.key_action(KeyCode::Enter, false), Some(Action::Reconnect));
+        s.connecting();
+        assert_eq!(s.key_action(KeyCode::NumpadEnter, false), None);
     }
     #[test]
     fn reason_displays_components_and_plain_transport_errors() {

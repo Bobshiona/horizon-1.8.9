@@ -622,7 +622,7 @@ actual live failures to choose further P0 work, and complete the remaining displ
 Normal connected sessions retain a login/play disconnect or transport failure reason in a translated,
 opaque connection-lost screen instead of exiting. Server JSON components and plain IO errors use the
 same text formatter. Reconnect (button or Enter) deliberately starts a new connection to the original
-host/port; Quit, Escape and Command-Q exit. A connecting screen disables duplicate retries and blocks
+host/port; Quit and Command-Q exit (Escape no longer does; see section 21). A connecting screen disables duplicate retries and blocks
 gameplay input until the first authoritative player position. Bounded smoke sessions still fail fast.
 
 Retry shares the original memory-only Session via Arc; it does not reopen Keychain, refresh an expired
@@ -778,5 +778,23 @@ Audited without change: S39 copies flying, allow-flying, creative, invulnerable,
 `sendPlayerAbilities`. Known gap, not implemented: the dynamic FOV of
 `AbstractClientPlayer.getFovModifier` (sprint, speed effects, bow pull, walk speed) is absent; the world
 FOV is fixed at the configured value. Gate: 160 scoped tests (79 client, 2 login CLI, 1 assets, 6 auth,
+16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks,
+ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 21. Connection screen keys
+
+Section 20's Depth Strider fix is `13e1bde909`.
+
+Escape on the connecting/connection-lost screen exited the application. Escape is the in-game key for
+menus, chat and containers, so one pressed at the moment of a kick closed the client and lost the
+retained reason. `GuiDisconnected` and `GuiConnecting` ignore typed keys; Escape now does nothing there.
+Command-Q and the Quit button still exit, Enter still retries only once disconnected (never while
+connecting). Key handling moved into `connection::Screen::key_action`; regression
+`escape_neither_quits_nor_retries_like_gui_disconnected` failed first (Escape returned Quit).
+
+Audited without change: disconnect releases cursor, keyboard, container pointer, tab and attack/use
+input before the old actor is dropped; mouse position resets so an in-flight attack click cannot land on a
+button; reconnect builds a new actor with fresh world, inventory, controller and player state; a failed
+start returns to the lost screen. Gate: 161 scoped tests (80 client, 2 login CLI, 1 assets, 6 auth,
 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks,
 ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
