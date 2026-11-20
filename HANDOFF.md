@@ -875,3 +875,22 @@ died respawned at once. Enter now waits for the same delay through `Hud::respawn
 `respawn_waits_for_the_death_screen_buttons` failed first. Gate: 166 scoped tests (85 client, 2 login
 CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and
 diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 27. Taking a crafting result uses the grid
+
+Section 26's respawn-key fix is `1e6ec47c1c`.
+
+`SlotCrafting.onPickupFromSlot` uses one of each grid ingredient whenever the result is taken by a
+pickup click, a number key or Q (Q uses the whole grid once even when dropping one item), and a
+milk, water or lava bucket leaves an empty bucket in the inventory (or in its emptied grid slot when
+the inventory is full). The server accepts these clicks without resending the grid, so the client
+kept showing ingredients that were gone. These takes now consume the grid and clear the result; the
+next result comes from the server (CraftBukkit-based servers send it with S2F after every grid
+change, since `EntityPlayerMP` never sends `SlotCrafting` contents itself). Shift-clicking a result
+repeats crafts against recipes this client does not have, so it predicts nothing and sends no clicked
+item: a server that crafted anything rejects it and resends the window. Number keys over a result,
+previously not sent, now follow mode 2. Remaining gap: no local recipe matching, so on a vanilla
+server the result slot only appears after a window resync. Regression
+`taking_a_crafting_result_uses_the_grid` failed first. Gate: 167 scoped tests (86 client, 2 login CLI,
+1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff
+privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

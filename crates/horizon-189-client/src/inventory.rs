@@ -582,6 +582,14 @@ impl Inventory {
             }
             _ => return Ok(None),
         };
+        if let Some(index) = index
+            && matches!(mode, 0 | 2 | 4)
+            && self.crafting_result(index)
+            && before.slots[index].is_some()
+            && self.view.slots[index] != before.slots[index]
+        {
+            self.crafted(index);
+        }
         self.transaction = self.transaction.wrapping_add(1);
         let packet = interaction::click_mode(
             self.view.window,
@@ -678,6 +686,47 @@ impl Inventory {
         }
     }
 
+    fn crafting_result(&self, index: usize) -> bool {
+        index == 0 && (self.view.window == 0 || self.view.kind == Kind::Crafting)
+    }
+
+    /// `SlotCrafting.onPickupFromSlot`: one of each ingredient is used and a
+    /// bucket's container goes to the inventory, or back to its emptied grid
+    /// slot. The new result is the server's to send.
+    fn crafted(&mut self, result: usize) {
+        self.view.slots[result] = None;
+        let grid = if self.view.window == 0 { 1..=4 } else { 1..=9 };
+        for slot in grid {
+            let Some(item) = &mut self.view.slots[slot] else {
+                continue;
+            };
+            let container = matches!(item.id, 326 | 327 | 335);
+            item.count -= 1;
+            if item.count <= 0 {
+                self.view.slots[slot] = None;
+            }
+            if container {
+                let bucket = Item {
+                    id: 325,
+                    count: 1,
+                    damage: 0,
+                    nbt: None,
+                };
+                let fits = self.first_empty().is_some()
+                    || (0..36).map(|i| self.main_slot(i)).any(|i| {
+                        self.view.slots[i]
+                            .as_ref()
+                            .is_some_and(|t| same_kind(t, &bucket) && t.count < stack_limit(325))
+                    });
+                if fits {
+                    self.add_to_inventory(bucket);
+                } else if self.view.slots[slot].is_none() {
+                    self.view.slots[slot] = Some(bucket);
+                }
+            }
+        }
+    }
+
     /// `Container.slotClick` mode 2: a number key over a slot. False when the
     /// result cannot be predicted, and no click is sent.
     fn hotbar_swap(&mut self, index: usize, button: u8) -> bool {
@@ -698,14 +747,6 @@ impl Inventory {
         let empty = if swaps { None } else { self.first_empty() };
         match current {
             Some(stack) if swaps || empty.is_some() => {
-                // SlotCrafting.onPickupFromSlot consumes the grid.
-                let result = matches!(
-                    (self.view.window, self.view.kind, index),
-                    (0, _, 0) | (_, Kind::Crafting, 0)
-                );
-                if result {
-                    return false;
-                }
                 self.view.slots[hotbar] = Some(stack);
                 if swaps {
                     self.view.slots[index] = hot;
@@ -907,7 +948,8 @@ impl Inventory {
     fn shift_click(&mut self, index: usize) -> Option<Item> {
         let original = self.view.slots[index].clone()?;
         let predictable = self.view.window == 0 || matches!(self.view.kind, Kind::Chest(_));
-        if !predictable {
+        // Each craft recomputes the result from recipes this client lacks.
+        if !predictable || self.crafting_result(index) {
             return None;
         }
         let mut moved_any = false;
@@ -1403,6 +1445,65 @@ mod tests {
         assert_eq!(chest.view.slot_at(7.5, 17.5), Some(0));
     }
 
+    /// SlotCrafting.onPickupFromSlot: taking the result (click, number key
+    /// or Q) uses one of each ingredient and returns a bucket's container.
+    /// Shift-clicks repeat crafts the client cannot recompute, so they are
+    /// left to the server's correction.
+    #[test]
+    fn taking_a_crafting_result_uses_the_grid() {
+        let mut inv = Inventory::default();
+        for grid in 1..=4 {
+            inv.player[grid] = stack(5, 2);
+        }
+        inv.player[0] = stack(58, 1);
+        inv.local_open();
+        assert!(inv.click_mode(0, 0, 0).unwrap().is_some());
+        assert_eq!(inv.view.cursor, stack(58, 1));
+        assert!(inv.view.slots[0].is_none());
+        for grid in 1..=4 {
+            assert_eq!(inv.view.slots[grid], stack(5, 1), "grid {grid}");
+        }
+        // The server's S2F shows the next result; a number key takes it.
+        inv.view.cursor = None;
+        inv.view.slots[0] = stack(58, 1);
+        inv.click_mode(0, 2, 0).unwrap();
+        assert_eq!(inv.view.slots[36], stack(58, 1));
+        assert!((1..=4).all(|grid| inv.view.slots[grid].is_none()));
+        // A shift-click predicts nothing and sends no item, so a server
+        // that crafted anything rejects it and resends the window.
+        inv.view.slots[1] = stack(5, 4);
+        inv.view.slots[0] = stack(5, 4);
+        let before = inv.view.clone();
+        let packet = inv.click_mode(0, 1, 0).unwrap().unwrap();
+        assert_eq!(packet.last(), Some(&0xff), "no clicked item");
+        assert_eq!(inv.view.slots, before.slots);
+
+        // A crafting table: a milk bucket returns its bucket to the hotbar,
+        // or to its grid slot when the inventory is full. Q drops the result.
+        let mut fields = vec![4];
+        horizon_protocol_47::write_string(&mut fields, "minecraft:crafting_table", 32).unwrap();
+        horizon_protocol_47::write_string(&mut fields, r#"{"text":"Crafting"}"#, 32767).unwrap();
+        fields.push(0);
+        let mut table = Inventory::default();
+        table.open_packet(&fields, &|_| "Crafting".into()).unwrap();
+        table.view.slots[1] = stack(335, 1);
+        table.view.slots[2] = stack(353, 3);
+        table.view.slots[0] = stack(354, 1);
+        table.click_mode(0, 4, 0).unwrap();
+        assert!(table.view.slots[0].is_none());
+        assert!(table.view.slots[1].is_none());
+        assert_eq!(table.view.slots[2], stack(353, 2));
+        assert_eq!(table.view.slots[37], stack(325, 1), "first empty: hotbar 0");
+        for slot in 10..46 {
+            table.view.slots[slot] = stack(4, 64);
+        }
+        table.view.slots[1] = stack(335, 1);
+        table.view.slots[0] = stack(354, 1);
+        table.click_mode(0, 0, 0).unwrap();
+        assert_eq!(table.view.slots[1], stack(325, 1));
+        assert_eq!(table.view.cursor, stack(354, 1));
+    }
+
     /// Container.slotClick mode 0 respects Slot.isItemValid and the armour
     /// slots' stack limit of one; the server accepts the click either way.
     #[test]
@@ -1503,9 +1604,10 @@ mod tests {
         inv.click_mode(5, 2, 3).unwrap();
         assert_eq!(inv.view.slots[5], stack(86, 64));
         assert!(inv.view.slots[39].is_none());
-        // The crafting result's ingredient use is not predicted: no packet.
+        // A crafting result comes to the empty hotbar slot.
         inv.view.slots[0] = stack(5, 4);
-        assert!(inv.click_mode(0, 2, 4).unwrap().is_none());
+        assert!(inv.click_mode(0, 2, 4).unwrap().is_some());
+        assert_eq!(inv.view.slots[40], stack(5, 4));
     }
 
     #[test]
