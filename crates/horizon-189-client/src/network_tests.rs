@@ -563,7 +563,7 @@ fn forced_hotbar_changes_sync_once_and_survive_respawn() {
 }
 
 #[test]
-fn mid_session_join_starts_a_fresh_controller_and_inventory_without_c09() {
+fn mid_session_join_keeps_the_player_but_starts_a_new_controller_and_world() {
     let mut actor = Actor::new();
     actor.join();
     actor.position();
@@ -571,8 +571,10 @@ fn mid_session_join_starts_a_fresh_controller_and_inventory_without_c09() {
     actor.barrier(390);
     actor.send(vec![0x09, 4]);
     assert_eq!(actor.next(0x09), vec![0x09, 0, 4]);
+    assert!(actor.world.read().unwrap().column_count() > 0);
     // handleJoinGame builds a new PlayerControllerMP (currentPlayerItem 0)
-    // and a new EntityPlayerSP whose inventory selects slot 0: nothing to sync.
+    // and a new WorldClient, but Minecraft.loadWorld keeps the existing
+    // EntityPlayerSP and its slot 4, synced once the player ticks again.
     let mut join = vec![1];
     join.extend(7i32.to_be_bytes());
     join.extend([0, 0, 1, 20]);
@@ -580,14 +582,8 @@ fn mid_session_join_starts_a_fresh_controller_and_inventory_without_c09() {
     join.push(0);
     actor.send(join);
     actor.barrier(391);
-    actor.position();
-    actor.grounded();
-    actor.barrier(392);
-    assert_eq!(actor.shared.lock().unwrap().inventory.selected, 0);
-    for _ in 0..3 {
-        let packet = actor.peer.receive().unwrap();
-        assert_ne!(packet.first(), Some(&0x09));
-    }
+    assert_eq!(actor.world.read().unwrap().column_count(), 0);
+    assert_eq!(actor.shared.lock().unwrap().inventory.selected, 4);
 }
 
 #[test]

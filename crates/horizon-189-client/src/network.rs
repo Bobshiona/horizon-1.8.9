@@ -559,10 +559,31 @@ fn run_actor(
                 match play::decode(&body)? {
                     play::Packet::Join(join) => {
                         // handleJoinGame: a new PlayerControllerMP (nothing
-                        // sent yet) and a new EntityPlayerSP inventory.
+                        // sent yet) and a new, empty WorldClient. loadWorld
+                        // keeps the existing EntityPlayerSP (inventory,
+                        // selection, reported position, sprint and sneak) and
+                        // preparePlayerToSpawn resets its size and motion.
                         if entity_id != 0 {
                             controller = crate::gameplay::Controller::default();
-                            inventory = crate::inventory::Inventory::default();
+                            let mut world = write(world)?;
+                            let keys: Vec<_> = world.columns().map(|(key, _)| key).collect();
+                            *world = World::default();
+                            drop(world);
+                            dirty(keys);
+                            breaking.clear();
+                            mesh_origin = None;
+                            let [x, y, z] = player.position;
+                            player.width = horizon_physics_189::player::WIDTH;
+                            player.height = horizon_physics_189::player::HEIGHT;
+                            player.set_position(x, y, z);
+                            player.motion = [0.0; 3];
+                            player.pitch = 0.0;
+                            vitals.health = vitals.max_health;
+                            positioned = false;
+                            let mut state = lock(shared)?;
+                            state.positioned = false;
+                            state.pitch = 0.0;
+                            state.world_epoch = state.world_epoch.wrapping_add(1);
                         }
                         entity_id = join.entity_id;
                         game_mode = apply_game_mode(

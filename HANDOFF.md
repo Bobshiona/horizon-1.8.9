@@ -668,8 +668,8 @@ as `EntityPlayer.onUpdate` does, and a dig restarts through onPlayerDamageBlock'
 S09 is read as one byte; `InventoryPlayer.isHotbar` ignores values outside 0-8 (including negative
 bytes). Server-forced S09 slots are synced once on the next tick. Respawn (same or other dimension)
 creates a new player whose inventory selects 0 while the controller keeps its last sent slot, so a
-non-zero slot produces one C09 0. A second Join Game builds a new controller and inventory (nothing
-sent, slot 0); a reconnect starts a new actor and controller.
+non-zero slot produces one C09 0. A second Join Game builds a new controller but keeps the player
+(corrected in section 32); a reconnect starts a new actor and controller.
 
 Regressions written first and failing before the fix: `hotbar_selection_syncs_like_player_controller_mp`
 (selection-only tick silent, select+attack order, no release when switching off a blocking sword,
@@ -958,3 +958,19 @@ direction-dependent end of `rayTraceBlocks`' last-uncollidable miss. Regression
 tests (88 client, 2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world), strict
 Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 32. A second Join Game keeps the player
+
+Section 31's selection fix is `18a6e89537`.
+
+`handleJoinGame` creates a new `PlayerControllerMP` and a new, empty `WorldClient`, then
+`Minecraft.loadWorld` creates an `EntityPlayerSP` only when none exists: on a second Join Game the same
+player (inventory, selected slot, last reported position, sprint/sneak states) is kept and
+`preparePlayerToSpawn` resets its size, motion and pitch and restores full health. Section 15 wrongly
+replaced the inventory (selection back to 0) and kept the old world's chunks. Now the controller is
+new (so a non-zero slot is synced with C09 on the next tick), the world is emptied and the player is
+reset as `preparePlayerToSpawn` does. Proxies such as BungeeCord switch servers with Respawn packets,
+so this path is rare. Regression `mid_session_join_keeps_the_player_but_starts_a_new_controller_and_world`
+(replacing the section 15 test) failed first (old chunks kept). Gate: 171 scoped tests (88 client,
+2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world), strict Clippy/fmt, layers,
+public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
