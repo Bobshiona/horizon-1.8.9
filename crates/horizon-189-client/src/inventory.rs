@@ -501,7 +501,6 @@ impl Inventory {
         self.view.slots = self.player.clone();
     }
 
-    /// `EntityPlayerSP.dropOneItem`'s local half: the held stack shrinks.
     pub fn close(&mut self) -> Vec<u8> {
         let packet = interaction::close_window(self.view.window);
         self.view.open = false;
@@ -566,15 +565,9 @@ impl Inventory {
             }
             (1, Some(index)) if button <= 1 => self.shift_click(index),
             (2, Some(index)) => {
-                let blocked = matches!(
-                    (self.view.window, self.view.kind, index),
-                    (0, _, 0..=8) | (_, Kind::Crafting, 0) | (_, Kind::Furnace, 2)
-                );
-                let hotbar = self.view.hotbar(button);
-                if blocked || hotbar >= self.view.slots.len() {
+                if !self.hotbar_swap(index, button) {
                     return Ok(None);
                 }
-                self.view.slots.swap(index, hotbar);
                 None
             }
             (4, Some(index)) if button <= 1 && self.view.cursor.is_none() => {
@@ -601,6 +594,133 @@ impl Inventory {
         self.pending.insert(self.transaction, before);
         self.sync_player();
         Ok(Some(packet))
+    }
+
+    /// The view index of `InventoryPlayer.mainInventory[index]`.
+    fn main_slot(&self, index: usize) -> usize {
+        if index < 9 {
+            self.view.hotbar(index as u8)
+        } else if self.view.window == 0 {
+            index
+        } else {
+            self.view.container_slots + index - 9
+        }
+    }
+
+    /// Whether a view slot belongs to the player's own inventory.
+    fn own_slot(&self, index: usize) -> bool {
+        if self.view.window == 0 {
+            index >= 5
+        } else {
+            index >= self.view.container_slots
+        }
+    }
+
+    /// `Slot.isItemValid`, where this client knows it.
+    fn slot_accepts(&self, index: usize, item: &Item) -> Option<bool> {
+        if self.own_slot(index) {
+            if self.view.window == 0 && index <= 8 {
+                // ContainerPlayer's armour slots.
+                let kind = index - 5;
+                return Some(if (298..=317).contains(&item.id) {
+                    (item.id as usize - 298) % 4 == kind
+                } else {
+                    matches!(item.id, 86 | 397) && kind == 0
+                });
+            }
+            return Some(true);
+        }
+        match (self.view.window, self.view.kind, index) {
+            (0, _, 0) | (_, Kind::Crafting, 0) | (_, Kind::Furnace, 2) => Some(false),
+            (0, _, _)
+            | (_, Kind::Chest(_) | Kind::Hopper | Kind::Dispenser | Kind::Crafting, _) => {
+                Some(true)
+            }
+            (_, Kind::Furnace, 0) => Some(true),
+            _ => None,
+        }
+    }
+
+    /// `InventoryPlayer.getFirstEmptyStack`, as a view index.
+    fn first_empty(&self) -> Option<usize> {
+        (0..36)
+            .map(|i| self.main_slot(i))
+            .find(|&slot| self.view.slots.get(slot).is_some_and(Option::is_none))
+    }
+
+    /// `InventoryPlayer.addItemStackToInventory` for a stack known to fit.
+    fn add_to_inventory(&mut self, mut stack: Item) {
+        let limit = stack_limit(stack.id);
+        while stack.count > 0 {
+            let partial = (limit > 1)
+                .then(|| {
+                    (0..36).map(|i| self.main_slot(i)).find(|&slot| {
+                        self.view.slots[slot]
+                            .as_ref()
+                            .is_some_and(|t| same_kind(t, &stack) && t.count < limit)
+                    })
+                })
+                .flatten();
+            let Some(slot) = partial.or_else(|| self.first_empty()) else {
+                return;
+            };
+            match &mut self.view.slots[slot] {
+                Some(target) => {
+                    let moved = stack.count.min(limit - target.count);
+                    target.count += moved;
+                    stack.count -= moved;
+                }
+                empty => {
+                    *empty = Some(stack);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// `Container.slotClick` mode 2: a number key over a slot. False when the
+    /// result cannot be predicted, and no click is sent.
+    fn hotbar_swap(&mut self, index: usize, button: u8) -> bool {
+        let hotbar = self.view.hotbar(button);
+        if button > 8 || hotbar >= self.view.slots.len() {
+            return false;
+        }
+        let hot = self.view.slots[hotbar].clone();
+        let current = self.view.slots[index].clone();
+        let hot_valid = match &hot {
+            Some(item) => match self.slot_accepts(index, item) {
+                Some(valid) => valid,
+                None => return false,
+            },
+            None => false,
+        };
+        let swaps = hot.is_none() || (self.own_slot(index) && hot_valid);
+        let empty = if swaps { None } else { self.first_empty() };
+        match current {
+            Some(stack) if swaps || empty.is_some() => {
+                // SlotCrafting.onPickupFromSlot consumes the grid.
+                let result = matches!(
+                    (self.view.window, self.view.kind, index),
+                    (0, _, 0) | (_, Kind::Crafting, 0)
+                );
+                if result {
+                    return false;
+                }
+                self.view.slots[hotbar] = Some(stack);
+                if swaps {
+                    self.view.slots[index] = hot;
+                } else if let Some(hot) = hot {
+                    self.add_to_inventory(hot);
+                    self.view.slots[index] = None;
+                }
+            }
+            None if hot_valid => {
+                self.view.slots[hotbar] = None;
+                self.view.slots[index] = hot;
+            }
+            _ => {}
+        }
+        true
     }
 
     /// Vanilla quick-craft stage = button & 3, type = (button >> 2) & 3.
@@ -1248,6 +1368,66 @@ mod tests {
         assert_eq!(chest.view.slot_at(7.5, 17.5), Some(0));
     }
 
+    /// Container.slotClick mode 2: a hotbar stack that may not go into the
+    /// hovered slot moves to the player's inventory (first partial stacks,
+    /// then the first empty slot, hotbar first) instead of swapping.
+    #[test]
+    fn number_keys_follow_slot_click_mode_two() {
+        let mut fields = vec![1];
+        horizon_protocol_47::write_string(&mut fields, "minecraft:chest", 32).unwrap();
+        horizon_protocol_47::write_string(&mut fields, r#"{"text":"Loot"}"#, 32767).unwrap();
+        fields.push(27);
+        let mut chest = Inventory::default();
+        chest.open_packet(&fields, &|_| "Loot".into()).unwrap();
+        for hotbar in 54..63 {
+            chest.view.slots[hotbar] = stack(1, 1);
+        }
+        chest.view.slots[54] = stack(262, 10);
+        chest.view.slots[27] = stack(262, 60);
+        chest.view.slots[0] = stack(276, 1);
+        // Hotbar slot 0 (view 54) takes the sword; the arrows top up main
+        // slot 9 (view 27) to 64 and the other 6 go to the first empty slot,
+        // main slot 10 (view 28). The chest slot empties.
+        assert!(chest.click_mode(0, 2, 0).unwrap().is_some());
+        assert_eq!(chest.view.slots[54], stack(276, 1));
+        assert_eq!(chest.view.slots[27], stack(262, 64));
+        assert_eq!(chest.view.slots[28], stack(262, 6));
+        assert!(chest.view.slots[0].is_none());
+        assert_eq!(chest.player[36], stack(276, 1));
+        // A full inventory: the packet is sent and nothing moves.
+        for slot in 27..54 {
+            chest.view.slots[slot] = stack(4, 64);
+        }
+        chest.view.slots[1] = stack(264, 2);
+        let before = chest.view.slots.clone();
+        assert!(chest.click_mode(1, 2, 1).unwrap().is_some());
+        assert_eq!(chest.view.slots, before);
+
+        // Window 0: a sword cannot be worn, so the helmet comes to the hotbar
+        // and the sword goes to the first empty slot, the hotbar's slot 1.
+        let mut inv = Inventory::default();
+        inv.player[5] = stack(310, 1);
+        inv.player[36] = stack(276, 1);
+        inv.local_open();
+        assert!(inv.click_mode(5, 2, 0).unwrap().is_some());
+        assert_eq!(inv.view.slots[36], stack(310, 1));
+        assert_eq!(inv.view.slots[37], stack(276, 1));
+        assert!(inv.view.slots[5].is_none());
+        // Boots over the boots slot swap; a pumpkin stack fits the helmet.
+        inv.view.slots[8] = stack(313, 1);
+        inv.view.slots[38] = stack(301, 1);
+        inv.click_mode(8, 2, 2).unwrap();
+        assert_eq!(inv.view.slots[8], stack(301, 1));
+        assert_eq!(inv.view.slots[38], stack(313, 1));
+        inv.view.slots[39] = stack(86, 64);
+        inv.click_mode(5, 2, 3).unwrap();
+        assert_eq!(inv.view.slots[5], stack(86, 64));
+        assert!(inv.view.slots[39].is_none());
+        // The crafting result's ingredient use is not predicted: no packet.
+        inv.view.slots[0] = stack(5, 4);
+        assert!(inv.click_mode(0, 2, 4).unwrap().is_none());
+    }
+
     #[test]
     fn number_keys_drops_and_outside_clicks_predict_vanilla_results() {
         let mut inv = Inventory::default();
@@ -1257,8 +1437,10 @@ mod tests {
         inv.click_mode(10, 2, 2).unwrap();
         assert_eq!(inv.view.slots[38].as_ref().unwrap().id, 264);
         assert_eq!(inv.view.slots[10].as_ref().unwrap().id, 1);
-        // Number keys never touch the crafting or armour slots.
-        assert!(inv.click_mode(5, 2, 0).unwrap().is_none());
+        // An empty armour slot and an empty hotbar slot: C0E, no change.
+        let before = inv.view.slots.clone();
+        assert!(inv.click_mode(5, 2, 0).unwrap().is_some());
+        assert_eq!(inv.view.slots, before);
         inv.click_mode(38, 4, 0).unwrap();
         assert_eq!(inv.view.slots[38].as_ref().unwrap().count, 4);
         inv.click_mode(38, 4, 1).unwrap();

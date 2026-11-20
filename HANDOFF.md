@@ -812,3 +812,23 @@ the server. Regression `drop_key_sends_c07_without_predicting_the_stack` failed 
 Gate: 162 scoped tests (81 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world),
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 23. Number-key clicks follow `slotClick` mode 2
+
+Section 22's drop fix is `8c5690458c`.
+
+`Container.slotClick` mode 2 only swaps when the hotbar slot is empty or the hovered slot is the
+player's own and accepts the hotbar stack. Otherwise, with an empty slot anywhere in the player's
+inventory, the hovered stack comes to the hotbar and the old hotbar stack goes through
+`addItemStackToInventory` (partial stacks first, then the first empty slot, hotbar first), leaving
+the hovered slot empty; with no empty slot nothing moves. The server answers mode 2 with no item, so
+it accepts any C0E and never resends the slots. The client swapped blindly, so pressing a number
+key over a chest slot while holding something put the held stack into the chest on screen only:
+a phantom item until the next full window update (common when looting). It also never sent number-key
+clicks over the armour or crafting-grid slots, which vanilla sends. Prediction now follows the jar,
+with `Slot.isItemValid` for armour (armour type, pumpkin or skull on the head), crafting/furnace
+outputs and plain container slots. Clicks whose result is not modelled (a crafting result with a
+stack, furnace fuel, other generic windows) are still not sent, as before. Regression
+`number_keys_follow_slot_click_mode_two` failed first. Gate: 163 scoped tests (82 client, 2 login CLI,
+1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff
+privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
