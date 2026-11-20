@@ -17,6 +17,7 @@ mod models;
 mod network;
 mod options;
 mod particles;
+mod pvp_metrics;
 mod renderer;
 mod scene;
 #[cfg(test)]
@@ -92,6 +93,9 @@ struct App {
     /// The last client tick particles advanced to.
     particle_tick: u64,
     view_bobbing: bool,
+    fov: f32,
+    pvp_hud: bool,
+    metrics: pvp_metrics::Metrics,
 }
 
 /// What one frame reads from the simulation, under one lock.
@@ -148,6 +152,7 @@ impl App {
             renderer.window.set_cursor_visible(true);
         }
         self.container_pointer.clear();
+        self.metrics.release_input();
         self.captured = false;
         self.mouse = (0.0, 0.0);
         self.tab_held = false;
@@ -366,6 +371,7 @@ impl ApplicationHandler for App {
                     self.server.is_some(),
                     self.view_distance,
                     self.gui_scale,
+                    self.fov,
                 ))
                 .map_err(|error| error.to_string())
             });
@@ -604,6 +610,25 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let pressed = button_state == ElementState::Pressed;
+                if self.pvp_hud
+                    && let Some(index) = match button {
+                        MouseButton::Left => Some(0),
+                        MouseButton::Right => Some(1),
+                        _ => None,
+                    }
+                {
+                    let eligible = self.focused
+                        && self.captured
+                        && !self.chat.open
+                        && self.network.as_ref().is_some_and(|network| {
+                            network
+                                .shared
+                                .lock()
+                                .is_ok_and(|s| !s.inventory.open && s.vitals.health > 0.0)
+                        });
+                    self.metrics
+                        .button(index, pressed, eligible, self.started.elapsed());
+                }
                 let mouse = self.mouse_gui();
                 if self.chat.open {
                     if pressed
@@ -892,6 +917,9 @@ impl ApplicationHandler for App {
                         if let Some(snapshot) = &snapshot {
                             let (hud, chat) = (&mut self.hud, &mut self.chat);
                             let tab_held = self.tab_held || self.smoke_tab;
+                            let pvp = self
+                                .pvp_hud
+                                .then(|| self.metrics.sample(self.started.elapsed()));
                             let result = renderer.draw_ui(tick, |canvas, registry, skin| {
                                 let frame = hud::Frame {
                                     view: &snapshot.view,
@@ -909,6 +937,12 @@ impl ApplicationHandler for App {
                                     skin,
                                 };
                                 hud.draw(canvas, registry, &frame);
+                                if let Some(pvp) = pvp
+                                    && !snapshot.view.open
+                                    && snapshot.vitals.health > 0.0
+                                {
+                                    hud::pvp_overlay(canvas, registry, pvp);
+                                }
                                 chat.draw(canvas, tick, mouse);
                                 hud.draw_after_chat(canvas, &frame);
                                 if snapshot.view.open && snapshot.vitals.health > 0.0 {
@@ -931,6 +965,9 @@ impl ApplicationHandler for App {
                         Ok(true) => {
                             if self.network.is_none() || renderer.world_ready() {
                                 self.frames += 1;
+                                if self.pvp_hud && renderer.offscreen_frames == offscreen {
+                                    self.metrics.presented(self.started.elapsed());
+                                }
                                 if self.smoke_frames.is_some() && capture.is_none() {
                                     self.frame_stats.record(frame_started.elapsed());
                                     // Pacing counts only frames the display took:
@@ -1164,6 +1201,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         particles: particles::Particles::default(),
         particle_tick: 0,
         view_bobbing: options.view_bobbing,
+        fov: options.fov,
+        pvp_hud: options.pvp_hud,
+        metrics: pvp_metrics::Metrics::default(),
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {

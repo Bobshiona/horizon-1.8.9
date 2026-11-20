@@ -1030,3 +1030,25 @@ fn tab_list(canvas: &mut Canvas<'_>, frame: &Frame<'_>) {
         }
     }
 }
+
+/// Optional local metrics; labels come from the client's translation table.
+pub fn pvp_overlay(
+    canvas: &mut Canvas<'_>,
+    registry: &Registry,
+    metrics: crate::pvp_metrics::Sample,
+) {
+    let fps = metrics
+        .fps
+        .map_or_else(|| "--".to_owned(), |fps| fps.to_string());
+    let fps = registry
+        .gui
+        .translate("horizon.pvp.fps")
+        .replacen("%s", &fps, 1);
+    let cps = registry
+        .gui
+        .translate("horizon.pvp.cps")
+        .replacen("%s", &metrics.left.to_string(), 1)
+        .replacen("%s", &metrics.right.to_string(), 1);
+    canvas.text(&fps, 3.0, 3.0, 0xFFFF_FFFF, true);
+    canvas.text(&cps, 3.0, 13.0, 0xFFFF_FFFF, true);
+}

@@ -127,6 +127,11 @@ fn downsample(source: &[u8], size: usize) -> Vec<u8> {
 }
 
 impl Scene {
+    /// FOV is an optical setting; the centre ray and near plane stay fixed.
+    fn world_projection(fov: f32, aspect: f32) -> Mat4 {
+        Mat4::perspective_infinite_reverse_rh(fov.to_radians(), aspect, 0.05)
+    }
+
     #[cfg(test)]
     pub fn new(
         device: &wgpu::Device,
@@ -924,11 +929,7 @@ impl Scene {
     }
 
     fn projection(&self, config: &wgpu::SurfaceConfiguration) -> Mat4 {
-        Mat4::perspective_infinite_reverse_rh(
-            self.fov.to_radians(),
-            config.width as f32 / config.height.max(1) as f32,
-            0.05,
-        )
+        Self::world_projection(self.fov, config.width as f32 / config.height.max(1) as f32)
     }
 
     fn write_camera(&self, queue: &wgpu::Queue, config: &wgpu::SurfaceConfiguration) {
@@ -951,6 +952,7 @@ impl Scene {
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
         pose: PositionLook,
+        fov: f32,
     ) {
         let eye = Vec3::new(
             (pose.position[0] - self.origin[0] as f64) as f32,
@@ -962,7 +964,7 @@ impl Scene {
         self.view =
             self.effects * Mat4::look_at_rh(eye, eye + Vec3::new(-sy * cp, -sp, cy * cp), Vec3::Y);
         self.eye = eye;
-        self.fov = 70.0;
+        self.fov = fov;
         self.write_camera(queue, config);
     }
 
@@ -1062,6 +1064,19 @@ mod tests {
         assert_eq!(&half[..3], &[200, 100, 50]);
         assert_eq!(half[3], 64);
         assert_eq!(to_srgb(to_linear(173)), 173);
+    }
+
+    #[test]
+    fn world_fov_widens_edges_without_moving_the_centre_ray_or_near_plane() {
+        let point = Vec3::new(1.0, 0.0, -1.0);
+        assert!(Scene::world_projection(70.0, 1.0).project_point3(point).x > 1.0);
+        assert!(Scene::world_projection(110.0, 1.0).project_point3(point).x < 1.0);
+        for fov in [30.0, 70.0, 110.0] {
+            let p = Scene::world_projection(fov, 1.6);
+            let near = p.inverse().project_point3(Vec3::new(0.0, 0.0, 1.0));
+            assert!((near - Vec3::new(0.0, 0.0, -0.05)).length() < 1e-6);
+            assert!((near.normalize() - Vec3::NEG_Z).length() < 1e-6);
+        }
     }
 
     #[test]

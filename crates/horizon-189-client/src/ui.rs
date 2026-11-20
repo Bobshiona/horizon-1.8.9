@@ -133,8 +133,12 @@ impl Resources {
                 by_width[usize::from(widths[index]).min(16)].push(index as u16);
             }
         }
+        let mut language = assets.language()?;
+        language.extend(serde_json::from_str::<BTreeMap<String, String>>(
+            include_str!("pvp_lang.json"),
+        )?);
         Ok(Self {
-            language: Arc::new(assets.language()?),
+            language: Arc::new(language),
             widths,
             by_width,
             glyph_sizes,

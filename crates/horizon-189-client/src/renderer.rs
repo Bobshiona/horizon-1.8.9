@@ -29,6 +29,7 @@ pub struct Renderer {
     ui: Option<crate::ui::Pass>,
     pub layout: crate::ui::Layout,
     gui_scale: u32,
+    fov: f32,
     offscreen: Option<wgpu::Texture>,
     pub offscreen_frames: u64,
     skin_loader: crate::skins::Loader,
@@ -43,6 +44,7 @@ impl Renderer {
         world_view: bool,
         view_distance: u8,
         gui_scale: u32,
+        fov: f32,
     ) -> Result<Self, Box<dyn Error>> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         // Enforce Metal explicitly. Environment backend overrides cannot select
@@ -137,6 +139,7 @@ impl Renderer {
             ui,
             layout: crate::ui::Layout::new((size.width, size.height), 1.0, gui_scale),
             gui_scale,
+            fov,
             offscreen: None,
             offscreen_frames: 0,
             skin_loader: crate::skins::Loader::new()?,
@@ -208,7 +211,7 @@ impl Renderer {
         let origin_changed = update.origin != scene.origin();
         scene.apply(&self.device, &self.queue, update)?;
         if origin_changed {
-            scene.set_camera(&self.queue, &self.config, self.pose);
+            scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
         }
         Ok(())
     }
@@ -217,7 +220,7 @@ impl Renderer {
     pub fn set_pose(&mut self, pose: PositionLook) {
         self.pose = pose;
         if let Some(scene) = &mut self.scene {
-            scene.set_camera(&self.queue, &self.config, pose);
+            scene.set_camera(&self.queue, &self.config, pose, self.fov);
         }
     }
 
@@ -538,7 +541,7 @@ impl Renderer {
                     if let Some(old) = self.scene.take() {
                         scene.adopt(old);
                     }
-                    scene.set_camera(&self.queue, &self.config, self.pose);
+                    scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
                     for (uuid, image) in &self.skin_images {
                         if let Some(binding) = self.skins.get(uuid) {
                             scene.upload_skin(&self.queue, binding.skin, image);
