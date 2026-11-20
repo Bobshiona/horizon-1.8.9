@@ -927,3 +927,17 @@ method. Regressions `death_shrinks_the_box_and_starts_a_hop_and_drift` (physics)
 Gate: 169 scoped tests (87 client, 2 login CLI, 1 assets, 6 auth, 17 physics, 38 protocol, 18 world),
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`, plus repeated reference runs without movement flags.
+
+## 30. C0A on every swing
+
+Section 29's death fix is `d63bb4d9b5`.
+
+`EntityPlayerSP.swingItem` calls `EntityLivingBase.swingItem` (which restarts the arm animation only
+when idle or past half of it) and then sends C0A unconditionally. The client sent C0A only when the
+animation restarted, so the second of two clicks within three ticks sent its C02 with no C0A before
+it, a no-swing pattern anticheats look for, and digging swung every third tick instead of every
+tick. C0A is now sent on every swing; only the local animation keeps the half-way rule. Regression
+`every_swing_sends_c0a_even_mid_animation` failed first (click 1 sent C02 without C0A). Gate: 170
+scoped tests (88 client, 2 login CLI, 1 assets, 6 auth, 17 physics, 38 protocol, 18 world), strict
+Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.

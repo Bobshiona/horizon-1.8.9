@@ -156,12 +156,13 @@ impl Controller {
             .map(|(at, _, damage, _)| (*at, *damage))
     }
 
+    /// `EntityPlayerSP.swingItem`: C0A every call; the local animation only
+    /// restarts when idle or past half-way (`EntityLivingBase.swingItem`).
     fn swing(&mut self, writer: &mut PacketWriter<impl Read + Write>) -> io::Result<()> {
         if self.swing.is_none_or(|v| v >= 3) {
             self.swing = Some(0);
-            writer.send(&packet::swing())?;
         }
-        Ok(())
+        writer.send(&packet::swing())
     }
     fn abort(&mut self, writer: &mut PacketWriter<impl Read + Write>) -> io::Result<()> {
         if let Some((at, face, _, _)) = self.digging.take() {
@@ -675,6 +676,57 @@ mod tests {
         });
         world
     }
+    /// EntityPlayerSP.swingItem sends C0A on every call, even while the arm
+    /// is still mid-swing: each click's C02 follows its own C0A, and digging
+    /// swings every tick. Only the local animation restarts at half-way.
+    #[test]
+    fn every_swing_sends_c0a_even_mid_animation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let mut entities = Entities::default();
+        entities.apply(EntityPacket::SpawnPlayer {
+            id: 7,
+            uuid: 0,
+            position: [16, 4 * 32, 2 * 32],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let world = world();
+        let mut player = Player::default();
+        player.set_position(0.5, 4.0, 0.5);
+        player.on_ground = true;
+        let mut inventory = Inventory::default();
+        let mut controller = Controller::default();
+        for click in 0..3 {
+            let mut input = Input {
+                attack: true,
+                using: false,
+                actions: VecDeque::from([Action::Attack]),
+            };
+            controller
+                .tick(
+                    &mut input,
+                    &mut player,
+                    &world,
+                    &entities,
+                    &mut inventory,
+                    0,
+                    &mut writer,
+                )
+                .unwrap();
+            assert_eq!(peer.receive().unwrap(), [0x0a], "click {click}");
+            assert_eq!(peer.receive().unwrap(), [0x02, 7, 1], "click {click}");
+        }
+        // The animation restarted only at the first click: not yet half-way.
+        assert_eq!(controller.swing, Some(2));
+    }
+
     /// Item.onItemRightClick decides whether use starts: food needs hunger
     /// (golden apples excepted) and a vulnerable player, a bow needs an
     /// arrow outside creative. C08 is sent either way.
