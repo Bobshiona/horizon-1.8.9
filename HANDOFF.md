@@ -1000,3 +1000,19 @@ respawn regression now expects that C09 before the S08 reply instead of relying 
 `hotbar_sync_runs_before_the_first_position` failed first. Gate: 173 scoped tests (90 client, 2 login
 CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and
 diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 35. Dying entities
+
+Section 34's held-item sync fix is `019ca90a2c`.
+
+On the client, a living entity at zero health runs `onDeathUpdate`: it stays in the world (and
+`canBeCollidedWith`, so the crosshair can still select it) for twenty ticks, then `setDead` removes it
+even without S13. S19 status 3 also runs `EntityPlayer.onDeath` for other players, shrinking them to
+0.2 by 0.2. The client skipped zero-health entities in selection, so a click passed through a dying
+player to whatever stood behind, and never removed dying entities on its own. Entities now count
+`death_time`, are removed at 20, dead players use the 0.2 box, and selection no longer filters on
+health. The death tilt rendering is not ported. Regression
+`dying_entities_linger_twenty_ticks_and_dead_players_shrink` (world) failed first. Gate: 174 scoped
+tests (90 client, 2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 19 world), strict
+Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.

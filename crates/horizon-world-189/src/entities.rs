@@ -52,6 +52,10 @@ pub struct Entity {
     /// Remaining vanilla hurt-flash ticks, refreshed by entity status 2.
     pub hurt_time: u8,
     pub health: f32,
+    /// `EntityLivingBase.deathTime`: ticks spent at zero health.
+    pub death_time: u8,
+    /// `EntityPlayer.onDeath` ran (S19 status 3): a 0.2 by 0.2 box.
+    dead_player: bool,
     pub variant: u8,
     pub child: bool,
     pub on_ground: bool,
@@ -217,6 +221,8 @@ impl Entity {
             age: 0,
             hurt_time: 0,
             health: 20.0,
+            death_time: 0,
+            dead_player: false,
             variant: 0,
             child: false,
             on_ground: false,
@@ -234,6 +240,7 @@ impl Entity {
     /// Server-sized collision dimensions shared by selection and overlays.
     pub fn dimensions(&self) -> Option<(f32, f32)> {
         let (width, height) = match self.kind {
+            Kind::Player { .. } if self.dead_player => (0.2, 0.2),
             Kind::Player { .. } => (0.6, 1.8),
             Kind::Mob(50) => (0.6, 1.7),
             Kind::Mob(51) if self.variant == 1 => (0.72, 2.34),
@@ -349,6 +356,9 @@ impl Entity {
 
     fn tick(&mut self) {
         self.hurt_time = self.hurt_time.saturating_sub(1);
+        if self.living() && self.health <= 0.0 {
+            self.death_time = self.death_time.saturating_add(1);
+        }
         self.previous = self.position;
         self.previous_pitch = self.pitch;
         self.previous_head_yaw = self.head_yaw;
@@ -463,8 +473,10 @@ impl Entities {
                 *ticks += 1;
             }
         }
-        self.map
-            .retain(|_, entity| entity.collector.is_none_or(|(_, ticks)| ticks < 3));
+        // onDeathUpdate sets a dying entity dead at deathTime 20.
+        self.map.retain(|_, entity| {
+            entity.collector.is_none_or(|(_, ticks)| ticks < 3) && entity.death_time < 20
+        });
     }
 
     /// S0D `Collect Item`: the item, arrow or orb flies to its collector.
@@ -637,6 +649,7 @@ impl Entities {
                     && entity.living()
                 {
                     entity.health = 0.0;
+                    entity.dead_player = matches!(entity.kind, Kind::Player { .. });
                 }
             }
             EntityPacket::Status { .. } => {}
@@ -665,6 +678,25 @@ mod tests {
             held_item: 0,
             metadata: vec![],
         });
+    }
+
+    /// EntityLivingBase.onDeathUpdate on the client: a living entity at zero
+    /// health stays (and stays targetable) for twenty ticks, then setDead
+    /// removes it; EntityPlayer.onDeath (status 3) shrinks a player to 0.2.
+    #[test]
+    fn dying_entities_linger_twenty_ticks_and_dead_players_shrink() {
+        let world = crate::World::default();
+        let mut entities = Entities::default();
+        spawn(&mut entities);
+        assert_eq!(entities.get(5).unwrap().dimensions(), Some((0.6, 1.8)));
+        entities.apply(EntityPacket::Status { id: 5, status: 3 });
+        assert_eq!(entities.get(5).unwrap().dimensions(), Some((0.2, 0.2)));
+        for _ in 0..19 {
+            entities.tick(&world);
+        }
+        assert!(entities.get(5).is_some());
+        entities.tick(&world);
+        assert!(entities.get(5).is_none());
     }
 
     #[test]

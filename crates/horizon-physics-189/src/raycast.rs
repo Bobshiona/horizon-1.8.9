@@ -139,10 +139,8 @@ impl Raycaster {
         };
         let mut distance = block_distance;
         let mut pointed = None;
+        // Dying entities stay collidable until removed at deathTime 20.
         for (id, entity) in entities.iter() {
-            if entity.health <= 0.0 {
-                continue;
-            }
             let Some((width, height)) = entity.dimensions() else {
                 continue;
             };
