@@ -108,8 +108,11 @@ impl Actor {
         assert_eq!(self.peer.receive().unwrap(), play::brand().unwrap());
     }
     fn position(&mut self) {
+        self.position_at([0.5, 4.0, 0.5]);
+    }
+    fn position_at(&mut self, position: [f64; 3]) {
         let mut p = vec![8];
-        for v in [0.5f64, 4.0, 0.5] {
+        for v in position {
             p.extend(v.to_be_bytes());
         }
         p.extend(0f32.to_be_bytes());
@@ -118,7 +121,7 @@ impl Actor {
         self.send(p);
         let expected = Movement::PositionLook {
             location: PositionLook {
-                position: [0.5, 4.0, 0.5],
+                position,
                 yaw: 0.0,
                 pitch: 0.0,
             },
@@ -321,4 +324,84 @@ fn full_player_inventory_packets_update_the_visible_shop_rows() {
     let state = actor.shared.lock().unwrap();
     assert_eq!(state.inventory.window, 0);
     assert_eq!(state.inventory.slots[36], item(260, 5));
+}
+
+#[test]
+fn game_mode_packet_disables_old_flight_without_waiting_for_an_abilities_packet() {
+    for mode in [0.0f32, 2.0] {
+        let mut actor = Actor::new();
+        actor.join();
+        actor.position();
+        actor.grounded();
+        let mut abilities = entity_packets::encode_abilities(entity_packets::Abilities {
+            invulnerable: true,
+            flying: true,
+            allow_flying: true,
+            creative: true,
+            fly_speed: 0.09,
+            walk_speed: 0.15,
+        });
+        abilities[0] = 0x39;
+        actor.send(abilities);
+        actor.position_at([0.5, 8.0, 0.5]);
+        actor.barrier(350);
+        let mut change = vec![0x2b, 3];
+        change.extend(mode.to_be_bytes());
+        actor.send(change);
+        actor.barrier(351);
+        let mut lowest = 8.0f64;
+        for _ in 0..10 {
+            let packet = actor.peer.receive().unwrap();
+            assert_ne!(
+                packet[0], 0x13,
+                "server game-mode change must not synthesize a client ability toggle"
+            );
+            if matches!(packet[0], 4 | 6) {
+                lowest = lowest.min(f64::from_be_bytes(packet[9..17].try_into().unwrap()));
+            }
+        }
+        assert!(
+            lowest < 7.95,
+            "mode {mode} left the player hovering at {lowest}"
+        );
+        assert_eq!(actor.shared.lock().unwrap().game_mode, mode as u8);
+    }
+}
+
+#[test]
+fn game_mode_capabilities_preserve_speeds_and_creative_flight_choice() {
+    for (mode, was_flying, flying, allow, creative) in [
+        (0, true, false, false, false),
+        (2, true, false, false, false),
+        (1, true, true, true, true),
+        (1, false, false, true, true),
+        (3, false, true, true, false),
+        (99, true, false, false, false),
+    ] {
+        let mut p = Player::default();
+        p.flying = was_flying;
+        p.fly_speed = 0.09;
+        let mut caps = entity_packets::Abilities {
+            flying: was_flying,
+            invulnerable: false,
+            allow_flying: false,
+            creative: false,
+            fly_speed: 0.09,
+            walk_speed: 0.15,
+        };
+        let normalized = apply_game_mode(&mut p, &mut caps, mode);
+        assert_eq!((p.flying, p.allow_flying), (flying, allow));
+        assert_eq!(
+            (caps.flying, caps.allow_flying, caps.creative),
+            (flying, allow, creative)
+        );
+        assert_eq!(caps.invulnerable, allow);
+        assert_eq!(p.no_clip, mode == 3);
+        assert_eq!(
+            (p.fly_speed, caps.fly_speed, caps.walk_speed),
+            (0.09, 0.09, 0.15)
+        );
+        assert!(!p.abilities_changed);
+        assert_eq!(normalized, if mode == 99 { 0 } else { mode as u8 });
+    }
 }

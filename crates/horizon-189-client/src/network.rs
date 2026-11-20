@@ -408,6 +408,28 @@ fn depth_strider(inventory: &[Option<horizon_protocol_47::nbt::Item>]) -> i32 {
         .unwrap_or(0)
 }
 
+/// WorldSettings.GameType.configurePlayerCapabilities. This is a server
+/// update, not a user flight toggle; it does not owe a C13 packet.
+fn apply_game_mode(
+    player: &mut Player,
+    capabilities: &mut entity_packets::Abilities,
+    id: i32,
+) -> u8 {
+    let mode = if (0..=3).contains(&id) { id as u8 } else { 0 };
+    capabilities.invulnerable = matches!(mode, 1 | 3);
+    capabilities.creative = mode == 1;
+    capabilities.allow_flying = matches!(mode, 1 | 3);
+    capabilities.flying = match mode {
+        1 => capabilities.flying,
+        3 => true,
+        _ => false,
+    };
+    player.allow_flying = capabilities.allow_flying;
+    player.flying = capabilities.flying;
+    player.no_clip = mode == 3;
+    mode
+}
+
 fn apply_effect(player: &mut Player, effect: u8, amplifier: Option<i8>) {
     let modifier = |uuid: u128, per_level: f64, amplifier: i8| Modifier {
         uuid,
@@ -533,7 +555,11 @@ fn run_actor(
                 match play::decode(&body)? {
                     play::Packet::Join(join) => {
                         entity_id = join.entity_id;
-                        game_mode = join.game_mode & 7;
+                        game_mode = apply_game_mode(
+                            &mut player,
+                            &mut capabilities,
+                            i32::from(join.game_mode & 7),
+                        );
                         {
                             let mut state = lock(shared)?;
                             state.hardcore = join.game_mode & 8 != 0;
@@ -675,7 +701,6 @@ fn run_actor(
                         // Minecraft.respawnPlayer always creates a fresh EntityPlayerSP.
                         let world_changed = dimension != Some(respawn.dimension);
                         dimension = Some(respawn.dimension);
-                        game_mode = respawn.game_mode & 7;
                         inventory = crate::inventory::Inventory::default();
                         controller = crate::gameplay::Controller::default();
                         vitals = crate::gameplay::Vitals::default();
@@ -683,16 +708,18 @@ fn run_actor(
                         // PlayerControllerMP.flipPlayer initializes the new player's yaw.
                         player.yaw = -180.0;
                         capabilities = entity_packets::Abilities {
-                            invulnerable: matches!(game_mode, 1 | 3),
-                            flying: game_mode == 3,
-                            allow_flying: matches!(game_mode, 1 | 3),
-                            creative: game_mode == 1,
+                            invulnerable: false,
+                            flying: false,
+                            allow_flying: false,
+                            creative: false,
                             fly_speed: 0.05,
                             walk_speed: 0.1,
                         };
-                        player.flying = capabilities.flying;
-                        player.allow_flying = capabilities.allow_flying;
-                        player.no_clip = game_mode == 3;
+                        game_mode = apply_game_mode(
+                            &mut player,
+                            &mut capabilities,
+                            i32::from(respawn.game_mode),
+                        );
                         reporter = MovementReporter::default();
                         server_sprint = false;
                         server_sneak = false;
@@ -796,7 +823,8 @@ fn run_actor(
                     }
                     play::Packet::Other { id: 0x2b, fields } => {
                         if fields.len() == 5 && fields[0] == 3 {
-                            game_mode = f32::from_be_bytes(fields[1..5].try_into().unwrap()) as u8;
+                            let id = f32::from_be_bytes(fields[1..5].try_into().unwrap()) as i32;
+                            game_mode = apply_game_mode(&mut player, &mut capabilities, id);
                         }
                     }
                     play::Packet::Other { id: 0x09, fields } => {
