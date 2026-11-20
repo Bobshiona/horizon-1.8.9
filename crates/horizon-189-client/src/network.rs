@@ -546,6 +546,9 @@ fn run_actor(
     let mut dimension = None;
     let mut reporter = MovementReporter::default();
     let (mut server_sprint, mut server_sneak) = (false, false);
+    // EntityLivingBase.deathTime: at 20 the dead player is set dead and no
+    // longer updated, so it stops moving and reporting until respawn.
+    let mut death_time = 0u32;
     let tick = Duration::from_millis(50);
     let mut next_tick = Instant::now() + tick;
     let mut reports = 0u64;
@@ -1218,20 +1221,32 @@ fn run_actor(
                 }
             }
             player.no_clip = game_mode == 3;
-            if vitals.health > 0.0 {
+            death_time = if vitals.health > 0.0 {
+                0
+            } else {
+                death_time.saturating_add(1)
+            };
+            let updated = death_time <= 20;
+            if updated {
                 // getDepthStriderModifier reads the worn armour every move,
                 // including armour placed by predicted window clicks.
                 player.depth_strider = depth_strider(&inventory.player);
+                // isMovementBlocked: a dead player still moves, without input.
+                let keys = if vitals.health > 0.0 {
+                    keys
+                } else {
+                    Keys::default()
+                };
                 player.tick(&world_view, keys);
             }
             // sendPlayerAbilities happens inside onLivingUpdate, before the
             // walking update's actions and movement.
-            if std::mem::take(&mut player.abilities_changed) {
+            if std::mem::take(&mut player.abilities_changed) && updated {
                 capabilities.flying = player.flying;
                 writer.send(&entity_packets::encode_abilities(capabilities))?;
             }
             // EntityPlayerSP.onUpdateWalkingPlayer: actions, then movement.
-            if player.sprinting != server_sprint {
+            if updated && player.sprinting != server_sprint {
                 let action = if player.sprinting {
                     fields::START_SPRINTING
                 } else {
@@ -1240,7 +1255,7 @@ fn run_actor(
                 writer.send(&fields::entity_action(entity_id, action))?;
                 server_sprint = player.sprinting;
             }
-            if player.sneaking != server_sneak {
+            if updated && player.sneaking != server_sneak {
                 let action = if player.sneaking {
                     fields::START_SNEAKING
                 } else {
@@ -1254,7 +1269,9 @@ fn run_actor(
                 yaw: player.yaw,
                 pitch: player.pitch,
             };
-            writer.send(&reporter.report(pose, player.on_ground)?)?;
+            if updated {
+                writer.send(&reporter.report(pose, player.on_ground)?)?;
+            }
             {
                 let mut state = lock(shared)?;
                 state.previous = state.current;

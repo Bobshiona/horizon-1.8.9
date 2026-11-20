@@ -724,3 +724,50 @@ fn depth_strider_follows_predicted_armor_clicks() {
     assert!(plain > 0.5, "{plain}");
     assert!(strider > plain * 1.5, "plain {plain} strider {strider}");
 }
+
+/// EntityLivingBase.onDeathUpdate: a dead player keeps moving (with no
+/// input) and reporting for twenty ticks, then `setDead` removes it from the
+/// world's update loop and its movement packets stop until respawn.
+#[test]
+fn dead_player_moves_for_twenty_ticks_then_stops_reporting() {
+    let mut actor = Actor::new();
+    actor.join();
+    actor.position();
+    actor.grounded();
+    actor.barrier(420);
+    let mut velocity = vec![0x12, 7];
+    for v in [0i16, 8000, 0] {
+        velocity.extend(v.to_be_bytes());
+    }
+    let mut health = vec![0x06];
+    health.extend(0f32.to_be_bytes());
+    health.push(20);
+    health.extend(5f32.to_be_bytes());
+    actor.send(velocity);
+    actor.send(health);
+    actor.barrier(421);
+    let mut moves = 0;
+    let mut highest = 0f64;
+    // Thirty ticks later, a keepalive closes the count.
+    thread::sleep(Duration::from_millis(1500));
+    actor.send(play::keep_alive(422));
+    loop {
+        let packet = actor.peer.receive().unwrap();
+        if packet == play::keep_alive(422) {
+            break;
+        }
+        if matches!(packet.first(), Some(3..=6)) {
+            moves += 1;
+        }
+        if matches!(packet.first(), Some(4 | 6)) {
+            highest = highest.max(f64::from_be_bytes(packet[9..17].try_into().unwrap()));
+        }
+    }
+    assert_eq!(moves, 20);
+    assert!(highest > 5.0, "the dead body should still fly: {highest}");
+    // Respawn brings a new, reporting player.
+    actor.send(respawn(0));
+    actor.barrier(423);
+    actor.position();
+    actor.grounded();
+}

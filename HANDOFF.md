@@ -847,3 +847,19 @@ accept anything, as before. Regression `pickup_clicks_respect_slot_validity_and_
 Known gap: taking a crafting result does not predict the grid's ingredient use. Gate: 164 scoped tests
 (83 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world), strict Clippy/fmt,
 layers, public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 25. Dead-player ticks
+
+Section 24's pickup fix is `03373f0361`.
+
+`EntityLivingBase.onDeathUpdate` counts `deathTime` while health is zero and calls `setDead` at 20;
+`World.updateEntities` then stops updating the player until respawn replaces it. Until then the dead
+player still runs its living update with movement blocked (no input, but gravity, knockback and
+sprint stop apply) and reports through `onUpdateWalkingPlayer`. The client froze physics at death and
+kept sending a stationary C03 every tick indefinitely. Now a dead player moves without input for 20
+ticks, sending its C0B/C13/movement packets, then sends no movement until health returns on respawn.
+The S08 reply, keepalives, held-item sync and the death-time C0D are unaffected. Regression
+`dead_player_moves_for_twenty_ticks_then_stops_reporting` failed first (32 reports in 30 ticks).
+Gate: 165 scoped tests (84 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world),
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.
