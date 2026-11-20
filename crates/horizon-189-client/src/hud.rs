@@ -588,6 +588,61 @@ pub fn button_widget(
     canvas.centered(label, x + half, y + ((h - 8.0) / 2.0).floor(), color, true);
 }
 
+/// `RenderItem.renderItemIntoGUI` for a block model: centred in the slot,
+/// flipped in depth, scaled to 10 GUI pixels a block (0.5 * 40 * 0.5),
+/// turned 210 degrees about X and -135 about Y, then drawn back to front
+/// with back faces culled. False when the block has no model.
+fn block_icon(
+    canvas: &mut Canvas<'_>,
+    registry: &Registry,
+    item: &horizon_protocol_47::nbt::Item,
+    x: f32,
+    y: f32,
+) -> bool {
+    use glam::{Mat4, Vec3};
+    if !(1..198).contains(&item.id) || crate::hand::flat_block(item.id) {
+        return false;
+    }
+    let matrix = Mat4::from_translation(Vec3::new(x + 8.0, y + 8.0, 0.0))
+        * Mat4::from_scale(Vec3::new(10.0, 10.0, -10.0))
+        * Mat4::from_rotation_x(210f32.to_radians())
+        * Mat4::from_rotation_y((-135f32).to_radians());
+    let mut vertices = Vec::new();
+    let state = horizon_world_189::BlockState(((item.id as u16) << 4) | (item.damage as u16 & 15));
+    if !registry.block_model(&mut vertices, state, matrix, 1.0) || vertices.is_empty() {
+        return false;
+    }
+    // The flip makes the transform mirror-imaged: transformed cross
+    // products point inward, so a face is shown when theirs points away.
+    let mirrored = matrix.determinant() < 0.0;
+    let mut faces: Vec<(f32, &[crate::terrain::Vertex; 6])> = vertices
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .filter(|face| {
+            let [a, b, c] = [face[0], face[1], face[2]].map(|v| Vec3::from(v.position));
+            let normal = (b - a).cross(c - a);
+            (if mirrored { -normal.z } else { normal.z }) > 0.0
+        })
+        .map(|face| {
+            let depth = face.iter().map(|v| v.position[2]).sum::<f32>() / 6.0;
+            (depth, face)
+        })
+        .collect();
+    faces.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, face) in faces {
+        let corner = |i: usize| [face[i].position[0], face[i].position[1]];
+        let [r, g, b] = face[0].color;
+        canvas.entity_quad(
+            [corner(0), corner(1), corner(2), corner(5)],
+            [face[0].uv, face[1].uv, face[2].uv, face[5].uv],
+            face[0].layer,
+            [r, g, b, 1.0],
+        );
+    }
+    true
+}
+
 /// An item icon with `renderItemOverlayIntoGUI`'s stack count.
 pub fn item_slot(
     canvas: &mut Canvas<'_>,
@@ -648,6 +703,7 @@ pub fn item_slot(
         }
         true
     });
+    let drawn = drawn || block_icon(canvas, registry, item, x, y);
     if !drawn {
         match registry.item_layer(item) {
             Some(layer) => {

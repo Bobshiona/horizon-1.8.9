@@ -512,6 +512,18 @@ impl<'a> Canvas<'a> {
         );
     }
 
+    /// A textured quad in GUI pixels from the entity/item array, for
+    /// projected 3D icons.
+    pub fn entity_quad(
+        &mut self,
+        corners: [[f32; 2]; 4],
+        uv: [[f32; 2]; 4],
+        layer: u32,
+        color: [f32; 4],
+    ) {
+        self.quad(false, corners, uv, ENTITY | layer, color);
+    }
+
     /// `RenderItem.renderEffect` over a 16-pixel icon: two passes scrolled
     /// by the clock and turned -50 and 10 degrees, as on held items.
     pub fn item_glint(&mut self, layer: u32, glint: u32, x: f32, y: f32, millis: u64) {

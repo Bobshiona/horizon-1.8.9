@@ -116,8 +116,11 @@ registry; names translate from the owned jar); `stack_limit` now reads it, which
 to 64. `tooltip.rs` ports `getDisplayName`, rarity colours and `getTooltip` (enchantments, stored
 enchantments, custom potion effects, dyed, lore, attack damage with Sharpness, attribute modifiers,
 unbreakable, `HideFlags`). Slots draw durability bars and two-layer potion and leather icons; the hotbar
-shows the 40-tick item name. `--smoke-inventory` opens the inventory for a capture. Known gaps: block
-items draw their first face flat, no player model in the inventory, no drag-splitting or double-click
+shows the 40-tick item name. `--smoke-inventory` opens the inventory for a capture. Block items are
+drawn as `renderItemIntoGUI` does for 3D models (10 GUI pixels a block, 210 degrees about X, -135 about
+Y), projected on the CPU and drawn back to front with back faces culled. Known gaps: fence and wall
+items have no model (their item models use `*_inventory` block models the registry does not load), no
+player model in the inventory, no drag-splitting or double-click
 collect, furnace/brewing progress not drawn, and other window types have no shift-click prediction.
 
 Combat entities and first-person checkpoint. Spawn Object velocity and S12 velocity now reach non-living
