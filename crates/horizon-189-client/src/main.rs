@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod chat;
+mod container_input;
 mod frame_stats;
 mod gameplay;
 mod hand;
@@ -86,6 +87,7 @@ struct App {
     tab_held: bool,
     smoke_tab: bool,
     smoke_inventory: bool,
+    container_pointer: container_input::Pointer,
     particles: particles::Particles,
     /// The last client tick particles advanced to.
     particle_tick: u64,
@@ -145,6 +147,7 @@ impl App {
             let _ = renderer.window.set_cursor_grab(CursorGrabMode::None);
             renderer.window.set_cursor_visible(true);
         }
+        self.container_pointer.clear();
         self.captured = false;
         self.mouse = (0.0, 0.0);
         self.tab_held = false;
@@ -494,6 +497,7 @@ impl ApplicationHandler for App {
                                 let digit = hotbar_digit(key);
                                 match (key, hovered, digit) {
                                     (KeyCode::KeyE | KeyCode::Escape, _, _) => {
+                                        self.container_pointer.clear();
                                         Some(Action::CloseInventory)
                                     }
                                     (_, Some(slot), Some(button))
@@ -530,6 +534,7 @@ impl ApplicationHandler for App {
                                         Some(Action::OpenInventory)
                                     }
                                     KeyCode::KeyE | KeyCode::Escape if state.inventory.open => {
+                                        self.container_pointer.clear();
                                         Some(Action::CloseInventory)
                                     }
                                     _ => None,
@@ -548,7 +553,18 @@ impl ApplicationHandler for App {
                     self.publish_keys();
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => self.cursor = (position.x, position.y),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x, position.y);
+                if let (Some(network), Some(renderer)) = (&self.network, &self.renderer)
+                    && let Ok(state) = network.shared.lock()
+                    && state.inventory.open
+                {
+                    self.container_pointer.moved(
+                        &state.inventory,
+                        hud::hovered_slot(&state.inventory, renderer.layout, self.mouse_gui()),
+                    );
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } if self.chat.open => {
                 let notches = self.notches(delta);
                 if notches != 0 {
@@ -616,10 +632,11 @@ impl ApplicationHandler for App {
                     && let Ok(mut state) = network.shared.lock()
                 {
                     open = state.inventory.open || state.vitals.health <= 0.0;
-                    if open && pressed {
+                    if open {
                         if let Some(layout) = layout {
                             if state.vitals.health <= 0.0 {
-                                if button == MouseButton::Left
+                                if pressed
+                                    && button == MouseButton::Left
                                     && death == Some(hud::DeathButton::Respawn)
                                     && state.input.actions.len() < 128
                                 {
@@ -635,13 +652,24 @@ impl ApplicationHandler for App {
                                         (!hud::inside_window(&state.inventory, layout, mouse))
                                             .then_some(-999)
                                     });
-                                if let Some(slot) = slot {
-                                    let shift = self.modifiers.shift_key() && slot != -999;
-                                    state.input.actions.push_back(gameplay::Action::Click {
+                                let button = u8::from(button == MouseButton::Right);
+                                let clicks = if pressed {
+                                    self.container_pointer.press(
+                                        &state.inventory,
                                         slot,
-                                        mode: u8::from(shift),
-                                        button: u8::from(button == MouseButton::Right),
-                                    });
+                                        button,
+                                        self.modifiers.shift_key(),
+                                        Instant::now(),
+                                    )
+                                } else {
+                                    self.container_pointer
+                                        .release(&state.inventory, slot, button)
+                                };
+                                if !clicks.is_empty() && state.input.actions.len() < 128 {
+                                    let window = state.inventory.window;
+                                    state.input.actions.push_back(
+                                        gameplay::Action::ContainerGesture { window, clicks },
+                                    );
                                 }
                             }
                         }
@@ -701,7 +729,7 @@ impl ApplicationHandler for App {
                 let pose = self.camera_pose();
                 let tick = self.tick();
                 let mouse = self.mouse_gui();
-                let snapshot = self.network.as_ref().and_then(|n| {
+                let mut snapshot = self.network.as_ref().and_then(|n| {
                     n.shared.lock().ok().map(|mut s| Snapshot {
                         view: s.inventory.clone(),
                         swing: s.swing,
@@ -723,6 +751,11 @@ impl ApplicationHandler for App {
                         breaks: std::mem::take(&mut s.breaks),
                     })
                 });
+                if let Some(s) = &mut snapshot
+                    && let Some(preview) = self.container_pointer.preview(&s.view)
+                {
+                    s.view = Arc::new(preview);
+                }
                 let registry = self.renderer.as_ref().and_then(|r| r.registry.clone());
                 if let (Some(snapshot), Some(registry)) = (&snapshot, &registry) {
                     for event in &snapshot.inbox {
@@ -1127,6 +1160,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         tab_held: false,
         smoke_tab: options.smoke_tab,
         smoke_inventory: options.smoke_inventory,
+        container_pointer: container_input::Pointer::default(),
         particles: particles::Particles::default(),
         particle_tick: 0,
         view_bobbing: options.view_bobbing,

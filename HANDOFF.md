@@ -121,8 +121,7 @@ drawn as `renderItemIntoGUI` does for 3D models (10 GUI pixels a block, 210 degr
 Y, then the item model's own `gui` turn: 90 for fences, 180 for stairs), projected on the CPU and
 drawn back to front with back faces culled. Fences, walls, buttons, pressure plates and pistons use the
 `*_inventory` block models their item models name, in the hand, on the ground and in slots. Known gaps:
-no player model in the inventory, no drag-splitting or double-click
-collect, no brewing stand screen, and other window types have no shift-click prediction. Furnaces draw
+no player model in the inventory, no brewing stand screen, and other window types have no shift-click prediction. Furnaces draw
 `GuiFurnace`'s flame and arrow from S31 window properties.
 
 Combat entities and first-person checkpoint. Spawn Object velocity and S12 velocity now reach non-living
@@ -228,7 +227,7 @@ Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 122 scoped tests pass with `--include-ignored` (client 43, login CLI 2, assets 1, auth 6, physics 16,
+- 130 scoped tests pass with `--include-ignored` (client 51, login CLI 2, assets 1, auth 6, physics 16,
   protocol 37, world 17 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -272,8 +271,8 @@ Next (in order): live Hypixel PvP play test with the release build.
 1. Combat and interaction now have user-driven swing/attack/interact, hotbar selection, sword blocking,
    block placement, survival/creative digging, and a basic inventory/container grid. Remaining parity work
    includes exact selection boxes for non-colliding decorations, all entity collision sizes, client break
-   prediction and crafting/special-container rules. Player/chest shift-click is implemented; drag-split
-   and double-click collect remain missing. Adventure restrictions are enforced conservatively. An
+   prediction and crafting/special-container rules. Player/chest shift-click, drag-split
+   and double-click collect now work in player/chest windows (Section 9). Adventure restrictions are enforced conservatively. An
    authenticated Hypixel lobby smoke passed; full release PvP and saved-login reuse remain unverified.
 2. Player armor, generated item sprites, held block geometry, depth-tested names and asynchronous
    skin/cape bindings are present, as are first-person hands and first-person item display transforms.
@@ -326,7 +325,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest recorded gate outcomes are 122 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 130 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -429,7 +428,7 @@ logs. Live Hypixel and real Keychain reuse are still pending user testing.
 Next: inherited particle material and busy-tick collision; then player/chest drag-split and collect.
 
 
-### Block-break material and collision checkpoint
+### Block-break material and collision checkpoint — `3633dab1bd`
 
 Inherited/rebound `particle` slots now bake into the registry. The owned-jar test checks oak-log fragment
 pixels against bark, and the assets test checks inherited texture aliases. Fragments use the existing
@@ -444,3 +443,40 @@ public-tree/privacy and official reference gate. ARM64 release built. The privat
 `h189-sprint-fragments/capture.png` was inspected: red-wool and bark fragments appear above and on the
 stone-brick floor. Release smoke: 500 frames, 25 columns, one offscreen frame. Logs use the private
 `h189-fragments-*` prefix. Next: drag-split and double-click collect.
+
+
+### Inventory drag and collect checkpoint
+
+`Container.slotClick` mode 5/6 follows the owned 1.8.9 `xi` bytecode: original-count equal shares or
+one per slot, stack/armour/output validity, duplicate filtering, remainder, and two-pass collect with
+partial stacks before full stacks. Mouse gestures have a 250 ms double-click threshold, drag count
+preview and cancellation on focus loss/window changes. Window-bound quick-craft batches submit on
+release; the actor reserves transaction capacity before sending any stage. Physical input remains the
+only gameplay trigger. Rejected transactions block new gestures until authoritative resync.
+
+Unmodeled special containers keep their existing ordinary-click path; drag/collect is disabled there.
+Those modes return null even after changing slots, so claiming that null alone forces resync would be
+incorrect. Creative middle-button fill and shift-double-click bulk transfer are not implemented in this
+checkpoint. Player crafting result collection is excluded; brewing and inventory player model stay deferred.
+
+Full gate: 130 scoped tests (51 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 37 protocol, 17 world),
+zero failures, strict scoped Clippy/fmt, layers, public-tree and diff privacy checks passing. The official
+reference gate independently queried chest NBT after the split (one diamond in each of slots 1 and 2)
+and after collect (empty), in addition to placement/mining, combat, spectator and death/respawn checks:
+`VANILLA_189_REFERENCE_GATE_PASS`. New units exercise distribution, slot limits, cursor remainder,
+collect ordering, item matching, rejection/resync, gesture cancellation and preview/commit agreement.
+
+Native ARM64 release built. The private `h189-sprint-inventory/capture.png` was inspected: filled slots,
+stack counts, sword and tooltip render. It is a static inventory capture; gesture semantics are covered
+by units and authoritative chest NBT checks. Release smoke: 500 frames, 25 columns, one offscreen frame.
+No claim of manual Hypixel testing or successful real-account Keychain refresh is added.
+
+### Exact next task after the user's live test
+
+Review the user's release sign-in/relaunch, Lobby → Duels → BedWars logs/screenshots first. Reproduce
+any movement/packet/knockback/hit/respawn/shop failure locally, fix it and rerun this full gate before
+requesting a targeted live retest. If gameplay passes, the next implementation milestone is minimal own
+FPS/CPS HUD plus adjustable FOV, with physical-event counting and unchanged reach/movement semantics.
+Do not start deferred zoom, keystrokes, brewing, inventory player model or cosmetic polish. The fallback
+queue of explosion/smoke, block fragments and inventory gestures is complete; Section 8 remains its
+original task specification rather than a request to repeat it.

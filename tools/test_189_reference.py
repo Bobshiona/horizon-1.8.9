@@ -118,7 +118,7 @@ def main() -> None:
             for package in PACKAGES:
                 args.extend(["-p", package])
             args.extend(["--target", "aarch64-apple-darwin", "--target-dir", str(TARGET), "--", "--include-ignored", "--nocapture"])
-            configured = placed = mined = spectator = death = False
+            configured = placed = mined = spectator = death = split = collected = False
             with test_log.open("w") as output:
                 child = subprocess.Popen(args, cwd=REPO, env=env, stdout=output, stderr=subprocess.STDOUT)
                 deadline = time.monotonic() + 300
@@ -147,6 +147,12 @@ def main() -> None:
                     if "REFERENCE_DIG_FINISHED" in progress and not mined:
                         mined = True
                         command("testforblock 0 4 1 minecraft:air")
+                    if "REFERENCE_DRAG_SPLIT_SENT" in progress and not split:
+                        split = True
+                        command('testforblock 2 4 0 minecraft:chest 4 {Items:[{Slot:1b,id:"minecraft:diamond",Count:1b},{Slot:2b,id:"minecraft:diamond",Count:1b}]}')
+                    if "REFERENCE_COLLECT_SENT" in progress and not collected:
+                        collected = True
+                        command('testforblock 2 4 0 minecraft:chest 4 {Items:[]}')
                     if "REFERENCE_SPECTATOR_REQUESTED" in progress and not spectator:
                         spectator = True
                         command("fill 0 4 2 1 7 2 minecraft:stone")
@@ -162,6 +168,8 @@ def main() -> None:
                 raise RuntimeError(f"Reference tests failed; inspect {test_log}")
             if server_log.read_text(errors="replace").count("Successfully found the block at 0,4,1") < 2:
                 raise AssertionError("Server did not confirm both placement and mining")
+            if server_log.read_text(errors="replace").count("Successfully found the block at 2,4,0") < 2:
+                raise AssertionError("Server did not confirm drag-split and collect contents")
             build = ["cargo", "build", "--offline", "-p", "horizon-189-client", "--target", "aarch64-apple-darwin", "--target-dir", str(TARGET)]
             subprocess.run(build, cwd=REPO, env=env, check=True, timeout=300, stdout=subprocess.DEVNULL)
             binary = TARGET / "aarch64-apple-darwin/debug/horizon-189-client"

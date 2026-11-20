@@ -39,7 +39,7 @@ impl Default for Vitals {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Action {
     Respawn,
     Attack,
@@ -51,7 +51,11 @@ pub enum Action {
     },
     OpenInventory,
     CloseInventory,
-    /// C0E: mode 0 pick up, 1 shift-click, 2 number key, 4 drop.
+    ContainerGesture {
+        window: u8,
+        clicks: Vec<crate::container_input::Click>,
+    },
+    /// C0E: pickup, shift/swap/drop, quick-craft (5) and collect (6).
     Click {
         slot: i16,
         mode: u8,
@@ -165,6 +169,17 @@ impl Controller {
                     writer.send(&[0x16, 2])?;
                 }
                 Action::CloseInventory => writer.send(&inventory.close())?,
+                Action::ContainerGesture { window, clicks } => {
+                    if inventory.accepts_gesture(window, clicks.len()) && clicks.len() <= 83 {
+                        for click in clicks {
+                            if let Some(packet) =
+                                inventory.click_mode(click.slot, click.mode, click.button)?
+                            {
+                                writer.send(&packet)?;
+                            }
+                        }
+                    }
+                }
                 Action::Click { slot, mode, button } => {
                     if let Some(packet) = inventory.click_mode(slot, mode, button)? {
                         writer.send(&packet)?;
@@ -764,6 +779,47 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(250));
         assert!(network.shared.lock().unwrap().inventory.cursor.is_some());
+        {
+            let mut s = network.shared.lock().unwrap();
+            let window = s.inventory.window;
+            let clicks = vec![(-999, 0), (1, 1), (2, 1), (-999, 2)]
+                .into_iter()
+                .map(|(slot, button)| crate::container_input::Click {
+                    slot,
+                    mode: 5,
+                    button,
+                })
+                .collect();
+            s.input
+                .actions
+                .push_back(Action::ContainerGesture { window, clicks });
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        {
+            let s = network.shared.lock().unwrap();
+            assert_eq!(s.inventory.slots[1].as_ref().unwrap().count, 1);
+            assert_eq!(s.inventory.slots[2].as_ref().unwrap().count, 1);
+            assert_eq!(s.inventory.cursor.as_ref().unwrap().count, 1);
+        }
+        println!("REFERENCE_DRAG_SPLIT_SENT");
+        // Wait for the runner's independent server NBT assertion before collecting.
+        std::thread::sleep(Duration::from_millis(500));
+        {
+            let mut s = network.shared.lock().unwrap();
+            s.input.actions.push_back(Action::Click {
+                slot: 3,
+                mode: 6,
+                button: 0,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        {
+            let s = network.shared.lock().unwrap();
+            assert!(s.inventory.slots[1].is_none() && s.inventory.slots[2].is_none());
+            assert_eq!(s.inventory.cursor.as_ref().unwrap().count, 3);
+        }
+        println!("REFERENCE_COLLECT_SENT");
+        std::thread::sleep(Duration::from_millis(500));
         network
             .shared
             .lock()

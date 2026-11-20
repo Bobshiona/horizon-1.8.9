@@ -293,12 +293,68 @@ fn merge(
     moved
 }
 
+struct Drag {
+    button: u8,
+    slots: Vec<usize>,
+}
+
+/// Slot rules for ContainerPlayer/ContainerChest. Unknown containers do not
+/// predict drag/collect: both modes return null even when the server changes
+/// slots, so null alone cannot force a rejected-transaction resync.
+fn slot_limit(view: &View, index: usize, item: &Item) -> i8 {
+    if index >= view.slots.len() {
+        return 0;
+    }
+    if view.window != 0 {
+        return if matches!(view.kind, Kind::Chest(_)) {
+            stack_limit(item.id)
+        } else {
+            0
+        };
+    }
+    match index {
+        0 => 0,
+        5..=8 => {
+            let armor = (298..=317).contains(&item.id) && (item.id - 298) % 4 == (index - 5) as i16;
+            if armor || index == 5 && matches!(item.id, 86 | 397) {
+                1
+            } else {
+                0
+            }
+        }
+        1..=4 | 9..=44 => stack_limit(item.id),
+        _ => 0,
+    }
+}
+
+pub(crate) fn drag_eligible(view: &View, index: usize, item: &Item) -> bool {
+    let limit = slot_limit(view, index, item);
+    limit > 0
+        && view.slots[index]
+            .as_ref()
+            .is_none_or(|s| same_kind(s, item) && s.count < limit)
+}
+
+pub fn drag_preview(view: &View, slots: &[i16], button: u8) -> View {
+    let mut inv = Inventory {
+        view: view.clone(),
+        ..Inventory::default()
+    };
+    inv.drag_click(None, button * 4);
+    for &slot in slots {
+        inv.drag_click(usize::try_from(slot).ok(), button * 4 + 1);
+    }
+    inv.drag_click(None, button * 4 + 2);
+    inv.view
+}
+
 pub struct Inventory {
     pub player: Vec<Option<Item>>,
     pub view: View,
     transaction: i16,
     pending: std::collections::HashMap<i16, View>,
     blocked: bool,
+    drag: Option<Drag>,
 }
 
 impl Default for Inventory {
@@ -312,6 +368,7 @@ impl Default for Inventory {
             transaction: 0,
             pending: Default::default(),
             blocked: false,
+            drag: None,
         }
     }
 }
@@ -325,6 +382,13 @@ pub fn stack_limit(id: i16) -> i8 {
 }
 
 impl Inventory {
+    pub fn accepts_gesture(&self, window: u8, count: usize) -> bool {
+        self.view.open
+            && self.view.window == window
+            && !self.blocked
+            && self.pending.len() + count <= 128
+    }
+
     pub fn held(&self) -> Option<&Item> {
         self.player
             .get(36 + usize::from(self.view.selected))
@@ -343,6 +407,7 @@ impl Inventory {
         if slots > 216 {
             return Err(io::Error::other("Oversized container"));
         }
+        self.drag = None;
         self.pending.clear();
         self.blocked = false;
         self.view = View {
@@ -418,6 +483,7 @@ impl Inventory {
             }
             self.view.slots = items;
             self.blocked = false;
+            self.drag = None;
             self.pending.clear();
         }
         if window != 0 && window == self.view.window && self.view.slots.len() >= 36 {
@@ -451,6 +517,7 @@ impl Inventory {
         self.view.window = 0;
         self.view.container_slots = 0;
         self.view.slots = self.player.clone();
+        self.drag = None;
         self.pending.clear();
         self.blocked = false;
         packet
@@ -471,8 +538,25 @@ impl Inventory {
         let index = usize::try_from(slot)
             .ok()
             .filter(|&i| i < self.view.slots.len());
+        if mode != 5 {
+            self.drag = None;
+        }
         let before = self.view.clone();
         let clicked = match (mode, index) {
+            (5, _)
+                if button <= 6
+                    && (self.view.window == 0 || matches!(self.view.kind, Kind::Chest(_))) =>
+            {
+                self.drag_click(index, button);
+                None
+            }
+            (6, Some(index))
+                if button <= 1
+                    && (self.view.window == 0 || matches!(self.view.kind, Kind::Chest(_))) =>
+            {
+                self.collect(index, button != 0);
+                None
+            }
             (0, None) if slot == -999 && button <= 1 => {
                 let Some(cursor) = &mut self.view.cursor else {
                     return Ok(None);
@@ -525,6 +609,116 @@ impl Inventory {
         self.pending.insert(self.transaction, before);
         self.sync_player();
         Ok(Some(packet))
+    }
+
+    /// Vanilla quick-craft stage = button & 3, type = (button >> 2) & 3.
+    fn drag_click(&mut self, index: Option<usize>, button: u8) {
+        let stage = button & 3;
+        let kind = button >> 2;
+        if kind > 1 {
+            self.drag = None;
+            return;
+        }
+        if stage == 0 {
+            // A fresh start while already dragging resets the server state.
+            if self.drag.is_some() {
+                self.drag = None;
+                return;
+            }
+            if self.view.cursor.is_some() {
+                self.drag = Some(Drag {
+                    button: kind,
+                    slots: Vec::new(),
+                });
+            }
+            return;
+        }
+        let Some(mut drag) = self.drag.take() else {
+            return;
+        };
+        if drag.button != kind {
+            return;
+        }
+        let Some(cursor) = self.view.cursor.as_ref() else {
+            return;
+        };
+        if stage == 1 {
+            if let Some(index) = index
+                && cursor.count as usize > drag.slots.len()
+                && !drag.slots.contains(&index)
+                && drag_eligible(&self.view, index, cursor)
+            {
+                drag.slots.push(index);
+            }
+            self.drag = Some(drag);
+        } else if stage == 2 && !drag.slots.is_empty() {
+            let cursor = cursor.clone();
+            let share = if kind == 0 {
+                cursor.count as usize / drag.slots.len()
+            } else {
+                1
+            };
+            let mut remaining = i32::from(cursor.count);
+            for index in drag.slots.iter().copied() {
+                if cursor.count as usize >= drag.slots.len()
+                    && drag_eligible(&self.view, index, &cursor)
+                {
+                    let before = self.view.slots[index].as_ref().map_or(0, |s| s.count);
+                    let count = (i32::from(before) + share as i32)
+                        .min(i32::from(slot_limit(&self.view, index, &cursor)));
+                    remaining -= count - i32::from(before);
+                    let mut item = cursor.clone();
+                    item.count = count as i8;
+                    self.view.slots[index] = Some(item);
+                }
+            }
+            self.view.cursor = (remaining > 0).then(|| {
+                let mut item = cursor;
+                item.count = remaining as i8;
+                item
+            });
+        }
+    }
+
+    /// Container.slotClick mode 6: partial stacks before full stacks, and
+    /// button 1 reverses each pass. The clicked slot must be empty.
+    fn collect(&mut self, index: usize, reverse: bool) {
+        if self.view.slots[index].is_some() {
+            return;
+        }
+        let Some(mut cursor) = self.view.cursor.clone() else {
+            return;
+        };
+        let limit = stack_limit(cursor.id);
+        let order: Vec<usize> = if reverse {
+            (0..self.view.slots.len()).rev().collect()
+        } else {
+            (0..self.view.slots.len()).collect()
+        };
+        for pass in 0..2 {
+            for &slot in &order {
+                if cursor.count >= limit {
+                    break;
+                }
+                // ContainerPlayer.canMergeSlot excludes the crafting result.
+                if self.view.window == 0 && slot == 0 {
+                    continue;
+                }
+                let Some(item) = &mut self.view.slots[slot] else {
+                    continue;
+                };
+                if !same_kind(item, &cursor) || pass == 0 && item.count == stack_limit(item.id) {
+                    continue;
+                }
+                let take = (limit - cursor.count).min(item.count);
+                cursor.count += take;
+                item.count -= take;
+                if item.count <= 0 {
+                    self.view.slots[slot] = None;
+                }
+            }
+        }
+        self.view.cursor = Some(cursor);
     }
 
     fn pick_up(&mut self, index: usize, right: bool) {
@@ -650,6 +844,7 @@ impl Inventory {
         if let Some(saved) = saved {
             self.view = saved;
         }
+        self.drag = None;
         self.pending.clear();
         self.blocked = true;
         Ok(Some(interaction::confirm(fields[0], transaction)))
@@ -759,6 +954,115 @@ mod tests {
             damage: 0,
             nbt: None,
         })
+    }
+
+    fn quick_craft(inv: &mut Inventory, slots: &[i16], right: bool) {
+        let base = u8::from(right) * 4;
+        for (slot, button) in std::iter::once((-999, base))
+            .chain(slots.iter().map(|s| (*s, base + 1)))
+            .chain(std::iter::once((-999, base + 2)))
+        {
+            let packet = inv.click_mode(slot, 5, button).unwrap().unwrap();
+            assert_eq!(
+                &packet[packet.len() - 2..],
+                &[255, 255],
+                "mode 5 returns null"
+            );
+        }
+    }
+
+    #[test]
+    fn left_drag_shares_original_count_clamps_and_preserves_remainder() {
+        let mut inv = Inventory::default();
+        inv.local_open();
+        inv.view.cursor = stack(1, 10);
+        inv.view.slots[9] = stack(1, 63);
+        quick_craft(&mut inv, &[9, 10, 10, 11], false);
+        assert_eq!(inv.view.slots[9].as_ref().unwrap().count, 64);
+        assert_eq!(inv.view.slots[10].as_ref().unwrap().count, 3);
+        assert_eq!(inv.view.slots[11].as_ref().unwrap().count, 3);
+        assert_eq!(inv.view.cursor.as_ref().unwrap().count, 3);
+        assert_eq!(inv.player[10], inv.view.slots[10]);
+        assert_eq!(inv.transaction, 6);
+    }
+    #[test]
+    fn right_drag_respects_slot_rules_count_and_single_item_limits() {
+        let mut inv = Inventory::default();
+        inv.local_open();
+        inv.view.cursor = stack(1, 2);
+        quick_craft(&mut inv, &[0, 5, 9, 10, 11], true);
+        assert!(inv.view.slots[0].is_none() && inv.view.slots[5].is_none());
+        assert_eq!(inv.view.slots[9].as_ref().unwrap().count, 1);
+        assert_eq!(inv.view.slots[10].as_ref().unwrap().count, 1);
+        assert!(inv.view.slots[11].is_none() && inv.view.cursor.is_none());
+        inv.view.cursor = stack(310, 1);
+        quick_craft(&mut inv, &[5], false);
+        assert_eq!(inv.view.slots[5].as_ref().unwrap().id, 310);
+        assert!(inv.view.cursor.is_none());
+    }
+    #[test]
+    fn collect_takes_partial_stacks_first_and_obeys_direction_and_nbt() {
+        let mut inv = Inventory::default();
+        inv.local_open();
+        inv.view.cursor = stack(1, 1);
+        inv.view.slots[9] = stack(1, 64);
+        inv.view.slots[10] = stack(1, 4);
+        inv.view.slots[11] = stack(1, 10);
+        inv.view.slots[11].as_mut().unwrap().damage = 1;
+        inv.view.slots[12] = stack(1, 5);
+        inv.click_mode(13, 6, 1).unwrap().unwrap();
+        assert_eq!(inv.view.cursor.as_ref().unwrap().count, 64);
+        assert_eq!(inv.view.slots[9].as_ref().unwrap().count, 10);
+        assert!(inv.view.slots[10].is_none() && inv.view.slots[12].is_none());
+        assert_eq!(inv.view.slots[11].as_ref().unwrap().count, 10);
+        inv.view.cursor = stack(1, 2);
+        inv.view.slots[14] = stack(1, 4);
+        let before = inv.view.cursor.clone();
+        inv.click_mode(14, 6, 0).unwrap();
+        assert_eq!(
+            inv.view.cursor, before,
+            "nonempty clicked slot cannot collect"
+        );
+    }
+    #[test]
+    fn rejected_drag_blocks_until_resync_and_clears_gesture_state() {
+        let mut inv = Inventory::default();
+        inv.local_open();
+        inv.view.cursor = stack(264, 8);
+        quick_craft(&mut inv, &[9, 10], false);
+        let transaction = inv.transaction;
+        let [a, b] = transaction.to_be_bytes();
+        assert!(inv.confirm(&[0, a, b, 0]).unwrap().is_some());
+        assert!(inv.drag.is_none() && inv.blocked);
+        assert!(!inv.accepts_gesture(0, 4));
+        assert!(inv.click_mode(9, 6, 0).unwrap().is_none());
+        inv.items(0, vec![None; 45]);
+        inv.set_slot(255, -1, stack(264, 8));
+        assert!(inv.accepts_gesture(0, 4));
+        quick_craft(&mut inv, &[9, 10], false);
+        assert_eq!(inv.view.cursor, None);
+    }
+    #[test]
+    fn unsupported_windows_never_assume_null_will_force_resync() {
+        let mut inv = Inventory::default();
+        inv.local_open();
+        inv.view.window = 1;
+        inv.view.kind = Kind::Furnace;
+        inv.view.cursor = stack(264, 8);
+        assert!(inv.click_mode(-999, 5, 0).unwrap().is_none());
+        assert!(inv.click_mode(9, 6, 0).unwrap().is_none());
+        assert_eq!(inv.view.cursor.as_ref().unwrap().count, 8);
+    }
+    #[test]
+    fn drag_preview_and_commit_agree_without_mutating_authoritative_view() {
+        let mut inv = Inventory::default();
+        inv.local_open();
+        inv.view.cursor = stack(264, 7);
+        let preview = drag_preview(&inv.view, &[9, 10, 11], 0);
+        assert!(inv.view.slots[9].is_none());
+        quick_craft(&mut inv, &[9, 10, 11], false);
+        assert_eq!(preview.cursor, inv.view.cursor);
+        assert_eq!(preview.slots, inv.view.slots);
     }
 
     #[test]
