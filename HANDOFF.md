@@ -219,16 +219,16 @@ checked two injected S25 stages on the floor and a wall.
 Block-break particles follow `addBlockDestroyEffects`: S28 effect 2001 (state id `id + meta << 12`) and
 the local player's own breaks (survival completion and creative hits, resolved against the world before
 the server's change) spawn 64 `EntityDiggingFX` on a 4x4x4 grid, flung from the centre, a 4-pixel patch
-of the block texture at 0.6 brightness, falling at 0.04 with per-axis block collision (the window
-`try_read`s the world at 20 Hz and skips collision if the network thread is writing), 0.98 drag and 0.7
-ground friction. The particle texture is the model's first face, as the particle sprite is not baked. A
+of the block texture at 0.6 brightness, falling at 0.04 with swept vanilla collision shapes, 0.98 drag and 0.7 ground friction. A bounded reusable shape cache
+survives network-write ticks; unknown cells defer motion while lifetime still expires. Fresh world reads
+refresh cached shapes. The inherited model `particle` slot supplies the texture, independently of face order. A
 capture checked red wool particles from injected 2001 effects landing on the floor.
 
 Next (in order): live Hypixel PvP play test with the release build.
 
 ## 2. Verified State
 
-- 120 scoped tests pass with `--include-ignored` (client 41, login CLI 2, assets 1, auth 6, physics 16,
+- 122 scoped tests pass with `--include-ignored` (client 43, login CLI 2, assets 1, auth 6, physics 16,
   protocol 37, world 17 — counts include the Metal readback and the owned-jar registry test).
   `horizon-client-input` 209/209. Scoped Clippy `-D warnings`, `cargo fmt --check`, `check_layers.py`,
   `check_public_tree.py` pass.
@@ -326,7 +326,7 @@ path for the ignored interaction test. Run that test only through the managed fi
 block entities and flight. Both scripts and all server files live in the system temporary directory.
 The official server jar SHA-1 is `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd`, using installed Zulu Java 8.
 
-Latest recorded gate outcomes are 120 scoped tests passing, strict scoped Clippy and formatting passing, layer and
+Latest recorded gate outcomes are 122 scoped tests passing, strict scoped Clippy and formatting passing, layer and
 public-tree checks passing, interaction gate passing, and native equipment/flight smoke passing with zero
 server movement flags. Earlier broad-workspace validation recorded macOS path/tool-assumption failures and disk exhaustion.
 This checkpoint revalidates the scoped client packages; the whole upstream workspace remains unverified.
@@ -410,7 +410,7 @@ reports show lost navigation or gameplay information.
 
 ## 9. November 19 fallback queue execution
 
-### Explosion/smoke checkpoint
+### Explosion/smoke checkpoint — `5c78cbd671`
 
 Bounded S27/S2A decoders retain signed affected-block records and particle parameters; explosion block
 changes remesh and player knockback remains applied once. The window receives bounded visual events.
@@ -427,3 +427,20 @@ Evidence remains outside git in the private `h189-sprint-effects` capture direct
 logs. Live Hypixel and real Keychain reuse are still pending user testing.
 
 Next: inherited particle material and busy-tick collision; then player/chest drag-split and collect.
+
+
+### Block-break material and collision checkpoint
+
+Inherited/rebound `particle` slots now bake into the registry. The owned-jar test checks oak-log fragment
+pixels against bark, and the assets test checks inherited texture aliases. Fragments use the existing
+vanilla swept AABB collision operations, including thin shapes, rather than endpoint/full-cube tests.
+A 32,768-cell reusable shape cache retains collision on busy network ticks. Missing cache coverage
+conservatively defers motion; particle age still advances, bounding lifetime and memory. Smoke uses the
+same collision path. Regression tests cover high-speed floor clipping, five unavailable-world ticks,
+refresh after floor removal and an initially missing snapshot.
+
+Full gate passed: 122 scoped tests (43 client; other counts unchanged), strict Clippy, fmt, layers,
+public-tree/privacy and official reference gate. ARM64 release built. The private
+`h189-sprint-fragments/capture.png` was inspected: red-wool and bark fragments appear above and on the
+stone-brick floor. Release smoke: 500 frames, 25 columns, one offscreen frame. Logs use the private
+`h189-fragments-*` prefix. Next: drag-split and double-click collect.

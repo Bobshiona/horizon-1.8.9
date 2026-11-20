@@ -61,6 +61,12 @@ impl Assets {
         })
     }
 
+    /// Inherited and rebound particle slot, independent of baked face order.
+    pub fn particle_sprite(&self, name: &str) -> Result<Option<String>, Box<dyn Error>> {
+        let model = self.models.resolve(&Self::model_name(name))?;
+        Ok(model.textures.get("particle").map(|m| m.sprite.clone()))
+    }
+
     pub fn bake_block(&self, name: &str) -> Result<Vec<ModelQuad>, Box<dyn Error>> {
         let name = Self::model_name(name);
         if !self.models.resolves(&name) {
@@ -228,12 +234,16 @@ mod tests {
     #[test]
     fn legacy_parent_and_texture_slots_bake_through_upstream() {
         let source = ResourceSource::indexed(BTreeMap::from([
-            ("assets/minecraft/models/block/test.json".to_owned(), Resource::bytes(br##"{"parent":"block/base","textures":{"all":"blocks/stone"}}"##.to_vec())),
+            ("assets/minecraft/models/block/test.json".to_owned(), Resource::bytes(br##"{"parent":"block/base","textures":{"all":"blocks/stone","particle":"#all"}}"##.to_vec())),
             ("assets/minecraft/models/block/base.json".to_owned(), Resource::bytes(br##"{"elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"up":{"texture":"#all","cullface":"up"}}}]}"##.to_vec())),
         ]));
         let assets = Assets::from_source(source).unwrap();
         let quads = assets.bake_block("test").unwrap();
         assert_eq!(quads.len(), 1);
+        assert_eq!(
+            assets.particle_sprite("test").unwrap().as_deref(),
+            Some("minecraft:blocks/stone")
+        );
         for name in ["minecraft:test", "block/test", "minecraft:block/test"] {
             assert_eq!(assets.bake_block(name).unwrap(), quads);
         }

@@ -4,6 +4,100 @@
 //! thread and drawn as camera-facing quads.
 use crate::{models::Texture, terrain::Vertex};
 use glam::{Mat4, Vec3};
+use horizon_physics_189::{Aabb, Vec3 as DVec3, shapes};
+use horizon_world_189::World;
+use std::collections::HashMap;
+
+/// Reusable, bounded shape snapshots. Unknown cells defer movement during a
+/// world-write tick instead of treating an unavailable world as empty air.
+#[derive(Default)]
+struct CollisionCache {
+    cells: HashMap<[i32; 3], (u64, Vec<Aabb>)>,
+    generation: u64,
+    scratch: Vec<Aabb>,
+}
+const MAX_COLLISION_CELLS: usize = 32_768;
+impl CollisionCache {
+    fn begin(&mut self, available: bool) {
+        if available {
+            self.generation = self.generation.wrapping_add(1);
+            if self.cells.len() > MAX_COLLISION_CELLS / 2 {
+                self.cells
+                    .retain(|_, (g, _)| self.generation.wrapping_sub(*g) <= 2);
+            }
+        }
+    }
+    fn move_particle(&mut self, p: &mut Particle, motion: [f64; 3], world: Option<&World>) -> bool {
+        let [x, y, z] = p.position;
+        let bounds = shapes::bb([x - 0.1, y, z - 0.1], [x + 0.1, y + 0.2, z + 0.1]);
+        let mask = shapes::add_coord(bounds, motion[0], motion[1], motion[2]);
+        let low = shapes::lo(mask).map(shapes::floor);
+        let high = shapes::hi(mask).map(|v| shapes::floor(v + 1.0));
+        if (0..3).any(|a| i64::from(high[a]) - i64::from(low[a]) > 8) {
+            return false;
+        }
+        self.scratch.clear();
+        for x in low[0]..high[0] {
+            for z in low[2]..high[2] {
+                for y in low[1].saturating_sub(1)..high[1] {
+                    let at = [x, y, z];
+                    if let Some(world) = world {
+                        if !self.cells.contains_key(&at) && self.cells.len() >= MAX_COLLISION_CELLS
+                        {
+                            return false;
+                        }
+                        let (g, boxes) = self.cells.entry(at).or_default();
+                        if *g != self.generation {
+                            boxes.clear();
+                            if let Some(state) = world.block(x, y, z) {
+                                shapes::collision_boxes(
+                                    world,
+                                    at,
+                                    state,
+                                    shapes::bb(
+                                        [
+                                            f64::from(x) - 1.0,
+                                            f64::from(y) - 1.0,
+                                            f64::from(z) - 1.0,
+                                        ],
+                                        [
+                                            f64::from(x) + 2.0,
+                                            f64::from(y) + 2.0,
+                                            f64::from(z) + 2.0,
+                                        ],
+                                    ),
+                                    boxes,
+                                );
+                            }
+                            *g = self.generation;
+                        }
+                    }
+                    let Some((_, boxes)) = self.cells.get(&at) else {
+                        return false;
+                    };
+                    self.scratch.extend_from_slice(boxes);
+                }
+            }
+        }
+        let slide = horizon_physics_189::slide(
+            bounds,
+            DVec3::new(motion[0], motion[1], motion[2]),
+            &self.scratch,
+        );
+        let moved = slide.movement.components();
+        for a in 0..3 {
+            p.position[a] += moved[a];
+            p.motion[a] = if motion[a] == moved[a] {
+                motion[a]
+            } else {
+                0.0
+            };
+        }
+        p.on_ground = slide.on_ground;
+        true
+    }
+}
+
 use horizon_world_189::entities::{Entity, Kind};
 
 pub enum Event {
@@ -51,6 +145,7 @@ pub struct Particles {
     emitters: Vec<Emitter>,
     seed: u64,
     huge: Vec<Huge>,
+    collision: CollisionCache,
 }
 
 impl Default for Particles {
@@ -60,6 +155,7 @@ impl Default for Particles {
             emitters: Vec::new(),
             seed: 0x2545_F491_4F6C_DD1D,
             huge: Vec::new(),
+            collision: CollisionCache::default(),
         }
     }
 }
@@ -194,34 +290,23 @@ impl Particles {
         });
     }
 
-    fn update_visual(p: &mut Particle, world: Option<&horizon_world_189::World>) -> bool {
+    fn update_visual(p: &mut Particle, world: Option<&World>, cache: &mut CollisionCache) -> bool {
         p.previous = p.position;
         if p.age >= p.max_age {
             return false;
         }
-        p.age += 1;
         if p.style == Style::LargeExplosion {
+            p.age += 1;
+            return true;
+        }
+        p.age += 1;
+        let before_y = p.position[1];
+        let mut motion = p.motion;
+        motion[1] += 0.004;
+        if !cache.move_particle(p, motion, world) {
             return true;
         }
         p.texture = (7i32 - (p.age * 8 / p.max_age) as i32).max(0) as u8;
-        p.motion[1] += 0.004;
-        let before_y = p.position[1];
-        for axis in [1, 0, 2] {
-            let mut next = p.position;
-            next[axis] += p.motion[axis];
-            let [x, y, z] = next.map(|v| v.floor() as i32);
-            let solid = world.and_then(|w| w.block(x, y, z)).is_some_and(|s| {
-                s.block_id() != 0
-                    && horizon_world_189::blocks::block(s.block_id()).layer
-                        == horizon_world_189::blocks::Layer::Solid
-            });
-            if solid {
-                p.on_ground |= axis == 1 && p.motion[axis] < 0.0;
-                p.motion[axis] = 0.0;
-            } else {
-                p.position = next;
-            }
-        }
         if p.style == Style::Smoke && before_y == p.position[1] {
             p.motion[0] *= 1.1;
             p.motion[2] *= 1.1;
@@ -359,36 +444,20 @@ impl Particles {
 
     /// `EntityFX.onUpdate` for block particles: gravity, block collision,
     /// drag and ground friction.
-    fn update_digging(particle: &mut Particle, world: Option<&horizon_world_189::World>) -> bool {
+    fn update_digging(
+        particle: &mut Particle,
+        world: Option<&World>,
+        cache: &mut CollisionCache,
+    ) -> bool {
         particle.previous = particle.position;
         if particle.age >= particle.max_age {
             return false;
         }
         particle.age += 1;
-        particle.motion[1] -= 0.04;
-        let solid = |at: [f64; 3]| {
-            world.is_some_and(|world| {
-                let [x, y, z] = at.map(|v| v.floor() as i32);
-                world.block(x, y, z).is_some_and(|state| {
-                    let id = state.block_id();
-                    id != 0
-                        && horizon_world_189::blocks::block(id).layer
-                            == horizon_world_189::blocks::Layer::Solid
-                })
-            })
-        };
-        particle.on_ground = false;
-        for axis in [1, 0, 2] {
-            let mut next = particle.position;
-            next[axis] += particle.motion[axis];
-            if solid(next) {
-                if axis == 1 && particle.motion[1] < 0.0 {
-                    particle.on_ground = true;
-                }
-                particle.motion[axis] = 0.0;
-            } else {
-                particle.position = next;
-            }
+        let mut motion = particle.motion;
+        motion[1] -= 0.04;
+        if !cache.move_particle(particle, motion, world) {
+            return true;
         }
         for value in &mut particle.motion {
             *value *= 0.98;
@@ -422,6 +491,7 @@ impl Particles {
     /// One client tick: emitters burst around their entity for three ticks,
     /// critical arrows trail, particles move and expire.
     pub fn tick(&mut self, entities: &[(i32, Entity)], world: Option<&horizon_world_189::World>) {
+        self.collision.begin(world.is_some());
         let mut huge = std::mem::take(&mut self.huge);
         huge.retain_mut(|h| {
             for _ in 0..6 {
@@ -479,11 +549,11 @@ impl Particles {
         }
         self.particles.retain_mut(|particle| {
             if particle.block.is_some() {
-                Self::update_digging(particle, world)
+                Self::update_digging(particle, world, &mut self.collision)
             } else if particle.style == Style::Crit {
                 Self::update(particle)
             } else {
-                Self::update_visual(particle, world)
+                Self::update_visual(particle, world, &mut self.collision)
             }
         });
     }
@@ -633,9 +703,59 @@ mod tests {
         p.event(&Event::Particle(packet), [0.0; 3]);
         assert_eq!(p.len(), MAX_PARTICLES);
         for _ in 0..120 {
-            p.tick(&[], None);
+            p.tick(&[], Some(&World::default()));
         }
         assert!(p.particles.is_empty());
+    }
+
+    fn floor_world() -> World {
+        let mut world = World::default();
+        world.apply(horizon_world_189::ColumnUpdate::Data {
+            x: 0,
+            z: 0,
+            full: true,
+            data: Box::new(horizon_world_189::ColumnData {
+                sections: std::array::from_fn(|_| None),
+                biomes: None,
+            }),
+        });
+        world.set_block(4, 3, 4, horizon_world_189::BlockState(1 << 4));
+        world
+    }
+
+    #[test]
+    fn cached_floor_clips_fast_fragments_through_busy_world_ticks() {
+        let mut world = floor_world();
+        let mut p = Particles::default();
+        p.digging([4.5, 5.0, 4.5], [0.0; 3], 0, [1.0; 3]);
+        p.particles[0].motion = [0.0, -2.0, 0.0];
+        p.particles[0].max_age = 100;
+        p.tick(&[], Some(&world));
+        assert_eq!(p.particles[0].position[1], 4.0);
+        for _ in 0..5 {
+            p.tick(&[], None);
+        }
+        assert_eq!(p.particles[0].position[1], 4.0);
+        assert!(p.particles[0].on_ground);
+        assert_eq!(p.particles[0].age, 6);
+        world.set_block(4, 3, 4, horizon_world_189::BlockState(0));
+        p.tick(&[], Some(&world));
+        assert!(
+            p.particles[0].position[1] < 4.0,
+            "fresh snapshot removes stale floor"
+        );
+    }
+
+    #[test]
+    fn missing_collision_snapshot_defers_instead_of_falling_through_floor() {
+        let mut p = Particles::default();
+        p.digging([4.5, 4.2, 4.5], [0.0; 3], 0, [1.0; 3]);
+        p.particles[0].motion = [0.0, -1.0, 0.0];
+        p.tick(&[], None);
+        assert_eq!(p.particles[0].position, [4.5, 4.2, 4.5]);
+        assert_eq!(p.particles[0].age, 1);
+        p.tick(&[], Some(&floor_world()));
+        assert_eq!(p.particles[0].position[1], 4.0);
     }
 
     #[test]
@@ -674,13 +794,13 @@ mod tests {
         particles.destroy([0, 64, 0], 3, [1.0; 3]);
         assert_eq!(particles.len(), 64);
         let rising: Vec<f64> = particles.particles.iter().map(|p| p.motion[1]).collect();
-        particles.tick(&[], None);
+        particles.tick(&[], Some(&World::default()));
         // Gravity pulls every surviving particle down.
         for (particle, before) in particles.particles.iter().zip(rising) {
             assert!(particle.motion[1] < before);
         }
         for _ in 0..40 {
-            particles.tick(&[], None);
+            particles.tick(&[], Some(&World::default()));
         }
         assert_eq!(particles.len(), 0);
     }

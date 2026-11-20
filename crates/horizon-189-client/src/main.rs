@@ -764,7 +764,7 @@ impl ApplicationHandler for App {
                 }
                 if let Some((_, _, entities)) = &pose {
                     let now = tick.floor() as u64;
-                    // Collisions only when the network thread is not writing.
+                    // Refresh shape snapshots without waiting on the network writer.
                     let world = self.network.as_ref().and_then(|n| n.world.try_read().ok());
                     for _ in 0..now.saturating_sub(self.particle_tick).min(10) {
                         self.particles.tick(entities, world.as_deref());

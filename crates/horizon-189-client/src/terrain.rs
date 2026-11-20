@@ -36,6 +36,7 @@ struct Face {
 }
 
 struct Model {
+    particle: u32,
     alternatives: Vec<(Vec<Face>, i32)>,
     total: i32,
 }
@@ -311,6 +312,10 @@ impl Registry {
                     VariantSet::Single(single) => vec![(single, 1)],
                     VariantSet::Weighted(weighted) => weighted,
                 };
+                let particle = choices
+                    .first()
+                    .and_then(|(choice, _)| assets.particle_sprite(&choice.model).ok().flatten())
+                    .map_or(0, |sprite| layer_for(&sprite, &mut textures));
                 let mut alternatives = Vec::with_capacity(choices.len());
                 for (choice, weight) in choices {
                     match assets.bake_variant(&choice.model, choice.rotations, choice.uv_lock) {
@@ -346,6 +351,7 @@ impl Registry {
                 let total = alternatives.iter().map(|(_, weight)| weight).sum();
                 let index = models.len() as u32;
                 models.push(Model {
+                    particle,
                     alternatives,
                     total,
                 });
@@ -363,6 +369,7 @@ impl Registry {
         }
         let missing = models.len() as u32;
         models.push(Model {
+            particle: 0,
             alternatives: vec![(placeholder, 1)],
             total: 1,
         });
@@ -388,6 +395,11 @@ impl Registry {
                 .collect();
             inventory.insert(key, models.len() as u32);
             models.push(Model {
+                particle: assets
+                    .particle_sprite(name)
+                    .ok()
+                    .flatten()
+                    .map_or(0, |sprite| layer_for(&sprite, &mut textures)),
                 alternatives: vec![(faces, 1)],
                 total: 1,
             });
@@ -650,15 +662,9 @@ impl Registry {
         }
     }
 
-    /// `EntityDiggingFX`'s texture and tint for a block: the first face of
-    /// its model (the particle texture is not baked) and leaf colours.
+    /// `EntityDiggingFX` uses the inherited model particle slot and leaf tint.
     pub fn particle(&self, state: BlockState) -> Option<(u32, [f32; 3])> {
         let model = self.resolve(&World::default(), [0; 3], state)?;
-        let face = self.models[model as usize]
-            .alternatives
-            .first()?
-            .0
-            .first()?;
         let tint = match (state.block_id(), state.metadata() & 3) {
             (18, 1) => [0x61, 0x99, 0x61],
             (18, 2) => [0x80, 0xA7, 0x55],
@@ -667,8 +673,8 @@ impl Registry {
         }
         .map(|c| f32::from(c) / 255.0);
         Some((
-            self.block_layers[face.layer as usize],
-            if face.tint { tint } else { [1.0; 3] },
+            self.block_layers[self.models[model as usize].particle as usize],
+            tint,
         ))
     }
 
@@ -1258,6 +1264,16 @@ mod tests {
         let jar = std::env::var_os("HORIZON_189_TEST_JAR").ok_or("Set HORIZON_189_TEST_JAR")?;
         let registry = Registry::open(Path::new(&jar))?;
         assert_eq!(registry.model_failures, 0);
+        let log = registry.particle(BlockState(17 << 4)).unwrap().0;
+        let assets = Assets::open(Path::new(&jar))?;
+        let bark = first_frame(&assets.texture("blocks/log_oak")?).unwrap();
+        let texture = &registry.entity_textures[log as usize];
+        for y in 0..16 {
+            assert_eq!(
+                &texture.rgba[y * 128 * 4..(y * 128 + 16) * 4],
+                &bark[y * 16 * 4..(y + 1) * 16 * 4]
+            );
+        }
         // Metadata values vanilla never stores fall back to the file's first
         // variant; every value vanilla writes must match exactly.
         eprintln!("inexact={:?}", registry.inexact);
