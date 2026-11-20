@@ -88,6 +88,9 @@ pub struct Controller {
     pub broken: Vec<[i32; 3]>,
     pub haste: Option<i8>,
     pub fatigue: Option<i8>,
+    /// Blocks this player placed or broke this tick, for the client world
+    /// (`ItemBlock.onItemUse`, `onPlayerDestroyBlock`).
+    pub edits: Vec<([i32; 3], horizon_world_189::BlockState)>,
     /// `PlayerCapabilities.disableDamage`, from S39.
     pub invulnerable: bool,
     raycaster: raycast::Raycaster,
@@ -379,7 +382,6 @@ impl Controller {
                     });
                     // onPlayerRightClick syncs first.
                     self.sync_slot(inventory.view.selected, writer)?;
-                    writer.send(&packet::place(at, face, relative, inventory.held())?)?;
                     let block = world
                         .block(at[0], at[1], at[2])
                         .unwrap_or_default()
@@ -388,16 +390,48 @@ impl Controller {
                     // otherwise the item's onItemUse may consume the click.
                     let activated = (!player.sneaking || inventory.held().is_none())
                         && interactive_block(block);
-                    let consumed = activated
-                        || inventory
-                            .held()
-                            .is_some_and(|item| item_use_on_block(item, block, face));
-                    // rightClickMouse swings only for a consumed click and
-                    // otherwise falls through to sendUseItem.
-                    if consumed {
-                        self.swing(writer)?;
-                    } else {
+                    // ItemBlock.canPlaceBlockOnSide, for full cubes this
+                    // client can place: a refused side sends no block C08,
+                    // and rightClickMouse falls back to sendUseItem.
+                    let cube = (!activated && game_mode != 3)
+                        .then(|| inventory.held().and_then(placed_cube))
+                        .flatten()
+                        .map(|state| {
+                            let target = if replaceable(world, at) {
+                                at
+                            } else {
+                                offset(at, face)
+                            };
+                            (state, target)
+                        });
+                    let refused =
+                        cube.is_some_and(|(_, target)| !cube_fits(world, target, player, entities));
+                    if refused {
                         self.use_held(inventory, player.food, game_mode, writer)?;
+                    } else {
+                        writer.send(&packet::place(at, face, relative, inventory.held())?)?;
+                        let mut consumed = activated
+                            || inventory
+                                .held()
+                                .is_some_and(|item| item_use_on_block(item, block, face));
+                        // ItemBlock.onItemUse places it in the client world at
+                        // once and takes one from the stack outside creative.
+                        if let Some((state, target)) = cube {
+                            consumed = (0..255).contains(&target[1]);
+                            if consumed && matches!(game_mode, 0 | 1) {
+                                self.edits.push((target, state));
+                                if game_mode == 0 {
+                                    inventory.consume_held();
+                                }
+                            }
+                        }
+                        // rightClickMouse swings only for a consumed click and
+                        // otherwise falls through to sendUseItem.
+                        if consumed {
+                            self.swing(writer)?;
+                        } else {
+                            self.use_held(inventory, player.food, game_mode, writer)?;
+                        }
                     }
                 }
                 None => self.use_held(inventory, player.food, game_mode, writer)?,
@@ -543,6 +577,127 @@ fn same_tool(a: Option<&Item>, b: Option<&Item>) -> bool {
 fn stack_durable(id: i16) -> bool {
     matches!(id,256..=259|261|267..=279|283..=286|290..=294|298..=317|346|359|398)
 }
+/// The state a full-cube `ItemBlock` places, where this client knows it:
+/// variants take the item damage as metadata, plain blocks take zero.
+fn placed_cube(item: &Item) -> Option<horizon_world_189::BlockState> {
+    let variant = |max: i16| {
+        (0..=max)
+            .contains(&item.damage)
+            .then_some(item.damage as u16)
+    };
+    let meta = match item.id {
+        1 => variant(6)?,
+        3 | 24 | 168 => variant(2)?,
+        5 => variant(5)?,
+        19 | 155 => variant(1)?,
+        35 | 95 | 159 => variant(15)?,
+        98 => variant(3)?,
+        2
+        | 4
+        | 7
+        | 14..=16
+        | 20..=22
+        | 41
+        | 42
+        | 45..=49
+        | 56
+        | 57
+        | 73
+        | 79
+        | 80
+        | 82
+        | 87
+        | 89
+        | 103
+        | 110
+        | 112
+        | 121
+        | 123
+        | 129
+        | 133
+        | 152
+        | 165
+        | 169
+        | 172..=174 => 0,
+        _ => return None,
+    };
+    Some(horizon_world_189::BlockState((item.id as u16) << 4 | meta))
+}
+
+/// `Block.isReplaceable` at a position: replaceable materials, but a snow
+/// layer only at one layer and a double plant only as grass or fern.
+fn replaceable(world: &World, at: [i32; 3]) -> bool {
+    let state = world.block(at[0], at[1], at[2]).unwrap_or_default();
+    match state.block_id() {
+        78 => state.metadata() & 7 == 0,
+        175 => {
+            let lower = if state.metadata() & 8 != 0 {
+                world
+                    .block(at[0], at[1] - 1, at[2])
+                    .unwrap_or_default()
+                    .metadata()
+            } else {
+                state.metadata()
+            };
+            matches!(lower & 7, 2 | 3)
+        }
+        id => replaceable_material(id),
+    }
+}
+
+/// `Material.isReplaceable`: air, liquids, fire, plants and vines, snow.
+fn replaceable_material(id: u16) -> bool {
+    matches!(id, 0 | 8..=11 | 31 | 32 | 51 | 78 | 106 | 175)
+}
+
+/// `EnumFacing.getFront(face)` applied to a position.
+fn offset(at: [i32; 3], face: u8) -> [i32; 3] {
+    let [x, y, z] = at;
+    match face {
+        0 => [x, y - 1, z],
+        1 => [x, y + 1, z],
+        2 => [x, y, z - 1],
+        3 => [x, y, z + 1],
+        4 => [x - 1, y, z],
+        _ => [x + 1, y, z],
+    }
+}
+
+/// `World.canBlockBePlaced` for a full cube: a replaceable material and no
+/// `preventEntitySpawning` entity (this player, living entities, boats,
+/// minecarts, primed TNT, crystals, falling blocks) inside the cube.
+fn cube_fits(world: &World, at: [i32; 3], player: &Player, entities: &Entities) -> bool {
+    use horizon_physics_189::shapes::{bb, intersects};
+    use horizon_world_189::entities::Kind;
+    let state = world.block(at[0], at[1], at[2]).unwrap_or_default();
+    if !replaceable_material(state.block_id()) {
+        return false;
+    }
+    let min = at.map(f64::from);
+    let cube = bb(min, min.map(|v| v + 1.0));
+    if intersects(player.bounds, cube) {
+        return false;
+    }
+    !entities.iter().any(|(_, entity)| {
+        let solid = matches!(
+            entity.kind,
+            Kind::Player { .. } | Kind::Mob(_) | Kind::Object(1 | 10 | 50 | 51 | 70 | 78)
+        );
+        let Some((width, height)) = entity.dimensions().filter(|_| solid) else {
+            return false;
+        };
+        let [x, y, z] = entity.position;
+        let half = f64::from(width / 2.0);
+        intersects(
+            bb(
+                [x - half, y, z - half],
+                [x + half, y + f64::from(height), z + half],
+            ),
+            cube,
+        )
+    })
+}
+
 /// Blocks whose `onBlockActivated` handles a right-click (containers,
 /// doors, levers, beds, crafting and the like).
 fn interactive_block(block: u16) -> bool {
@@ -677,6 +832,81 @@ mod tests {
         });
         world
     }
+    /// ItemBlock placement: PlayerControllerMP.onPlayerRightClick sends no
+    /// block C08 when canPlaceBlockOnSide fails (here, into the player), and
+    /// rightClickMouse falls back to sendUseItem. A valid placement is sent,
+    /// placed in the client world at once and takes one from the stack.
+    #[test]
+    fn block_placement_is_predicted_and_never_sent_into_the_player() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let mut world = world();
+        for x in 0..3 {
+            for z in 0..4 {
+                world.set_block(x, 3, z, BlockState(1 << 4));
+            }
+        }
+        let entities = Entities::default();
+        let mut player = Player::default();
+        player.set_position(0.5, 4.0, 0.5);
+        player.on_ground = true;
+        let wool = Item {
+            id: 35,
+            count: 64,
+            damage: 14,
+            nbt: None,
+        };
+        let mut inventory = Inventory::default();
+        inventory.player[36] = Some(wool.clone());
+        inventory.view.slots[36] = Some(wool.clone());
+        let mut controller = Controller::default();
+        let mut use_once =
+            |controller: &mut Controller, player: &mut Player, inventory: &mut Inventory| {
+                let mut input = Input {
+                    attack: false,
+                    using: false,
+                    actions: VecDeque::from([Action::Use]),
+                };
+                controller
+                    .tick(
+                        &mut input,
+                        player,
+                        &world,
+                        &entities,
+                        inventory,
+                        0,
+                        &mut writer,
+                    )
+                    .unwrap();
+            };
+        // Straight down: the block would go where the player stands.
+        player.pitch = 90.0;
+        use_once(&mut controller, &mut player, &mut inventory);
+        assert_eq!(
+            peer.receive().unwrap(),
+            packet::place([-1, -1, -1], 255, [0.0; 3], Some(&wool)).unwrap()
+        );
+        assert!(controller.edits.is_empty());
+        assert_eq!(inventory.held().unwrap().count, 64);
+        // Ahead on the floor: sent against (0, 3, 1)'s top and predicted.
+        player.pitch = 50.0;
+        controller.right_delay = 0;
+        use_once(&mut controller, &mut player, &mut inventory);
+        let sent = peer.receive().unwrap();
+        let expected = packet::place([0, 3, 1], 1, [0.5; 3], Some(&wool)).unwrap();
+        assert_eq!(sent[..10], expected[..10]);
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        assert_eq!(
+            controller.edits,
+            vec![([0, 4, 1], BlockState(35 << 4 | 14))]
+        );
+        assert_eq!(inventory.held().unwrap().count, 63);
+    }
+
     /// EntityPlayerSP.swingItem sends C0A on every call, even while the arm
     /// is still mid-swing: each click's C02 follows its own C0A, and digging
     /// swings every tick. Only the local animation restarts at half-way.

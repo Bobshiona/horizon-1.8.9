@@ -501,6 +501,15 @@ impl Inventory {
         self.view.slots = self.player.clone();
     }
 
+    /// `--stackSize` on the held stack, emptied at zero (`ItemBlock.onItemUse`
+    /// then `rightClickMouse`).
+    pub fn consume_held(&mut self) {
+        let index = 36 + usize::from(self.view.selected);
+        if let Some(mut item) = self.player.get(index).cloned().flatten() {
+            item.count -= 1;
+            self.player_slot(index, (item.count > 0).then_some(item));
+        }
+    }
     pub fn close(&mut self) -> Vec<u8> {
         let packet = interaction::close_window(self.view.window);
         self.view.open = false;

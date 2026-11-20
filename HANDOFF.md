@@ -1016,3 +1016,23 @@ health. The death tilt rendering is not ported. Regression
 tests (90 client, 2 login CLI, 1 assets, 6 auth, 18 physics, 38 protocol, 19 world), strict
 Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 36. Block placement prediction
+
+Section 35's dying-entity fix is `58516abaae`.
+
+`PlayerControllerMP.onPlayerRightClick` checks `ItemBlock.canPlaceBlockOnSide` before sending
+anything: if the block could not go there (not replaceable, or a `preventEntitySpawning` entity such
+as the player itself inside the cube) it returns without the block C08, and `rightClickMouse` falls
+back to `sendUseItem` (C08 at -1). Otherwise C08 is sent and `ItemBlock.onItemUse` places the block in
+the client world at once and takes one from the stack (not in creative). The client sent every block
+C08, including placements into its own body (a placement check anticheats use), and showed nothing
+until the server's S23, so the player could fall through a bridge block the server already had.
+For full-cube blocks whose placed state is known (wool, clay, glass, planks, stone and other plain or
+damage-variant cubes), the client now refuses impossible sides as vanilla does, places the block
+locally before the player's movement that tick and decrements the stack; the server's S23 and S2F
+confirm or correct it. Other item blocks (slabs, stairs, oriented blocks, plants, torches) keep the
+previous behaviour. Regression `block_placement_is_predicted_and_never_sent_into_the_player` failed
+first (it sent the block C08 into the player). Gate: 175 scoped tests (91 client, 2 login CLI,
+1 assets, 6 auth, 18 physics, 38 protocol, 19 world), strict Clippy/fmt, layers, public-tree and diff
+privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

@@ -1177,7 +1177,7 @@ fn run_actor(
         let late = now.duration_since(next_tick).as_nanos();
         let due = late / tick.as_nanos() + 1;
         // Vanilla's timer executes at most ten accumulated client ticks.
-        let world_view = read(world)?;
+        let mut world_view = read(world)?;
         for _ in 0..due.min(10) {
             // Minecraft.runTick: updateController, then the open screen's
             // updateScreen, even without a ticking player (downloading
@@ -1235,6 +1235,21 @@ fn run_actor(
                 game_mode,
                 writer,
             )?;
+            // Client-side placements and breaks land before the player moves,
+            // as rightClickMouse/clickMouse run before the entity update.
+            if !controller.edits.is_empty() {
+                drop(world_view);
+                let mut keys = Vec::new();
+                let mut edited = write(world)?;
+                for (at, state) in controller.edits.drain(..) {
+                    if edited.set_block(at[0], at[1], at[2], state) {
+                        keys.extend(around(at[0].div_euclid(16), at[2].div_euclid(16)));
+                    }
+                }
+                drop(edited);
+                dirty(keys);
+                world_view = read(world)?;
+            }
             {
                 let mut state = lock(shared)?;
                 state.inventory = Arc::new(inventory.view.clone());
