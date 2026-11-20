@@ -868,12 +868,10 @@ fn run_actor(
                     play::Packet::Other { id: 0x2f, fields } => {
                         let (window, slot, item) = entity_packets::decode_set_slot(fields)?;
                         inventory.set_slot(window as u8, slot, item);
-                        player.depth_strider = depth_strider(&inventory.player);
                     }
                     play::Packet::Other { id: 0x30, fields } => {
                         let (window, items) = entity_packets::decode_window_items(fields)?;
                         inventory.items(window, items);
-                        player.depth_strider = depth_strider(&inventory.player);
                     }
                     play::Packet::Other { id: 0x33, fields } => {
                         let (at, lines) = entity_packets::decode_sign(fields)?;
@@ -1221,6 +1219,9 @@ fn run_actor(
             }
             player.no_clip = game_mode == 3;
             if vitals.health > 0.0 {
+                // getDepthStriderModifier reads the worn armour every move,
+                // including armour placed by predicted window clicks.
+                player.depth_strider = depth_strider(&inventory.player);
                 player.tick(&world_view, keys);
             }
             // sendPlayerAbilities happens inside onLivingUpdate, before the

@@ -641,3 +641,86 @@ fn dying_with_a_container_open_closes_it_like_gui_container_update_screen() {
     actor.send(health(0.0));
     assert_eq!(actor.next(0x0d), vec![0x0d, 0]);
 }
+
+/// Distance walked forward through still water in 20 ticks, after optionally
+/// moving Depth Strider III boots from the main inventory onto the feet.
+fn water_walk(equip: bool) -> f64 {
+    use horizon_protocol_47::nbt::{Item, Tag, write_slot};
+    let mut actor = Actor::new();
+    actor.join();
+    actor.position();
+    actor.grounded();
+    let boots = Item {
+        id: 301,
+        count: 1,
+        damage: 0,
+        nbt: Some(Tag::Compound(vec![(
+            "ench".into(),
+            Tag::List(vec![Tag::Compound(vec![
+                ("id".into(), Tag::Short(8)),
+                ("lvl".into(), Tag::Short(3)),
+            ])]),
+        )])),
+    };
+    let mut items = vec![0x30, 0];
+    items.extend(45i16.to_be_bytes());
+    for slot in 0..45 {
+        write_slot(&mut items, (slot == 9).then_some(&boots)).unwrap();
+    }
+    actor.send(items);
+    actor.barrier(410);
+    if equip {
+        use crate::gameplay::Action;
+        // Window clicks are predicted; the server sends no S2F for them.
+        let mut state = actor.shared.lock().unwrap();
+        state.input.actions.extend([
+            Action::OpenInventory,
+            Action::Click {
+                slot: 9,
+                mode: 0,
+                button: 0,
+            },
+            Action::Click {
+                slot: 8,
+                mode: 0,
+                button: 0,
+            },
+            Action::CloseInventory,
+        ]);
+        drop(state);
+        assert_eq!(actor.next(0x0d), vec![0x0d, 0]);
+        assert!(actor.shared.lock().unwrap().inventory.slots[8].is_some());
+    }
+    {
+        let mut world = actor.world.write().unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                world.set_block(x, 4, z, BlockState(9 << 4));
+            }
+        }
+    }
+    actor.barrier(411);
+    actor.shared.lock().unwrap().keys.forward = true;
+    let z = |packet: &[u8]| f64::from_be_bytes(packet[17..25].try_into().unwrap());
+    let mut first = None;
+    let mut last = 0.0;
+    let mut ticks = 0;
+    while ticks < 20 {
+        let packet = actor.peer.receive().unwrap();
+        if matches!(packet.first(), Some(3..=6)) {
+            ticks += 1;
+        }
+        if matches!(packet.first(), Some(4 | 6)) {
+            first.get_or_insert(z(&packet));
+            last = z(&packet);
+        }
+    }
+    last - first.unwrap()
+}
+
+#[test]
+fn depth_strider_follows_predicted_armor_clicks() {
+    let (plain, strider) = (water_walk(false), water_walk(true));
+    assert!(plain > 0.5, "{plain}");
+    assert!(strider > plain * 1.5, "plain {plain} strider {strider}");
+}

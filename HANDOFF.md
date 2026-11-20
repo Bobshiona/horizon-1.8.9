@@ -761,3 +761,22 @@ Regression `dying_with_a_container_open_closes_it_like_gui_container_update_scre
 Gate: 159 scoped tests (78 client, 2 login CLI, 1 assets, 6 auth, 16 physics, 38 protocol, 18 world),
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 20. Depth Strider after predicted armour clicks
+
+Section 19's death-close fix is `02eea81f2c`.
+
+`EnchantmentHelper.getDepthStriderModifier` reads the worn armour on every `moveEntityWithHeading`.
+The client recomputed the level only on S2F/S30, but the server absorbs an accepted window click
+without echoing slots, so boots put on by clicking left water movement at the old level until some
+unrelated slot update. The level is now read from the player inventory each tick before movement.
+Regression `depth_strider_follows_predicted_armor_clicks` (water walk with and without clicked-on
+Depth Strider III boots) failed first with identical distances.
+
+Audited without change: S39 copies flying, allow-flying, creative, invulnerable, fly and walk speed as
+`handlePlayerAbilities`; C13 is sent from the double-tap toggle, spectator forcing and landing, as
+`sendPlayerAbilities`. Known gap, not implemented: the dynamic FOV of
+`AbstractClientPlayer.getFovModifier` (sprint, speed effects, bow pull, walk speed) is absent; the world
+FOV is fixed at the configured value. Gate: 160 scoped tests (79 client, 2 login CLI, 1 assets, 6 auth,
+16 physics, 38 protocol, 18 world), strict Clippy/fmt, layers, public-tree and diff privacy checks,
+ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
