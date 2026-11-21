@@ -1347,3 +1347,22 @@ the vanilla slider labels, sheet geometry on small and large windows, and the vi
 trip and clamping. A capture checked the Options page over the world. Gate: 217 scoped tests,
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 48. The player in the inventory
+
+Section 47's game menu is `e057035a76`.
+
+The owner found no player in the inventory. `GuiInventory` draws the local player with
+`drawEntityOnScreen` at `guiLeft + 51`, `guiTop + 75`, thirty interface pixels to a block,
+`translate(x, y, 50)`, `scale(-30, 30, 30)`, `rotate(180, Z)`, pitched toward the mouse, with body yaw
+`atan(dx / 40) * 20`, yaw and head yaw `atan(dx / 40) * 40` and pitch `-atan(dy / 40) * 20` (dx, dy
+from the model's point and 50 pixels above it to the mouse). The client now builds the local player
+as an entity (its skin, armour and held item) through the normal entity models
+(`main::own_model`, `Renderer::set_inventory_model`), maps it with `models::inventory_model_matrix`
+into clip space (interface pixels, y down, depth toward the viewer for reversed-Z), and draws it in
+its own depth-cleared pass between the inventory's background and its items: `hud::inventory` starts
+the overlay after the background, so slots, items and tooltips draw over the model. Regression: the
+model's feet land on the box point, a player's head 54 pixels higher, +x to the right and the side
+facing the viewer nearer. A capture showed the model holding a sword and turned toward the mouse.
+Gate: 218 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64
+release build and `VANILLA_189_REFERENCE_GATE_PASS`.

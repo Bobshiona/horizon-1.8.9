@@ -1425,6 +1425,24 @@ impl ApplicationHandler for App {
                             self.fail(event_loop, error);
                             return;
                         }
+                        // GuiInventory's player model.
+                        let model = snapshot
+                            .as_ref()
+                            .filter(|s| {
+                                s.view.open
+                                    && s.view.kind == inventory::Kind::Player
+                                    && s.vitals.health > 0.0
+                            })
+                            .and_then(|s| {
+                                let at = hud::inventory_model_point(&s.view, renderer.layout);
+                                own_model(s).map(|entity| (entity, at))
+                            });
+                        let shown = model.as_ref().map(|(entity, _)| entity);
+                        let at = model.as_ref().map_or((0.0, 0.0), |(_, at)| *at);
+                        if let Err(error) = renderer.set_inventory_model(shown, at, mouse) {
+                            self.fail(event_loop, error);
+                            return;
+                        }
                         if let Some(snapshot) = &snapshot {
                             let (hud, chat) = (&mut self.hud, &mut self.chat);
                             let tab_held = self.tab_held || self.smoke_tab;
@@ -1895,6 +1913,29 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(error.into());
     }
     Ok(())
+}
+
+/// The local player as an entity for the inventory model: its skin,
+/// armour and held item, standing at the origin.
+fn own_model(snapshot: &Snapshot) -> Option<horizon_world_189::entities::Entity> {
+    let uuid = snapshot.own.as_ref().map_or(0, |(uuid, _)| *uuid);
+    let mut tracked = horizon_world_189::entities::Entities::default();
+    tracked.apply(horizon_protocol_47::entities::EntityPacket::SpawnPlayer {
+        id: 0,
+        uuid,
+        position: [0; 3],
+        yaw: 0,
+        pitch: 0,
+        held_item: 0,
+        metadata: vec![],
+    });
+    let mut entity = tracked.get(0)?.clone();
+    entity.profile = snapshot.own.as_ref().map(|(_, profile)| profile.clone());
+    entity.skin_parts = 0x7f;
+    // Held item, then boots, leggings, chestplate and helmet.
+    let [helmet, chest, legs, boots] = snapshot.armor.clone();
+    entity.equipment = [snapshot.hand.item.clone(), boots, legs, chest, helmet];
+    Some(entity)
 }
 
 /// A native alert, for the app opened from Finder where errors have no

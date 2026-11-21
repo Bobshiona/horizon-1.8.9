@@ -975,6 +975,24 @@ fn placeholder(kind: Kind) -> ([f32; 2], [f32; 3]) {
 
 /// Geometry for every visible tracked entity at the frame's partial tick.
 #[allow(clippy::too_many_arguments)]
+/// `drawEntityOnScreen`'s transform from entity space to clip space:
+/// `translate(x, y, 50)`, `scale(-30, 30, 30)`, `rotate(180, Z)`, then the
+/// pitch toward the mouse, inside the interface's orthographic view (y
+/// down; depth grows toward the viewer, as reversed-Z wants).
+pub fn inventory_model_matrix(at: (f32, f32), look_y: f32, screen: (f32, f32)) -> Mat4 {
+    let to_clip = Mat4::from_translation(Vec3::new(-1.0, 1.0, 0.5))
+        * Mat4::from_scale(Vec3::new(
+            2.0 / screen.0.max(1.0),
+            -2.0 / screen.1.max(1.0),
+            1.0 / 2000.0,
+        ));
+    to_clip
+        * Mat4::from_translation(Vec3::new(at.0, at.1, 50.0))
+        * Mat4::from_scale(Vec3::new(-30.0, 30.0, 30.0))
+        * Mat4::from_rotation_z(std::f32::consts::PI)
+        * Mat4::from_rotation_x((-(look_y / 40.0).atan() * 20.0).to_radians())
+}
+
 pub fn entities(
     out: &mut Vec<Vertex>,
     entities: &[(i32, Entity)],
@@ -2074,6 +2092,32 @@ pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inventory_model_stands_at_the_box_thirty_pixels_a_block() {
+        let screen = (480.0, 300.0);
+        let at = (142.0, 142.0);
+        let m = inventory_model_matrix(at, 0.0, screen);
+        let to_gui = |p: Vec3| {
+            let c = m.project_point3(p);
+            (
+                (c.x + 1.0) / 2.0 * screen.0,
+                (1.0 - c.y) / 2.0 * screen.1,
+                c.z,
+            )
+        };
+        let (fx, fy, fz) = to_gui(Vec3::ZERO);
+        assert!((fx - 142.0).abs() < 1e-3 && (fy - 142.0).abs() < 1e-3);
+        // A player's head top (1.8 blocks) is 54 interface pixels higher.
+        let (hx, hy, _) = to_gui(Vec3::new(0.0, 1.8, 0.0));
+        assert!((hx - 142.0).abs() < 1e-3 && (hy - 88.0).abs() < 1e-3);
+        // The half turn and the -30 scale cancel on x: model +x is drawn to
+        // the right, and the side facing the viewer is nearer.
+        let (rx, _, _) = to_gui(Vec3::X);
+        assert!((rx - 172.0).abs() < 1e-3, "{rx}");
+        let (_, _, near) = to_gui(Vec3::Z);
+        assert!(near > fz && (0.0..=1.0).contains(&near));
+    }
 
     #[test]
     fn glint_follows_has_effect() {

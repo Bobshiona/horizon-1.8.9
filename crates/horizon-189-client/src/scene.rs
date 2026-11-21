@@ -180,6 +180,13 @@ pub struct Scene {
     hand_count: u32,
     hand_camera: wgpu::Buffer,
     hand_bindings: wgpu::BindGroup,
+    /// The inventory's player model (`drawEntityOnScreen`), with its own
+    /// interface-space camera.
+    model: wgpu::Buffer,
+    model_capacity: u64,
+    model_count: u32,
+    model_camera: wgpu::Buffer,
+    model_bindings: wgpu::BindGroup,
     /// `hurtCameraEffect` and view bobbing, before the camera orientation.
     effects: Mat4,
     camera: wgpu::Buffer,
@@ -717,6 +724,37 @@ impl Scene {
                 },
             ],
         });
+        let model_camera = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Inventory model camera uniform"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let model_bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Inventory model resources"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: model_camera.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&entity_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&entity_sampler),
+                },
+            ],
+        });
+        let model_capacity = 64 * 1024;
+        let model = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Inventory model vertices"),
+            size: model_capacity,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let hand_capacity = 64 * 1024;
         let hand = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("First-person vertices"),
@@ -779,6 +817,11 @@ impl Scene {
             hand_count: 0,
             hand_camera,
             hand_bindings,
+            model,
+            model_capacity,
+            model_count: 0,
+            model_camera,
+            model_bindings,
             effects: Mat4::IDENTITY,
             camera,
             view: Mat4::look_at_rh(eye, Vec3::splat(0.5), Vec3::Y),
@@ -1107,6 +1150,56 @@ impl Scene {
     }
 
     /// The hand, in a pass whose depth was cleared.
+    /// Replace the inventory's player model: vertices in entity space and
+    /// the matrix taking them to clip space.
+    pub fn set_inventory_model(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertices: &[Vertex],
+        clip: Mat4,
+    ) -> Result<(), Box<dyn Error>> {
+        let uniforms = Uniforms {
+            view_projection: clip.to_cols_array(),
+            eye: [0.0, 0.0, 0.0, 1.0e6],
+            fog: [0.0, 0.0, 0.0, 1.0e6],
+        };
+        queue.write_buffer(&self.model_camera, 0, bytemuck::bytes_of(&uniforms));
+        let bytes: &[u8] = bytemuck::cast_slice(vertices);
+        if bytes.len() as u64 > self.model_capacity {
+            self.model_capacity = (bytes.len() as u64)
+                .next_power_of_two()
+                .min(device.limits().max_buffer_size);
+            if bytes.len() as u64 > self.model_capacity {
+                return Err("Inventory model exceeds device buffer limit".into());
+            }
+            self.model = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Inventory model vertices"),
+                size: self.model_capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        if !bytes.is_empty() {
+            queue.write_buffer(&self.model, 0, bytes);
+        }
+        self.model_count = u32::try_from(vertices.len())?;
+        Ok(())
+    }
+
+    pub fn has_inventory_model(&self) -> bool {
+        self.model_count > 0
+    }
+
+    pub fn draw_inventory_model(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if self.model_count > 0 {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.model_bindings, &[]);
+            pass.set_vertex_buffer(0, self.model.slice(..));
+            pass.draw(0..self.model_count, 0..1);
+        }
+    }
+
     pub fn draw_hand(&self, pass: &mut wgpu::RenderPass<'_>) {
         if self.hand_count > 0 {
             pass.set_pipeline(&self.pipeline);
@@ -1157,6 +1250,7 @@ impl Scene {
         self.label_counts = [0; 5];
         self.hand_count = 0;
         self.hand_glint_count = 0;
+        self.model_count = 0;
         self.effects = Mat4::IDENTITY;
     }
 

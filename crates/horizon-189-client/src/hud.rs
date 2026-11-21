@@ -831,12 +831,22 @@ pub fn inside_window(view: &View, layout: Layout, mouse: (f32, f32)) -> bool {
 
 /// `GuiContainer.drawScreen`: background, sheet, slots with the hover
 /// highlight, labels, the carried stack, then the hovered item's tooltip.
+/// Where `GuiInventory` draws the player: `guiLeft + 51`, `guiTop + 75`.
+pub fn inventory_model_point(view: &View, layout: Layout) -> (f32, f32) {
+    let (left, top, _) = origin(view, layout);
+    (left + 51.0, top + 75.0)
+}
+
 pub fn inventory(canvas: &mut Canvas<'_>, registry: &Registry, view: &View, mouse: (f32, f32)) {
     let (w, h) = (canvas.layout.width, canvas.layout.height);
     canvas.gradient(0.0, 0.0, w, h, 0xC010_1010, 0xD010_1010);
     let (left, top, screen) = origin(view, canvas.layout);
     for [x, y, u, v, pw, ph] in &screen.parts {
         canvas.sprite(screen.sheet, left + x, top + y, *u, *v, *pw, *ph, [1.0; 4]);
+    }
+    if view.kind == crate::inventory::Kind::Player {
+        // The player model draws here, between the background and the items.
+        canvas.overlay();
     }
     if view.kind == crate::inventory::Kind::Furnace {
         // `GuiFurnace`: the flame (burn left of 13) and the arrow (cook of 24).

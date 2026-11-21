@@ -162,6 +162,54 @@ impl Renderer {
         Ok(renderer)
     }
 
+    /// `GuiInventory.drawEntityOnScreen`: `entity` (the local player)
+    /// at interface point `at`, thirty interface pixels to a block, turned
+    /// toward the mouse; `None` hides it.
+    pub fn set_inventory_model(
+        &mut self,
+        entity: Option<&horizon_world_189::entities::Entity>,
+        at: (f32, f32),
+        mouse: (f32, f32),
+    ) -> Result<(), Box<dyn Error>> {
+        let Some(scene) = &mut self.scene else {
+            return Ok(());
+        };
+        let mut vertices = Vec::new();
+        let mut clip = glam::Mat4::IDENTITY;
+        if let Some(entity) = entity {
+            let (look_x, look_y) = (at.0 - mouse.0, at.1 - 50.0 - mouse.1);
+            let mut posed = entity.clone();
+            let turn = (look_x / 40.0).atan();
+            posed.body_yaw = turn * 20.0;
+            posed.previous_body_yaw = posed.body_yaw;
+            posed.yaw = turn * 40.0;
+            posed.head_yaw = posed.yaw;
+            posed.previous_head_yaw = posed.yaw;
+            posed.pitch = -(look_y / 40.0).atan() * 20.0;
+            posed.previous_pitch = posed.pitch;
+            let mut glint = Vec::new();
+            crate::models::entities(
+                &mut vertices,
+                &[(0, posed)],
+                1.0,
+                [0; 3],
+                self.registry.as_deref(),
+                Some(&self.skins),
+                PositionLook::default(),
+                &mut glint,
+                crate::models::millis(),
+                None,
+                &|_| true,
+            );
+            clip = crate::models::inventory_model_matrix(
+                at,
+                look_y,
+                (self.layout.width, self.layout.height),
+            );
+        }
+        scene.set_inventory_model(&self.device, &self.queue, &vertices, clip)
+    }
+
     pub fn set_view_distance(&mut self, chunks: u8) {
         self.view_distance = chunks;
         if let Some(scene) = &mut self.scene {
@@ -805,6 +853,33 @@ impl Renderer {
         // overlay (which frosts the interface too) and the overlay.
         let copyable = texture.usage().contains(wgpu::TextureUsages::COPY_SRC);
         for part in 0..2 {
+            if part == 1
+                && let Some(scene) = self.scene.as_ref().filter(|s| s.has_inventory_model())
+            {
+                // Between the inventory's background and its items.
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Inventory player model"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &scene.depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                scene.draw_inventory_model(&mut pass);
+            }
             self.glass
                 .encode(&mut encoder, part, texture, copyable, &view);
             if let Some(ui) = &self.ui {
