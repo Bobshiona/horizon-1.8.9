@@ -6,12 +6,21 @@ use crate::ui::Canvas;
 
 /// The window behind everything.
 pub const BASE: u32 = 0xFF0D_0E11;
+/// Sidebars and sheets.
+pub const SURFACE: u32 = 0xFF14_161A;
+/// Cards and rows on a surface.
+pub const CARD: u32 = 0xFF1A_1D22;
+/// A card under the pointer.
+pub const HOVER: u32 = 0xFF22_262C;
 /// Hairline edges and dividers.
 pub const EDGE: u32 = 0xFF2C_3038;
 pub const TEXT: u32 = 0xFFEC_EEF2;
 pub const MUTED: u32 = 0xFF8C_93A0;
 /// Ember: the one accent.
 pub const ACCENT: u32 = 0xFFFF_5A1F;
+pub const ACCENT_HOVER: u32 = 0xFFFF_7A45;
+/// Text on the accent.
+pub const ON_ACCENT: u32 = 0xFF14_0A05;
 /// HUD cards: graphite at 66% so the world reads through without blur.
 pub const HUD: u32 = 0xA80D_0E11;
 /// A pressed key on the HUD.

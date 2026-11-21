@@ -37,6 +37,8 @@ pub struct Options {
     pub install: bool,
     /// Validation only: show the launcher (signed out, no updates).
     pub smoke_launcher: bool,
+    /// Validation only: the launcher page to open, 0 to 4.
+    pub smoke_page: usize,
     /// Validation only: open the settings screen once in the world.
     pub smoke_settings: bool,
     /// Validation only: start with the GUI hidden, as after F1.
@@ -73,6 +75,8 @@ pub struct Options {
     login_check: Option<String>,
     server: Option<String>,
     port: Option<u16>,
+    /// `--play`: started by the launcher, which writes the session to stdin.
+    play: bool,
     autopilot: bool,
     autopilot_fly: bool,
 }
@@ -92,6 +96,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --username NAME --uuid UUID --access-token TOKEN\n\
                                   Use a Minecraft access token for testing\n\
     --server HOST [--port N]       Open a connected native world viewport\n\
+    --play HOST[:PORT]             Join from the launcher (session on stdin)\n\
     --login-check HOST [--port N]  Verify Protocol 47 login, then disconnect\n\
     --autopilot                   Drive a scripted walk/sprint/jump/sneak path\n\
     --autopilot-fly               Drive a scripted flight (needs allowFlying)\n\
@@ -102,6 +107,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-menu                  With --smoke-frames, open the mod menu\n\
     --bench                       With --smoke-frames, time uncapped CPU and GPU frames\n\
     --smoke-launcher              With --smoke-frames, show the launcher signed out\n\
+    --smoke-page N                With --smoke-launcher, open page N (0 Home to 4 Settings)\n\
     --smoke-settings              With --smoke-frames, open the settings screen\n\
     --smoke-pitch DEGREES         With --smoke-frames, look down (or up, negative) once in the world\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
@@ -161,6 +167,43 @@ fn microsoft_session(client_id: &str, save: bool) -> Result<Session, Box<dyn Err
     Ok(session)
 }
 
+/// The launcher's message to the game it starts: one JSON line on the
+/// game's stdin with the profile and, when signed in, the access token, so
+/// the token never shows in the process list. Without a token the game
+/// joins offline (servers on this Mac only).
+pub(crate) fn handoff(session: &Session) -> String {
+    let mut value = serde_json::json!({
+        "username": session.profile.username,
+        "uuid": format!("{:032x}", session.profile.uuid),
+    });
+    if let Some(token) = session.access_token() {
+        value["token"] = token.into();
+    }
+    value.to_string()
+}
+
+/// Read [`handoff`]: the session and whether it is offline.
+fn read_handoff(mut input: impl std::io::BufRead) -> Result<(Session, bool), Box<dyn Error>> {
+    let mut line = String::new();
+    input.read_line(&mut line)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&line).map_err(|_| "--play expects the launcher's session")?;
+    let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
+    let username = text("username").ok_or("--play expects a username")?;
+    let uuid = text("uuid");
+    Ok(match text("token") {
+        Some(token) => (
+            Session::direct(
+                username,
+                uuid.ok_or("--play expects a UUID")?,
+                token.to_owned(),
+            )?,
+            false,
+        ),
+        None => (Session::offline(username, uuid)?, true),
+    })
+}
+
 pub(crate) fn remember(client_id: &str, session: &Session) {
     let Some(token) = session.refresh_token() else {
         eprintln!("MICROSOFT_LOGIN_NOT_SAVED no refresh token was issued");
@@ -197,6 +240,13 @@ impl Options {
                 "--access-token" => options.access_token = Some(value()?),
                 "--login-check" => options.login_check = Some(value()?),
                 "--server" => options.server = Some(value()?),
+                "--play" => {
+                    let (host, port) = crate::launcher::address(&value()?)
+                        .ok_or("--play needs a server address")?;
+                    options.server = Some(host);
+                    options.port = Some(port);
+                    options.play = true;
+                }
                 "--port" => options.port = Some(value()?.parse()?),
                 "--autopilot" => options.autopilot = true,
                 "--autopilot-fly" => options.autopilot_fly = true,
@@ -230,6 +280,7 @@ impl Options {
                 "--bench" => options.bench = true,
                 "--install" => options.install = true,
                 "--smoke-launcher" => options.smoke_launcher = true,
+                "--smoke-page" => options.smoke_page = value()?.parse::<usize>()?.min(4),
                 "--smoke-settings" => options.smoke_settings = true,
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
                 "--smoke-debug" => options.smoke_debug = true,
@@ -298,6 +349,15 @@ impl Options {
                 || options.smoke_frames.is_some())
         {
             return Err("--sign-out runs on its own".into());
+        }
+        if options.play
+            && (options.login
+                || options.offline
+                || options.access_token.is_some()
+                || options.username.is_some()
+                || options.login_check.is_some())
+        {
+            return Err("--play takes its account from the launcher".into());
         }
         if !options.save_login && (options.offline || options.access_token.is_some()) {
             return Err("--no-saved-login applies to Microsoft sign-in only".into());
@@ -397,6 +457,11 @@ impl Options {
     }
 
     /// Prepare a terminal probe or a session owned by the connected viewport.
+    /// Started by the launcher with `--play`.
+    pub fn started_by_launcher(&self) -> bool {
+        self.play
+    }
+
     pub fn authenticate(&mut self) -> Result<Startup, Box<dyn Error>> {
         if self.sign_out {
             let removed = horizon_auth::saved::forget(&client_id())?;
@@ -411,7 +476,11 @@ impl Options {
         {
             return Ok(Startup::Window(None));
         }
-        let session = if self.offline {
+        let session = if self.play {
+            let (session, offline) = read_handoff(std::io::stdin().lock())?;
+            self.offline = offline;
+            session
+        } else if self.offline {
             Session::offline(
                 self.username.as_deref().expect("validated username"),
                 self.uuid.as_deref(),
@@ -496,6 +565,34 @@ impl Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_launcher_hands_its_session_to_the_game_on_stdin() {
+        let online = Session::direct(
+            "Bob",
+            "0123456789abcdef0123456789abcdef",
+            "secret-token".into(),
+        )
+        .unwrap();
+        let line = handoff(&online);
+        let (session, offline) = read_handoff(std::io::Cursor::new(format!("{line}\n"))).unwrap();
+        assert!(!offline);
+        assert_eq!(session.profile, online.profile);
+        assert_eq!(session.access_token(), Some("secret-token"));
+        // Signed out: an offline profile for a server on this Mac.
+        let player = Session::offline("Player", None).unwrap();
+        let (session, offline) = read_handoff(std::io::Cursor::new(handoff(&player))).unwrap();
+        assert!(offline && session.access_token().is_none());
+        assert_eq!(session.profile, player.profile);
+        assert!(read_handoff(std::io::Cursor::new("not json")).is_err());
+        // --play sets the server and refuses other account flags.
+        let options = parse(&["--play", "mc.hypixel.net"]).unwrap();
+        assert!(options.play && !options.launcher());
+        assert_eq!(options.server.as_deref(), Some("mc.hypixel.net"));
+        assert_eq!(options.port, Some(25565));
+        assert!(parse(&["--play", "localhost", "--offline"]).is_err());
+        assert!(parse(&["--play", "bad host"]).is_err());
+    }
 
     fn parse(args: &[&str]) -> Result<Options, Box<dyn Error>> {
         Options::parse(args.iter().map(|value| (*value).to_owned()))

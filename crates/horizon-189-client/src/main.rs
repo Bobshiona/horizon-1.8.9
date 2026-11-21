@@ -35,6 +35,7 @@ mod scoreboard;
 mod screenshot;
 mod settings;
 mod skins;
+mod status;
 mod style;
 mod sysfont;
 mod terrain;
@@ -163,6 +164,10 @@ struct App {
     /// The installed app's launcher screen, shown while not in a world.
     launcher: Option<launcher::Launcher>,
     updater: Option<updater::Updater>,
+    /// Started by the launcher: leaving the game reopens it.
+    from_launcher: bool,
+    /// Play was pressed during an update: hidden until it is installed.
+    closing: bool,
     /// Per-frame block targeting for the outline (no entities: the tick's
     /// own ray says when an entity is aimed at).
     selector: horizon_physics_189::raycast::Raycaster,
@@ -300,51 +305,66 @@ impl App {
 
     fn launcher_action(&mut self, event_loop: &ActiveEventLoop, action: Option<launcher::Action>) {
         match action {
-            Some(launcher::Action::Play(host, port)) => self.play(event_loop, host, port),
-            Some(launcher::Action::Restart) => {
-                if self.updater.as_ref().is_some_and(updater::Updater::restart) {
-                    event_loop.exit();
-                }
+            Some(launcher::Action::Play(host, port)) => self.launch_game(event_loop, &host, port),
+            Some(launcher::Action::Restart)
+                if self.updater.as_ref().is_some_and(updater::Updater::restart) =>
+            {
+                event_loop.exit();
             }
-            Some(launcher::Action::Quit) => event_loop.exit(),
-            None => {}
+            Some(launcher::Action::Restart) | None => {}
         }
     }
 
-    /// Join from the launcher: the signed-in account, or an offline
-    /// "Player" on a server on this Mac.
-    fn play(&mut self, event_loop: &ActiveEventLoop, host: String, port: u16) {
-        let signed_in = self.launcher.as_ref().and_then(launcher::Launcher::session);
-        let offline = signed_in.is_none();
-        let session = match signed_in {
+    /// Play from the launcher: start the game as its own process with the
+    /// signed-in account (or an offline "Player" for a server on this Mac)
+    /// on its stdin, then close. While an update is still building, the
+    /// launcher hides instead and closes once the update is installed.
+    fn launch_game(&mut self, event_loop: &ActiveEventLoop, host: &str, port: u16) {
+        let session = match self.launcher.as_ref().and_then(launcher::Launcher::session) {
             Some(session) => session,
             None => match horizon_auth::Session::offline("Player", None) {
                 Ok(session) => Arc::new(session),
                 Err(error) => {
-                    self.connection.lost(error.to_string());
+                    self.notice(error.to_string());
                     return;
                 }
             },
         };
-        let config = network::Config {
-            host,
-            port,
-            session,
-            offline,
-            autopilot: false,
-            autopilot_fly: false,
-            view_distance: self.view_distance,
-        };
-        self.server = Some(config.clone());
-        let Some(registry) = self.renderer.as_ref().and_then(|r| r.registry.clone()) else {
+        if let Err(error) = spawn_game(&format!("{host}:{port}"), &options::handoff(&session)) {
+            self.notice(format!("Couldn't start the game: {error}"));
             return;
-        };
-        self.connection.connecting();
-        eprintln!("LAUNCHER_PLAY");
-        match network::Network::start(config, registry) {
-            Ok(network) => self.network = Some(network),
-            Err(error) => self.disconnected(event_loop, error.to_string()),
         }
+        eprintln!("LAUNCHER_PLAY");
+        if self.updating() {
+            self.closing = true;
+            if let Some(renderer) = &self.renderer {
+                renderer.window.set_visible(false);
+            }
+        } else {
+            event_loop.exit();
+        }
+    }
+
+    /// An update is being checked or built.
+    fn updating(&self) -> bool {
+        matches!(
+            self.updater.as_ref().map(updater::Updater::status),
+            Some(updater::Status::Checking | updater::Status::Building(_))
+        )
+    }
+
+    fn notice(&mut self, message: String) {
+        if let Some(launcher) = &mut self.launcher {
+            launcher.notice(message);
+        }
+    }
+
+    /// The launcher changed a setting: apply display changes and save.
+    fn settings_changed(&mut self, before: &settings::Settings) {
+        if self.settings.video != before.video {
+            self.apply_video();
+        }
+        self.save_settings();
     }
 
     /// The connection screen's second button: back to the launcher when it
@@ -358,6 +378,11 @@ impl App {
     }
 
     fn back_to_launcher(&mut self, event_loop: &ActiveEventLoop) {
+        if self.from_launcher {
+            reopen_launcher();
+            event_loop.exit();
+            return;
+        }
         if self.network.is_some() {
             self.disconnected(event_loop, String::new());
         }
@@ -702,7 +727,8 @@ impl ApplicationHandler for App {
                 if self.smoke_frames.is_some() {
                     renderer.window.focus_window();
                 }
-                if self.launcher.is_some() && self.settings.video.fullscreen {
+                if (self.launcher.is_some() || self.from_launcher) && self.settings.video.fullscreen
+                {
                     renderer
                         .window
                         .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
@@ -773,12 +799,12 @@ impl ApplicationHandler for App {
                                 event_loop.exit();
                                 return;
                             }
-                            let before = self.settings.servers.clone();
+                            let before = self.settings.clone();
                             let action = self.launcher.as_mut().and_then(|launcher| {
                                 launcher.key(key, event.text.as_deref(), &mut self.settings)
                             });
-                            if self.settings.servers != before {
-                                self.save_settings();
+                            if self.settings != before {
+                                self.settings_changed(&before);
                             }
                             self.launcher_action(event_loop, action);
                         }
@@ -1076,12 +1102,12 @@ impl ApplicationHandler for App {
                             .updater
                             .as_ref()
                             .map_or(updater::Status::Off, updater::Updater::status);
-                        let before = self.settings.servers.clone();
+                        let before = self.settings.clone();
                         let action = self.launcher.as_mut().and_then(|launcher| {
                             launcher.click(layout, mouse, &mut self.settings, &status)
                         });
-                        if self.settings.servers != before {
-                            self.save_settings();
+                        if self.settings != before {
+                            self.settings_changed(&before);
                         }
                         self.launcher_action(event_loop, action);
                     }
@@ -1929,6 +1955,17 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.closing {
+            // The game is running; finish installing the update, then go.
+            if self.updating() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(500),
+                ));
+            } else {
+                event_loop.exit();
+            }
+            return;
+        }
         // Upload rebuilt columns within a frame-sized budget, and when pacing
         // just in time only in the idle time before the next frame starts.
         let started = Instant::now();
@@ -2111,6 +2148,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let preview = options.smoke_launcher;
     let launcher_mode = options.launcher() || preview;
+    let from_launcher = options.started_by_launcher();
+    let smoke_page = options.smoke_page;
     if launcher_mode {
         let home = std::env::var_os("HOME").ok_or("No home directory")?;
         let jar = std::path::PathBuf::from(home)
@@ -2158,7 +2197,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         capture: options.capture,
         connection: {
             let mut screen = connection::Screen::new(server.is_some());
-            screen.back = launcher_mode;
+            screen.back = launcher_mode || from_launcher;
             screen
         },
         server,
@@ -2227,22 +2266,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         menu: {
             let mut menu = menu::Menu::default();
-            menu.leave = launcher_mode;
+            menu.leave = launcher_mode || from_launcher;
             menu
         },
         pause: {
             let mut pause = pause::Pause::default();
-            pause.leave_to_launcher = launcher_mode;
+            pause.leave_to_launcher = launcher_mode || from_launcher;
             pause
         },
         launcher: launcher_mode.then(|| {
             if preview {
-                launcher::Launcher::preview()
+                launcher::Launcher::preview(launcher::Page::ALL[smoke_page])
             } else {
                 launcher::Launcher::new()
             }
         }),
         updater: (launcher_mode && !preview).then(updater::Updater::start),
+        from_launcher,
+        closing: false,
         selector: Default::default(),
         no_entities: Default::default(),
         hud_rects: Vec::new(),
@@ -2252,18 +2293,54 @@ fn main() -> Result<(), Box<dyn Error>> {
         sneak_latched: false,
         fullbright: false,
     };
-    if launcher_mode {
+    if launcher_mode || from_launcher {
         // The app's own settings, not command-line defaults.
         app.apply_video();
     }
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {
-        if launcher_mode {
+        if launcher_mode || from_launcher {
             alert(&format!("Horizon stopped: {error}"));
         }
         return Err(error.into());
     }
     Ok(())
+}
+
+/// Start the game for `address` and write the launcher's `handoff` line to
+/// its stdin. Its log goes to `game.log` beside the settings; nothing it
+/// logs carries a token.
+fn spawn_game(address: &str, handoff: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let log = updater::support_dir().and_then(|dir| {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::File::create(dir.join("game.log")).ok()
+    });
+    let mut child = Command::new(std::env::current_exe()?)
+        .arg("--play")
+        .arg(address)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(log.map_or_else(Stdio::null, Stdio::from))
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        writeln!(stdin, "{handoff}")?;
+    }
+    Ok(())
+}
+
+/// Open the launcher again after the game, from the program on disk (so an
+/// update installed meanwhile is the one that opens).
+fn reopen_launcher() {
+    use std::process::{Command, Stdio};
+    if let Ok(program) = std::env::current_exe() {
+        let _ = Command::new(program)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
 }
 
 /// The local player as an entity for the inventory model: its skin,

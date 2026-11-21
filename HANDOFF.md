@@ -1800,3 +1800,47 @@ corner brackets (like a hitbox's corners) marking whatever is selected.
 Regressions: the default cards never overlap at 480x270, and `fade` scales only alpha.
 
 Gate: 240 tests.
+
+## 63. A launcher of its own
+
+Previous commit: 0113bac9e2. Opening the app now shows a separate, Lunar-style launcher instead
+of the glass card over the panorama, and Play starts the game as its own process.
+
+- **Layout.** A 48-unit sidebar (the H mark in corner brackets, then Home, Servers, News, Mods
+  and Settings as 8x8 pixel icons with labels; the open page has ember brackets) and a page
+  area drawn in a fixed 480x300 design space scaled to the window, so it looks the same at any
+  GUI scale. Graphite throughout; ember only on PLAY, the selected server and the open page.
+- **Home.** "Welcome back" with the account name (or a sign-in prompt), a launch card (Minecraft
+  1.8.9, Horizon, update status, PLAY with the selected server's player count), quick-play
+  tiles with live status, and the newest News entry.
+- **Live status.** `status.rs` does vanilla's server-list ping (`ServerPinger.ping`): handshake
+  with next state 1, status request, then a ping whose round trip is the latency. Each address
+  is queried on its own thread, at most every 20 s, keeping the last answer meanwhile. Hypixel
+  showed about 30,000 online at 55-58 ms from here; a closed port reads "Can't reach".
+- **Servers, News, Mods, Settings.** The server list keeps add, remove, select and double-click
+  to play, and scrolls to keep the selection visible. News is `NEWS.md` (player-facing, newest
+  first). Mods switches the seven HUD mods and nine toggles or cycles; Settings steps FOV,
+  sensitivity, render distance, GUI scale and frame limit, switches fullscreen, view bobbing
+  and vanilla menus, and shows the update status (Restart once one is installed).
+- **Play.** The launcher starts `<program> --play host:port` and writes one JSON line to its
+  stdin: username, UUID and, when signed in, the access token (never an argument, so it
+  never shows in the process list; `Session::access_token` is the new getter). Without a token
+  the game joins offline (servers on this Mac only, as before). The game's log goes to
+  `game.log` in Application Support. The launcher then quits; if an update is still being
+  checked or built it hides instead and quits once the update is installed.
+- **The game just plays.** Started with `--play`, it does no update checks. Disconnect (game
+  menu, mod menu or the connection screen's back button) reopens the launcher from the
+  program on disk, so a freshly installed update is what opens.
+- `--smoke-page N` opens a launcher page for captures.
+
+Verified: every page captured at 960x600; `--play` with an offline session on stdin logs in
+to the reference server and renders (`WORLD_METAL_SMOKE_PASS`).
+
+Regressions: the session handoff round trip (online and offline) and `--play` argument rules,
+the status query against a fake server (handshake bytes, players, ping) and against a closed
+port, status text without formatting codes, every page fitting with no overlapping cards at
+five window sizes, sidebar and card clicks (mod switch, FOV stepper both ways and its clamp,
+frame-limit end stop, Restart only when ready), sign-in gating and the scrolling list, and
+News parsing.
+
+Gate: 245 tests.

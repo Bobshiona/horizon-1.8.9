@@ -39,7 +39,7 @@ impl Status {
             Status::UpToDate => "Up to date".to_owned(),
             Status::Building(0) => "Downloading update…".to_owned(),
             Status::Building(done) => format!("Building update… {done}"),
-            Status::Ready(commit) => format!("Update {commit} ready · Restart"),
+            Status::Ready(commit) => format!("Update {commit} installed · used from the next Play"),
             Status::Failed(reason) => format!("Update failed: {reason}"),
         }
     }
@@ -468,7 +468,7 @@ mod tests {
         assert!(!compiled("    Finished `release` profile"));
         assert_eq!(
             Status::Ready("abc".into()).label(),
-            "Update abc ready · Restart"
+            "Update abc installed · used from the next Play"
         );
     }
 

@@ -1,11 +1,17 @@
-//! The launcher screen the installed app opens to: the vanilla title
-//! panorama under a liquid-glass card with the Microsoft account, the server
-//! list and Play. Sign-in runs on its own thread so the window never waits.
+//! The launcher: a window of its own before the game, in the Horizon look —
+//! graphite surfaces with hairline edges, one ember accent kept for Play and
+//! the selection, and corner brackets (a hitbox's corners) marking what is
+//! selected. A sidebar switches between Home (welcome, Play, quick play with
+//! live server status and the latest news), Servers, News, Mods and
+//! Settings. Play starts the game as its own process; the launcher keeps the
+//! account, the server list, the settings and the updates. Sign-in runs on
+//! its own thread so the window never waits.
 use crate::{
-    glass::Panel,
-    settings::Settings,
+    settings::{CROSSHAIRS, HudKind, Settings},
+    status::{Pinger, State},
+    style,
     sysfont::Weight,
-    ui::{Canvas, Layout, PANORAMA},
+    ui::{Canvas, Layout},
     updater::Status,
 };
 use horizon_auth::Session;
@@ -28,10 +34,10 @@ pub enum Account {
 /// What a click or key on the launcher asks the app to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Join the selected server: host and port.
+    /// Start the game on a server: host and port.
     Play(String, u16),
+    /// Reopen the launcher on an installed update.
     Restart,
-    Quit,
 }
 
 /// Split `host[:port]`; the port defaults to 25565.
@@ -58,117 +64,460 @@ pub fn local(host: &str) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Home,
+    Servers,
+    News,
+    Mods,
+    Settings,
+}
+
+impl Page {
+    pub const ALL: [Page; 5] = [
+        Page::Home,
+        Page::Servers,
+        Page::News,
+        Page::Mods,
+        Page::Settings,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Page::Home => "Home",
+            Page::Servers => "Servers",
+            Page::News => "News",
+            Page::Mods => "Mods",
+            Page::Settings => "Settings",
+        }
+    }
+
+    /// An 8x8 pixel icon: one byte per row, the left pixel in the high bit.
+    fn icon(self) -> [u8; 8] {
+        match self {
+            Page::Home => [0x18, 0x3C, 0x7E, 0xFF, 0x7E, 0x66, 0x66, 0x66],
+            Page::Servers => [0xFF, 0xFD, 0xFF, 0x00, 0xFF, 0xFD, 0xFF, 0x00],
+            Page::News => [0xFE, 0x82, 0xBA, 0x82, 0xBA, 0x82, 0xB2, 0xFE],
+            Page::Mods => [0xEE, 0xEE, 0xEE, 0x00, 0xEE, 0xEE, 0xEE, 0x00],
+            Page::Settings => [0x18, 0x5A, 0x3C, 0xE7, 0xE7, 0x3C, 0x5A, 0x18],
+        }
+    }
+}
+
+/// A mod the Mods page switches or cycles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mod {
+    Hud(HudKind),
+    Zoom,
+    SmoothZoom,
+    ToggleSprint,
+    ToggleSneak,
+    Fullbright,
+    ScoreboardNumbers,
+    AdvancedTooltips,
+    Crosshair,
+    Outline,
+}
+
+const MODS: [Mod; 16] = [
+    Mod::Hud(HudKind::Keystrokes),
+    Mod::Hud(HudKind::Cps),
+    Mod::Hud(HudKind::Fps),
+    Mod::Hud(HudKind::Armor),
+    Mod::Hud(HudKind::Potions),
+    Mod::Hud(HudKind::Coordinates),
+    Mod::Hud(HudKind::Ping),
+    Mod::Zoom,
+    Mod::SmoothZoom,
+    Mod::ToggleSprint,
+    Mod::ToggleSneak,
+    Mod::Fullbright,
+    Mod::ScoreboardNumbers,
+    Mod::AdvancedTooltips,
+    Mod::Crosshair,
+    Mod::Outline,
+];
+
+/// What a card shows on its right.
+enum Value {
+    Switch(bool),
+    Choice(String),
+}
+
+impl Mod {
+    fn title(self) -> &'static str {
+        match self {
+            Mod::Hud(kind) => kind.title(),
+            Mod::Zoom => "Zoom",
+            Mod::SmoothZoom => "Smooth Zoom",
+            Mod::ToggleSprint => "Toggle Sprint",
+            Mod::ToggleSneak => "Toggle Sneak",
+            Mod::Fullbright => "Fullbright",
+            Mod::ScoreboardNumbers => "Scoreboard Numbers",
+            Mod::AdvancedTooltips => "Advanced Tooltips",
+            Mod::Crosshair => "Crosshair",
+            Mod::Outline => "Block Outline",
+        }
+    }
+
+    fn group(self) -> &'static str {
+        match self {
+            Mod::Hud(_) => "HUD",
+            Mod::Zoom | Mod::SmoothZoom => "Zoom",
+            Mod::ToggleSprint | Mod::ToggleSneak => "Movement",
+            Mod::AdvancedTooltips => "Tooltips · F3 + H",
+            _ => "Visual",
+        }
+    }
+
+    fn value(self, settings: &Settings) -> Value {
+        let t = &settings.toggles;
+        Value::Switch(match self {
+            Mod::Hud(kind) => settings.hud(kind).enabled,
+            Mod::Zoom => t.zoom,
+            Mod::SmoothZoom => t.smooth_zoom,
+            Mod::ToggleSprint => t.toggle_sprint,
+            Mod::ToggleSneak => t.toggle_sneak,
+            Mod::Fullbright => t.fullbright,
+            Mod::ScoreboardNumbers => t.scoreboard_numbers,
+            Mod::AdvancedTooltips => t.advanced_tooltips,
+            Mod::Crosshair => {
+                let name = CROSSHAIRS.get(usize::from(t.crosshair)).unwrap_or(&"");
+                return Value::Choice((*name).to_owned());
+            }
+            Mod::Outline => {
+                let name = crate::outline::STYLES
+                    .get(usize::from(t.outline))
+                    .unwrap_or(&"");
+                return Value::Choice((*name).to_owned());
+            }
+        })
+    }
+
+    fn click(self, settings: &mut Settings) {
+        let flip = |value: &mut bool| *value = !*value;
+        if let Mod::Hud(kind) = self {
+            flip(&mut settings.hud_mut(kind).enabled);
+            return;
+        }
+        let t = &mut settings.toggles;
+        match self {
+            Mod::Hud(_) => {}
+            Mod::Zoom => flip(&mut t.zoom),
+            Mod::SmoothZoom => flip(&mut t.smooth_zoom),
+            Mod::ToggleSprint => flip(&mut t.toggle_sprint),
+            Mod::ToggleSneak => flip(&mut t.toggle_sneak),
+            Mod::Fullbright => flip(&mut t.fullbright),
+            Mod::ScoreboardNumbers => flip(&mut t.scoreboard_numbers),
+            Mod::AdvancedTooltips => flip(&mut t.advanced_tooltips),
+            Mod::Crosshair => t.crosshair = (t.crosshair + 1) % CROSSHAIRS.len() as u8,
+            Mod::Outline => t.outline = (t.outline + 1) % crate::outline::STYLES.len() as u8,
+        }
+    }
+}
+
+/// A display or control option on the Settings page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setting {
+    Fov,
+    Sensitivity,
+    RenderDistance,
+    GuiScale,
+    FrameLimit,
+    Fullscreen,
+    ViewBobbing,
+    MenuStyle,
+}
+
+const SETTINGS: [Setting; 8] = [
+    Setting::Fov,
+    Setting::Sensitivity,
+    Setting::RenderDistance,
+    Setting::GuiScale,
+    Setting::FrameLimit,
+    Setting::Fullscreen,
+    Setting::ViewBobbing,
+    Setting::MenuStyle,
+];
+
+/// Frame caps the Settings page steps through; 0 follows the display.
+const FRAME_LIMITS: [u32; 6] = [0, 60, 120, 144, 240, u32::MAX];
+
+impl Setting {
+    fn title(self) -> &'static str {
+        match self {
+            Setting::Fov => "Field of View",
+            Setting::Sensitivity => "Sensitivity",
+            Setting::RenderDistance => "Render Distance",
+            Setting::GuiScale => "GUI Scale",
+            Setting::FrameLimit => "Frame Limit",
+            Setting::Fullscreen => "Fullscreen",
+            Setting::ViewBobbing => "View Bobbing",
+            Setting::MenuStyle => "Vanilla Menus",
+        }
+    }
+
+    /// On or off, flipped by a click anywhere on the card.
+    fn switch(self) -> bool {
+        matches!(
+            self,
+            Setting::Fullscreen | Setting::ViewBobbing | Setting::MenuStyle
+        )
+    }
+
+    fn value(self, settings: &Settings) -> Value {
+        let v = &settings.video;
+        Value::Choice(match self {
+            Setting::Fov => format!("{:.0}°", v.fov),
+            Setting::Sensitivity => format!("{:.0}%", v.sensitivity * 200.0),
+            Setting::RenderDistance => format!("{} chunks", v.render_distance),
+            Setting::GuiScale if v.gui_scale == 0 => "Auto".to_owned(),
+            Setting::GuiScale => v.gui_scale.to_string(),
+            Setting::FrameLimit => match settings.toggles.fps_limit {
+                0 => "Display".to_owned(),
+                u32::MAX => "Unlimited".to_owned(),
+                fps => fps.to_string(),
+            },
+            Setting::Fullscreen => return Value::Switch(v.fullscreen),
+            Setting::ViewBobbing => return Value::Switch(v.view_bobbing),
+            Setting::MenuStyle => return Value::Switch(settings.toggles.vanilla_menu),
+        })
+    }
+
+    /// Step by `direction` (-1 or 1); switches flip on any click.
+    fn step(self, settings: &mut Settings, direction: i8) {
+        let d = f32::from(direction);
+        let v = &mut settings.video;
+        match self {
+            Setting::Fov => v.fov = (v.fov + 5.0 * d).clamp(30.0, 110.0),
+            Setting::Sensitivity => {
+                v.sensitivity = ((v.sensitivity + 0.05 * d) * 20.0).round().clamp(0.0, 20.0) / 20.0;
+            }
+            Setting::RenderDistance => {
+                v.render_distance =
+                    (i16::from(v.render_distance) + i16::from(direction)).clamp(2, 16) as u8;
+            }
+            Setting::GuiScale => {
+                v.gui_scale = (i64::from(v.gui_scale) + i64::from(direction)).clamp(0, 4) as u32;
+            }
+            Setting::FrameLimit => {
+                let limit = &mut settings.toggles.fps_limit;
+                let at = FRAME_LIMITS.iter().position(|l| l == limit).unwrap_or(0) as i64;
+                let next = (at + i64::from(direction)).clamp(0, FRAME_LIMITS.len() as i64 - 1);
+                *limit = FRAME_LIMITS[next as usize];
+            }
+            Setting::Fullscreen => v.fullscreen = !v.fullscreen,
+            Setting::ViewBobbing => v.view_bobbing = !v.view_bobbing,
+            Setting::MenuStyle => {
+                settings.toggles.vanilla_menu = !settings.toggles.vanilla_menu;
+            }
+        }
+    }
+}
+
+/// One entry of the News page.
+#[derive(Debug, PartialEq)]
+struct Entry {
+    title: String,
+    lines: Vec<String>,
+}
+
+/// `NEWS.md`: `## ` titles, each with `- ` lines, newest first.
+fn news(text: &str) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = Vec::new();
+    for line in text.lines() {
+        if let Some(title) = line.strip_prefix("## ") {
+            entries.push(Entry {
+                title: title.trim().to_owned(),
+                lines: Vec::new(),
+            });
+        } else if let (Some(item), Some(entry)) = (line.strip_prefix("- "), entries.last_mut()) {
+            entry.lines.push(item.trim().to_owned());
+        }
+    }
+    entries
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
+    Nav(Page),
     Account,
     Copy,
+    Play,
     Server(usize),
     Remove(usize),
     Field,
     Add,
-    Play,
-    Quit,
-    Update,
+    AllServers,
+    LatestNews,
+    Mod(usize),
+    /// A setting and the step: -1 or 1 for the halves of a stepper, 0 for
+    /// a switch.
+    Setting(usize, i8),
+    Restart,
 }
 
-/// Where everything sits, in GUI pixels.
-#[derive(Debug, PartialEq)]
-struct Geometry {
-    card: [f32; 4],
-    targets: Vec<(Target, [f32; 4])>,
-    rows: usize,
-    message_y: f32,
+/// The launcher's design space: at least 480x300 units, scaled to fit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct View {
+    scale: f32,
+    width: f32,
+    height: f32,
 }
 
-const CARD_W: f32 = 300.0;
-const ROW_H: f32 = 22.0;
-const PAD: f32 = 12.0;
-const TITLE: f32 = 11.0;
-const BODY: f32 = 7.5;
-const SMALL: f32 = 6.5;
-const WHITE: u32 = 0xFFF7_F8FA;
-const DIM: u32 = 0xFFC4_CAD4;
-const BLUE: u32 = 0xFF6E_B6FF;
+fn view(layout: Layout) -> View {
+    let scale = (layout.width / 480.0).min(layout.height / 300.0).max(0.25);
+    View {
+        scale,
+        width: layout.width / scale,
+        height: layout.height / scale,
+    }
+}
+
+const SIDEBAR: f32 = 48.0;
+const MARGIN: f32 = 20.0;
+/// Where the page's content starts, below the header.
+const TOP: f32 = 46.0;
+const HERO_H: f32 = 84.0;
+const TILE_H: f32 = 46.0;
+const ROW_H: f32 = 24.0;
+const CARD_H: f32 = 32.0;
+const GAP: f32 = 6.0;
+
+const TITLE: f32 = 12.0;
+const BODY: f32 = 7.0;
+const SMALL: f32 = 5.5;
 
 fn inside(rect: [f32; 4], (x, y): (f32, f32)) -> bool {
     x >= rect[0] && x < rect[2] && y >= rect[1] && y < rect[3]
 }
 
-fn geometry(layout: Layout, servers: usize) -> Geometry {
-    let width = CARD_W.min(layout.width - 16.0).max(200.0);
-    let rows = (((layout.height - 172.0) / (ROW_H + 2.0)).floor() as usize).clamp(2, 6);
-    let height = 172.0 + rows as f32 * (ROW_H + 2.0) - 2.0 - 24.0;
-    let x0 = ((layout.width - width) / 2.0).floor().max(0.0);
-    let y0 = ((layout.height - height) / 2.0).floor().max(0.0);
-    let x1 = x0 + width;
-    let mut targets = vec![
-        (
-            Target::Update,
-            [x1 - PAD - 110.0, y0 + 8.0, x1 - PAD, y0 + 22.0],
-        ),
-        (
-            Target::Account,
-            [x1 - PAD - 64.0, y0 + 34.0, x1 - PAD - 6.0, y0 + 50.0],
-        ),
-        (
-            Target::Copy,
-            [x1 - PAD - 128.0, y0 + 34.0, x1 - PAD - 70.0, y0 + 50.0],
-        ),
-    ];
-    let list = y0 + 72.0;
-    for row in 0..rows.min(servers) {
-        let y = list + row as f32 * (ROW_H + 2.0);
-        targets.push((
-            Target::Remove(row),
-            [x1 - PAD - 18.0, y + 4.0, x1 - PAD - 4.0, y + 18.0],
-        ));
-        targets.push((Target::Server(row), [x0 + PAD, y, x1 - PAD, y + ROW_H]));
+fn nav(index: usize) -> [f32; 4] {
+    let y = 46.0 + index as f32 * 38.0;
+    [6.0, y, SIDEBAR - 6.0, y + 34.0]
+}
+
+/// Quick-play tiles across the Home page.
+fn tiles(view: View) -> usize {
+    let width = view.width - SIDEBAR - 2.0 * MARGIN;
+    (((width + GAP) / (120.0 + GAP)).floor() as usize).clamp(1, 4)
+}
+
+/// Server rows that fit on the Servers page.
+fn rows(view: View) -> usize {
+    (((view.height - 62.0 - TOP + 4.0) / (ROW_H + 4.0)).floor() as usize).max(1)
+}
+
+/// The first row shown so that `selected` is visible.
+fn first_row(selected: usize, rows: usize) -> usize {
+    (selected + 1).saturating_sub(rows)
+}
+
+fn grid(x0: f32, x1: f32, columns: usize, index: usize) -> [f32; 4] {
+    let width = (x1 - x0 - GAP * (columns - 1) as f32) / columns as f32;
+    let (column, row) = (index % columns, index / columns);
+    let x = x0 + column as f32 * (width + GAP);
+    let y = TOP + row as f32 * (CARD_H + GAP - 1.0);
+    [x, y, x + width, y + CARD_H]
+}
+
+/// Everything clickable on `page`, in hit-test order.
+fn geometry(page: Page, view: View, servers: usize, first: usize) -> Vec<(Target, [f32; 4])> {
+    let (x0, x1) = (SIDEBAR + MARGIN, view.width - MARGIN);
+    let mut targets: Vec<(Target, [f32; 4])> = Page::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, &page)| (Target::Nav(page), nav(i)))
+        .collect();
+    targets.push((Target::Account, [x1 - 64.0, 13.0, x1, 29.0]));
+    targets.push((Target::Copy, [x1 - 132.0, 13.0, x1 - 70.0, 29.0]));
+    match page {
+        Page::Home => {
+            targets.push((
+                Target::Play,
+                [x1 - 14.0 - 104.0, TOP + 22.0, x1 - 14.0, TOP + 54.0],
+            ));
+            let label = TOP + HERO_H + 14.0;
+            targets.push((
+                Target::AllServers,
+                [x1 - 64.0, label - 2.0, x1, label + 8.0],
+            ));
+            let n = tiles(view);
+            let width = (x1 - x0 - GAP * (n - 1) as f32) / n as f32;
+            let y = label + 14.0;
+            for i in 0..n.min(servers) {
+                let x = x0 + i as f32 * (width + GAP);
+                targets.push((Target::Server(i), [x, y, x + width, y + TILE_H]));
+            }
+            let news = y + TILE_H + 14.0;
+            if news + 26.0 <= view.height - 8.0 {
+                targets.push((Target::LatestNews, [x0, news, x1, news + 26.0]));
+            }
+        }
+        Page::Servers => {
+            for (k, i) in (first..servers).take(rows(view)).enumerate() {
+                let y = TOP + k as f32 * (ROW_H + 4.0);
+                targets.push((Target::Remove(i), [x1 - 22.0, y + 5.0, x1 - 8.0, y + 19.0]));
+                targets.push((Target::Server(i), [x0, y, x1, y + ROW_H]));
+            }
+            let bottom = view.height - 16.0;
+            targets.push((Target::Play, [x1 - 104.0, bottom - 32.0, x1, bottom]));
+            targets.push((
+                Target::Add,
+                [x1 - 166.0, bottom - 27.0, x1 - 112.0, bottom - 5.0],
+            ));
+            targets.push((Target::Field, [x0, bottom - 27.0, x1 - 172.0, bottom - 5.0]));
+        }
+        Page::News => {}
+        Page::Mods => {
+            for i in 0..MODS.len() {
+                targets.push((Target::Mod(i), grid(x0, x1, 3, i)));
+            }
+        }
+        Page::Settings => {
+            for (i, setting) in SETTINGS.iter().enumerate() {
+                let r = grid(x0, x1, 2, i);
+                if setting.switch() {
+                    targets.push((Target::Setting(i, 0), r));
+                } else {
+                    let mid = r[2] - 40.0;
+                    targets.push((Target::Setting(i, -1), [r[0], r[1], mid, r[3]]));
+                    targets.push((Target::Setting(i, 1), [mid, r[1], r[2], r[3]]));
+                }
+            }
+            let y = grid(x0, x1, 2, SETTINGS.len())[1];
+            targets.push((Target::Restart, [x1 - 74.0, y + 8.0, x1 - 10.0, y + 24.0]));
+        }
     }
-    let field = list + rows as f32 * (ROW_H + 2.0) + 4.0;
-    targets.push((
-        Target::Add,
-        [x1 - PAD - 44.0, field, x1 - PAD, field + 18.0],
-    ));
-    targets.push((
-        Target::Field,
-        [x0 + PAD, field, x1 - PAD - 50.0, field + 18.0],
-    ));
-    let footer = field + 38.0;
-    let half = (width - 2.0 * PAD - 6.0) / 2.0;
-    targets.push((
-        Target::Quit,
-        [x0 + PAD, footer, x0 + PAD + half * 0.6, footer + 20.0],
-    ));
-    targets.push((
-        Target::Play,
-        [x0 + PAD + half * 0.6 + 6.0, footer, x1 - PAD, footer + 20.0],
-    ));
-    Geometry {
-        card: [x0, y0, x1, footer + 20.0 + PAD],
-        targets,
-        rows,
-        message_y: field + 23.0,
-    }
+    targets
 }
 
 pub struct Launcher {
     account: Arc<Mutex<Account>>,
+    page: Page,
     selected: usize,
     /// The address being typed, when the field has focus.
     field: Option<String>,
     message: Option<String>,
-    started: std::time::Instant,
+    pinger: Pinger,
+    news: Vec<Entry>,
 }
 
 impl Launcher {
-    /// Start with the saved sign-in, checked in the background.
-    pub fn new() -> Self {
-        let launcher = Self {
-            account: Arc::new(Mutex::new(Account::Checking)),
+    fn with(account: Account) -> Self {
+        Self {
+            account: Arc::new(Mutex::new(account)),
+            page: Page::Home,
             selected: 0,
             field: None,
             message: None,
-            started: std::time::Instant::now(),
-        };
+            pinger: Pinger::default(),
+            news: news(include_str!("../NEWS.md")),
+        }
+    }
+
+    /// Start with the saved sign-in, checked in the background.
+    pub fn new() -> Self {
+        let launcher = Self::with(Account::Checking);
         launcher.spawn(|client| match horizon_auth::saved::load(client) {
             Ok(Some(token)) => match horizon_auth::refresh(client, &token) {
                 Ok(session) => {
@@ -186,15 +535,12 @@ impl Launcher {
         launcher
     }
 
-    /// Validation captures: signed out, never touching the saved sign-in.
-    pub fn preview() -> Self {
-        Self {
-            account: Arc::new(Mutex::new(Account::SignedOut)),
-            selected: 0,
-            field: None,
-            message: None,
-            started: std::time::Instant::now(),
-        }
+    /// Validation captures: signed out, never touching the saved sign-in,
+    /// opened on `page`.
+    pub fn preview(page: Page) -> Self {
+        let mut launcher = Self::with(Account::SignedOut);
+        launcher.page = page;
+        launcher
     }
 
     fn spawn(&self, work: impl FnOnce(&str) -> Account + Send + 'static) {
@@ -221,6 +567,11 @@ impl Launcher {
             Account::SignedIn(session) => Some(session),
             _ => None,
         }
+    }
+
+    /// Show a one-line message, such as why the game didn't start.
+    pub fn notice(&mut self, message: impl Into<String>) {
+        self.message = Some(message.into());
     }
 
     fn sign_in(&self) {
@@ -265,6 +616,11 @@ impl Launcher {
         self.field.is_some()
     }
 
+    fn targets(&self, view: View, settings: &Settings) -> Vec<(Target, [f32; 4])> {
+        let first = first_row(self.selected, rows(view));
+        geometry(self.page, view, settings.servers.len(), first)
+    }
+
     pub fn click(
         &mut self,
         layout: Layout,
@@ -272,17 +628,19 @@ impl Launcher {
         settings: &mut Settings,
         update: &Status,
     ) -> Option<Action> {
-        let g = geometry(layout, settings.servers.len());
-        let target = g
-            .targets
-            .iter()
+        let view = view(layout);
+        let mouse = (mouse.0 / view.scale, mouse.1 / view.scale);
+        let target = self
+            .targets(view, settings)
+            .into_iter()
             .find(|(_, rect)| inside(*rect, mouse))
-            .map(|(target, _)| *target);
+            .map(|(target, _)| target);
         if target != Some(Target::Field) && target != Some(Target::Add) {
             self.field = None;
         }
         self.message = None;
         match target? {
+            Target::Nav(page) => self.page = page,
             Target::Account => match self.account() {
                 Account::SignedIn(_) => self.sign_out(),
                 Account::SignedOut | Account::Failed(_) => self.sign_in(),
@@ -313,8 +671,11 @@ impl Launcher {
             }
             Target::Add => self.add(settings),
             Target::Play => return self.play(settings),
-            Target::Quit => return Some(Action::Quit),
-            Target::Update => {
+            Target::AllServers => self.page = Page::Servers,
+            Target::LatestNews => self.page = Page::News,
+            Target::Mod(index) => MODS[index].click(settings),
+            Target::Setting(index, step) => SETTINGS[index].step(settings, step),
+            Target::Restart => {
                 if matches!(update, Status::Ready(_)) {
                     return Some(Action::Restart);
                 }
@@ -404,6 +765,13 @@ impl Launcher {
         }
     }
 
+    /// The live status of the server at `index` in the list.
+    fn state(&self, settings: &Settings, index: usize) -> Option<State> {
+        let (_, text) = settings.servers.get(index)?;
+        let (host, port) = address(text)?;
+        Some(self.pinger.get(&host, port))
+    }
+
     pub fn draw(
         &self,
         canvas: &mut Canvas<'_>,
@@ -411,263 +779,639 @@ impl Launcher {
         update: &Status,
         mouse: (f32, f32),
     ) {
-        let (w, h) = (canvas.layout.width, canvas.layout.height);
-        panorama(canvas, self.started.elapsed().as_secs_f32());
-        canvas.gradient(0.0, 0.0, w, h, 0x3000_0000, 0x7000_0000);
-        canvas.overlay();
-        let g = geometry(canvas.layout, settings.servers.len());
-        let rect = |target| {
-            g.targets
-                .iter()
-                .find(|(t, _)| *t == target)
-                .map(|(_, r)| *r)
-                .unwrap_or_default()
-        };
-        let [x0, y0, x1, _] = g.card;
-        let mut card = Panel::new(g.card[0], g.card[1], g.card[2], g.card[3]);
-        card.radius = 16.0;
-        card.shadow = 0.45;
-        card.tint = [0.05, 0.06, 0.08, 0.40];
-        canvas.glass(card);
-        let tw = canvas.system_text(
-            "Horizon",
-            x0 + PAD,
-            y0 + 9.0,
-            TITLE,
-            Weight::Semibold,
-            WHITE,
-        );
-        canvas.system_text(
-            "1.8.9",
-            x0 + PAD + tw + 4.0,
-            y0 + 9.0,
-            TITLE,
-            Weight::Regular,
-            DIM,
-        );
-        // Update status, right-aligned; a ready update is a restart button.
-        let label = update.label();
-        let ready = matches!(update, Status::Ready(_));
-        let lw = canvas.system_width(&label, SMALL, Weight::Regular);
-        let lx = x1 - PAD - lw;
-        if ready {
-            let mut pill = Panel::new(lx - 6.0, y0 + 8.0, x1 - PAD + 6.0, y0 + 22.0);
-            pill.radius = 7.0;
-            pill.shadow = 0.1;
-            pill.tint = [0.04, 0.47, 1.0, 0.85];
-            canvas.glass(pill);
+        let view = view(canvas.layout);
+        canvas.scale = view.scale;
+        let mouse = (mouse.0 / view.scale, mouse.1 / view.scale);
+        let targets = self.targets(view, settings);
+        let rect = |target| targets.iter().find(|(t, _)| *t == target).map(|(_, r)| *r);
+        let hover = |target| rect(target).is_some_and(|r| inside(r, mouse));
+        canvas.rect(0.0, 0.0, view.width, view.height, style::BASE);
+        self.sidebar(canvas, view, mouse);
+        self.header(canvas, view, &rect, &hover);
+        let (x0, x1) = (SIDEBAR + MARGIN, view.width - MARGIN);
+        match self.page {
+            Page::Home => self.home(canvas, view, settings, update, &rect, &hover),
+            Page::Servers => self.servers(canvas, settings, &targets, &rect, &hover, mouse),
+            Page::News => self.news_page(canvas, view),
+            Page::Mods => {
+                for (i, item) in MODS.iter().enumerate() {
+                    let r = grid(x0, x1, 3, i);
+                    let value = item.value(settings);
+                    card(
+                        canvas,
+                        r,
+                        item.title(),
+                        item.group(),
+                        &value,
+                        inside(r, mouse),
+                    );
+                }
+                let y = grid(x0, x1, 3, MODS.len() + 2)[1] + 4.0;
+                canvas.system_text(
+                    "Move HUD cards in game: Right Shift, then Edit HUD.",
+                    x0,
+                    y.min(view.height - 26.0),
+                    SMALL,
+                    Weight::Regular,
+                    style::MUTED,
+                );
+            }
+            Page::Settings => {
+                for (i, item) in SETTINGS.iter().enumerate() {
+                    let r = grid(x0, x1, 2, i);
+                    let value = item.value(settings);
+                    card(canvas, r, item.title(), "", &value, inside(r, mouse));
+                }
+                let r = grid(x0, x1, 2, SETTINGS.len());
+                let r = [x0, r[1], x1, r[3]];
+                style::panel(canvas, r, style::CARD, style::EDGE);
+                canvas.system_text(
+                    "Updates",
+                    r[0] + 10.0,
+                    r[1] + 7.0,
+                    BODY,
+                    Weight::Semibold,
+                    style::TEXT,
+                );
+                canvas.system_text(
+                    &update.label(),
+                    r[0] + 10.0,
+                    r[1] + 18.0,
+                    SMALL,
+                    Weight::Regular,
+                    style::MUTED,
+                );
+                if matches!(update, Status::Ready(_))
+                    && let Some(restart) = rect(Target::Restart)
+                {
+                    button(canvas, restart, "Restart", hover(Target::Restart));
+                }
+            }
         }
-        let color = match update {
-            Status::Failed(_) => 0xFFFF_9F8A,
-            Status::Ready(_) => WHITE,
-            _ => DIM,
+        if let Some(message) = &self.message {
+            let y = view.height - 12.0;
+            canvas.rect(x0, y, x0 + 2.0, y + SMALL + 1.0, style::ACCENT);
+            canvas.system_text(
+                message,
+                x0 + 6.0,
+                y,
+                SMALL + 0.5,
+                Weight::Regular,
+                style::TEXT,
+            );
+        }
+        canvas.scale = 1.0;
+    }
+
+    fn sidebar(&self, canvas: &mut Canvas<'_>, view: View, mouse: (f32, f32)) {
+        canvas.rect(0.0, 0.0, SIDEBAR, view.height, style::SURFACE);
+        let t = style::hairline(canvas);
+        canvas.rect(SIDEBAR - t, 0.0, SIDEBAR, view.height, style::EDGE);
+        // The mark: an H in corner brackets.
+        let mark = [SIDEBAR / 2.0 - 8.0, 13.0, SIDEBAR / 2.0 + 8.0, 29.0];
+        let hw = canvas.system_width("H", 10.0, Weight::Semibold);
+        canvas.system_text(
+            "H",
+            (SIDEBAR - hw) / 2.0,
+            16.0,
+            10.0,
+            Weight::Semibold,
+            style::TEXT,
+        );
+        style::brackets(canvas, mark, style::TEXT);
+        for (i, page) in Page::ALL.iter().enumerate() {
+            let r = nav(i);
+            let selected = *page == self.page;
+            let over = inside(r, mouse);
+            if selected {
+                canvas.rect(r[0], r[1], r[2], r[3], style::CARD);
+                style::brackets(canvas, r, style::ACCENT);
+            } else if over {
+                canvas.rect(r[0], r[1], r[2], r[3], style::HOVER);
+            }
+            let color = if selected || over {
+                style::TEXT
+            } else {
+                style::MUTED
+            };
+            let px = 1.25;
+            let x = (r[0] + r[2] - 8.0 * px) / 2.0;
+            icon(canvas, page.icon(), x, r[1] + 7.0, px, color);
+            let label = page.label();
+            let lw = canvas.system_width(label, 5.0, Weight::Regular);
+            canvas.system_text(
+                label,
+                (r[0] + r[2] - lw) / 2.0,
+                r[1] + 21.0,
+                5.0,
+                Weight::Regular,
+                color,
+            );
+        }
+    }
+
+    fn header(
+        &self,
+        canvas: &mut Canvas<'_>,
+        view: View,
+        rect: &dyn Fn(Target) -> Option<[f32; 4]>,
+        hover: &dyn Fn(Target) -> bool,
+    ) {
+        let (x0, x1) = (SIDEBAR + MARGIN, view.width - MARGIN);
+        let account = self.account();
+        if self.page == Page::Home {
+            let (line, name) = match &account {
+                Account::SignedIn(session) => ("Welcome back", session.profile.username.clone()),
+                _ => ("Welcome to Horizon", "Sign in to play online".to_owned()),
+            };
+            canvas.system_text(line, x0, 11.0, 6.0, Weight::Regular, style::MUTED);
+            canvas.system_text(&name, x0, 19.0, TITLE, Weight::Semibold, style::TEXT);
+        } else {
+            canvas.system_text(
+                self.page.label(),
+                x0,
+                15.0,
+                TITLE,
+                Weight::Semibold,
+                style::TEXT,
+            );
+        }
+        let Some(chip) = rect(Target::Account) else {
+            return;
         };
-        canvas.system_text(&label, lx, y0 + 11.0, SMALL, Weight::Regular, color);
-        // Account row.
-        let mut row = Panel::new(x0 + PAD, y0 + 30.0, x1 - PAD, y0 + 54.0);
-        row.radius = 8.0;
-        row.shadow = 0.1;
-        row.tint = [0.12, 0.13, 0.16, 0.42];
-        canvas.glass(row);
-        let (line, button) = match self.account() {
-            Account::Checking => ("Checking your Microsoft account…".to_owned(), None),
-            Account::SignedOut => ("Not signed in".to_owned(), Some("Sign In")),
-            Account::Failed(reason) => (reason, Some("Retry")),
+        let right_text = |canvas: &mut Canvas<'_>, text: &str, right: f32, color: u32| {
+            let w = canvas.system_width(text, 6.0, Weight::Regular);
+            canvas.system_text(text, right - w, 17.5, 6.0, Weight::Regular, color);
+        };
+        match &account {
+            Account::Checking => right_text(canvas, "Checking account…", x1, style::MUTED),
+            Account::SignedOut => button(canvas, chip, "Sign in", hover(Target::Account)),
+            Account::Failed(reason) => {
+                right_text(canvas, reason, chip[0] - 8.0, style::MUTED);
+                button(canvas, chip, "Retry", hover(Target::Account));
+            }
             Account::Waiting { uri, code } => {
                 let site = uri
                     .trim_start_matches("https://")
                     .trim_start_matches("www.");
-                (format!("Enter {code} at {site}"), None)
+                if let Some(copy) = rect(Target::Copy) {
+                    let line = format!("Enter {code} at {site}");
+                    right_text(canvas, &line, copy[0] - 8.0, style::TEXT);
+                    button(canvas, copy, "Copy code", hover(Target::Copy));
+                }
+                right_text(canvas, "Waiting…", x1, style::MUTED);
             }
-            Account::SignedIn(session) => (session.profile.username.clone(), Some("Sign Out")),
-        };
-        canvas.system_text(
-            &line,
-            x0 + PAD + 8.0,
-            y0 + 38.0,
-            BODY,
-            Weight::Semibold,
-            WHITE,
-        );
-        if let Some(text) = button {
-            small_button(
-                canvas,
-                rect(Target::Account),
-                text,
-                inside(rect(Target::Account), mouse),
-            );
-        }
-        if matches!(self.account(), Account::Waiting { .. }) {
-            small_button(canvas, rect(Target::Account), "Waiting", false);
-            small_button(
-                canvas,
-                rect(Target::Copy),
-                "Copy Code",
-                inside(rect(Target::Copy), mouse),
-            );
-        }
-        canvas.system_text("Servers", x0 + PAD, y0 + 60.0, SMALL, Weight::Semibold, DIM);
-        for (index, (name, address)) in settings.servers.iter().enumerate().take(g.rows) {
-            let r = rect(Target::Server(index));
-            let selected = index == self.selected;
-            let mut panel = Panel::new(r[0], r[1], r[2], r[3]);
-            panel.radius = 7.0;
-            panel.shadow = 0.08;
-            panel.tint = if selected {
-                [0.04, 0.47, 1.0, 0.55]
-            } else if inside(r, mouse) {
-                [0.26, 0.28, 0.34, 0.50]
-            } else {
-                [0.12, 0.13, 0.16, 0.38]
-            };
-            canvas.glass(panel);
-            let ty = r[1] + (ROW_H - BODY) / 2.0;
-            canvas.system_text(name, r[0] + 8.0, ty, BODY, Weight::Semibold, WHITE);
-            if name != address {
-                let aw = canvas.system_width(address, SMALL, Weight::Regular);
+            Account::SignedIn(session) => {
+                button(canvas, chip, "Sign out", hover(Target::Account));
+                let initial = session
+                    .profile
+                    .username
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_string();
+                let face = [chip[0] - 22.0, chip[1], chip[0] - 6.0, chip[3]];
+                style::panel(canvas, face, style::CARD, style::EDGE);
+                let w = canvas.system_width(&initial, 8.0, Weight::Semibold);
                 canvas.system_text(
-                    address,
-                    r[2] - 26.0 - aw,
-                    ty + 0.5,
-                    SMALL,
-                    Weight::Regular,
-                    DIM,
+                    &initial,
+                    (face[0] + face[2] - w) / 2.0,
+                    face[1] + 4.0,
+                    8.0,
+                    Weight::Semibold,
+                    style::TEXT,
                 );
             }
-            if selected {
-                let x = rect(Target::Remove(index));
-                canvas.system_text("×", x[0] + 3.0, ty, BODY, Weight::Regular, DIM);
-            }
         }
-        // Address field and Add.
-        let field = rect(Target::Field);
-        let mut input = Panel::new(field[0], field[1], field[2], field[3]);
-        input.radius = 7.0;
-        input.shadow = 0.0;
-        input.tint = if self.field.is_some() {
-            [0.20, 0.22, 0.28, 0.55]
-        } else {
-            [0.10, 0.11, 0.14, 0.40]
-        };
-        canvas.glass(input);
-        let (text, color) = match &self.field {
-            Some(text) if !text.is_empty() => (format!("{text}|"), WHITE),
-            Some(_) => ("|".to_owned(), WHITE),
-            None => ("Add a server address…".to_owned(), DIM),
+    }
+
+    fn home(
+        &self,
+        canvas: &mut Canvas<'_>,
+        view: View,
+        settings: &Settings,
+        update: &Status,
+        rect: &dyn Fn(Target) -> Option<[f32; 4]>,
+        hover: &dyn Fn(Target) -> bool,
+    ) {
+        let (x0, x1) = (SIDEBAR + MARGIN, view.width - MARGIN);
+        let hero = [x0, TOP, x1, TOP + HERO_H];
+        style::panel(canvas, hero, style::CARD, style::EDGE);
+        let left = hero[0] + 16.0;
+        let muted = |canvas: &mut Canvas<'_>, text: &str, x, y, size| {
+            canvas.system_text(text, x, y, size, Weight::Regular, style::MUTED)
         };
         canvas.system_text(
-            &text,
-            field[0] + 7.0,
-            field[1] + 5.0,
-            BODY,
-            Weight::Regular,
-            color,
+            "MINECRAFT 1.8.9",
+            left,
+            hero[1] + 16.0,
+            SMALL,
+            Weight::Semibold,
+            style::MUTED,
         );
-        small_button(
-            canvas,
-            rect(Target::Add),
-            "Add",
-            inside(rect(Target::Add), mouse),
+        canvas.system_text(
+            "Horizon",
+            left,
+            hero[1] + 26.0,
+            20.0,
+            Weight::Semibold,
+            style::TEXT,
         );
-        if let Some(message) = &self.message {
-            canvas.system_text(message, x0 + PAD, g.message_y, SMALL, Weight::Regular, BLUE);
-        } else if self.session().is_none() {
+        muted(canvas, &update.label(), left, hero[1] + 54.0, 6.0);
+        if let Some(play) = rect(Target::Play) {
+            play_button(canvas, play, hover(Target::Play));
+            if let Some((name, _)) = settings.servers.get(self.selected) {
+                let line = match self.state(settings, self.selected) {
+                    Some(State::Online(info)) => {
+                        format!("{name} · {} online", thousands(info.online))
+                    }
+                    _ => name.clone(),
+                };
+                let w = canvas.system_width(&line, SMALL, Weight::Regular);
+                muted(
+                    canvas,
+                    &line,
+                    (play[0] + play[2] - w) / 2.0,
+                    play[3] + 6.0,
+                    SMALL,
+                );
+            }
+        }
+        let label = TOP + HERO_H + 14.0;
+        canvas.system_text(
+            "QUICK PLAY",
+            x0,
+            label,
+            SMALL,
+            Weight::Semibold,
+            style::MUTED,
+        );
+        let all = "All servers ›";
+        let w = canvas.system_width(all, SMALL, Weight::Regular);
+        let color = if hover(Target::AllServers) {
+            style::TEXT
+        } else {
+            style::MUTED
+        };
+        canvas.system_text(all, x1 - w, label, SMALL, Weight::Regular, color);
+        for (i, (name, address)) in settings.servers.iter().enumerate() {
+            let Some(r) = rect(Target::Server(i)) else {
+                break;
+            };
+            let fill = if hover(Target::Server(i)) {
+                style::HOVER
+            } else {
+                style::CARD
+            };
+            style::panel(canvas, r, fill, style::EDGE);
             canvas.system_text(
-                "Servers on this Mac work without signing in.",
-                x0 + PAD,
-                g.message_y,
+                name,
+                r[0] + 10.0,
+                r[1] + 8.0,
+                BODY + 0.5,
+                Weight::Semibold,
+                style::TEXT,
+            );
+            muted(canvas, address, r[0] + 10.0, r[1] + 19.0, SMALL);
+            status_line(canvas, self.state(settings, i), r[0] + 10.0, r[1] + 31.0);
+            if i == self.selected {
+                style::brackets(canvas, r, style::ACCENT);
+            }
+        }
+        if let (Some(r), Some(entry)) = (rect(Target::LatestNews), self.news.first()) {
+            let fill = if hover(Target::LatestNews) {
+                style::HOVER
+            } else {
+                style::SURFACE
+            };
+            style::panel(canvas, r, fill, style::EDGE);
+            let lw = canvas.system_text(
+                "WHAT'S NEW",
+                r[0] + 10.0,
+                r[1] + 10.0,
                 SMALL,
+                Weight::Semibold,
+                style::MUTED,
+            );
+            canvas.system_text(
+                &entry.title,
+                r[0] + 18.0 + lw,
+                r[1] + 9.5,
+                BODY - 0.5,
+                Weight::Semibold,
+                style::TEXT,
+            );
+            let w = canvas.system_width("›", BODY, Weight::Regular);
+            muted(canvas, "›", r[2] - 10.0 - w, r[1] + 9.0, BODY);
+        }
+    }
+
+    fn servers(
+        &self,
+        canvas: &mut Canvas<'_>,
+        settings: &Settings,
+        targets: &[(Target, [f32; 4])],
+        rect: &dyn Fn(Target) -> Option<[f32; 4]>,
+        hover: &dyn Fn(Target) -> bool,
+        mouse: (f32, f32),
+    ) {
+        for &(target, r) in targets {
+            let Target::Server(i) = target else {
+                continue;
+            };
+            let (name, address) = &settings.servers[i];
+            let over = inside(r, mouse);
+            let fill = if over { style::HOVER } else { style::CARD };
+            style::panel(canvas, r, fill, style::EDGE);
+            let ty = r[1] + (ROW_H - BODY) / 2.0;
+            let nw = canvas.system_text(name, r[0] + 10.0, ty, BODY, Weight::Semibold, style::TEXT);
+            if name != address {
+                canvas.system_text(
+                    address,
+                    r[0] + 18.0 + nw,
+                    ty + 1.0,
+                    SMALL,
+                    Weight::Regular,
+                    style::MUTED,
+                );
+            }
+            let state = self.state(settings, i);
+            let lw = canvas.system_width(&status_text(state.clone()), SMALL, Weight::Regular) + 6.0;
+            status_line(canvas, state, r[2] - 30.0 - lw, ty + 1.0);
+            if i == self.selected {
+                style::brackets(canvas, r, style::ACCENT);
+            }
+            if (i == self.selected || over)
+                && let Some(x) = rect(Target::Remove(i))
+            {
+                let color = if hover(Target::Remove(i)) {
+                    style::TEXT
+                } else {
+                    style::MUTED
+                };
+                canvas.system_text("×", x[0] + 3.0, ty, BODY, Weight::Regular, color);
+            }
+        }
+        if let Some(field) = rect(Target::Field) {
+            let edge = if self.field.is_some() {
+                style::MUTED
+            } else {
+                style::EDGE
+            };
+            style::panel(canvas, field, style::SURFACE, edge);
+            let (text, color) = match &self.field {
+                Some(text) => (format!("{text}|"), style::TEXT),
+                None => ("Add a server address…".to_owned(), style::MUTED),
+            };
+            canvas.system_text(
+                &text,
+                field[0] + 8.0,
+                field[1] + 7.5,
+                BODY - 0.5,
                 Weight::Regular,
-                DIM,
+                color,
             );
         }
-        big_button(
-            canvas,
-            rect(Target::Quit),
-            "Quit",
-            inside(rect(Target::Quit), mouse),
-            false,
-        );
-        big_button(
-            canvas,
-            rect(Target::Play),
-            "Play",
-            inside(rect(Target::Play), mouse),
-            true,
-        );
+        if let Some(add) = rect(Target::Add) {
+            button(canvas, add, "Add", hover(Target::Add));
+        }
+        if let Some(play) = rect(Target::Play) {
+            play_button(canvas, play, hover(Target::Play));
+        }
+    }
+
+    fn news_page(&self, canvas: &mut Canvas<'_>, view: View) {
+        let (x0, x1) = (SIDEBAR + MARGIN, view.width - MARGIN);
+        let mut y = TOP;
+        for (i, entry) in self.news.iter().enumerate() {
+            if y > view.height - 30.0 {
+                break;
+            }
+            if i == 0 {
+                canvas.rect(x0, y + 1.0, x0 + 2.0, y + 9.0, style::ACCENT);
+            }
+            canvas.system_text(
+                &entry.title,
+                x0 + 8.0,
+                y,
+                8.5,
+                Weight::Semibold,
+                style::TEXT,
+            );
+            y += 14.0;
+            for line in &entry.lines {
+                for (k, part) in wrap(canvas, line, 6.0, x1 - x0 - 16.0).iter().enumerate() {
+                    if k == 0 {
+                        canvas.rect(x0 + 9.0, y + 2.5, x0 + 11.0, y + 4.5, style::MUTED);
+                    }
+                    canvas.system_text(part, x0 + 16.0, y, 6.0, Weight::Regular, style::MUTED);
+                    y += 9.0;
+                }
+                y += 2.0;
+            }
+            y += 10.0;
+        }
     }
 }
 
-/// The four side faces of vanilla's title panorama, side by side at the
-/// screen's height and drifting slowly left, as the title screen turns.
-fn panorama(canvas: &mut Canvas<'_>, seconds: f32) {
-    let (w, h) = (canvas.layout.width, canvas.layout.height);
-    let face = h.max(w / 2.0);
-    let ring = face * 4.0;
-    let offset = (seconds * face / 40.0) % ring;
-    let scale = face / 256.0;
-    let top = (h - face) / 2.0;
-    let mut x = -offset;
-    let mut index = 0;
-    canvas.scale = scale;
-    while x < w {
-        canvas.sprite(
-            PANORAMA + index % 4,
-            x / scale,
-            top / scale,
-            0.0,
-            0.0,
-            256.0,
-            256.0,
-            [1.0; 4],
-        );
-        x += face;
-        index += 1;
+/// `12345` as `12,345`.
+fn thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
     }
-    canvas.scale = 1.0;
+    out
 }
 
-fn small_button(canvas: &mut Canvas<'_>, r: [f32; 4], label: &str, hover: bool) {
-    let mut panel = Panel::new(r[0], r[1], r[2], r[3]);
-    panel.radius = 7.0;
-    panel.shadow = 0.1;
-    panel.tint = if hover {
-        [0.32, 0.35, 0.42, 0.55]
+fn status_text(state: Option<State>) -> String {
+    match state {
+        Some(State::Online(info)) => {
+            format!("{} online · {} ms", thousands(info.online), info.ping_ms)
+        }
+        Some(State::Pinging) => "Pinging…".to_owned(),
+        Some(State::Offline) | None => "Can't reach".to_owned(),
+    }
+}
+
+/// A status dot and its line: solid when online, hollow otherwise.
+fn status_line(canvas: &mut Canvas<'_>, state: Option<State>, x: f32, y: f32) {
+    let online = matches!(state, Some(State::Online(_)));
+    let dot = [x, y + 1.5, x + 3.0, y + 4.5];
+    if online {
+        canvas.rect(dot[0], dot[1], dot[2], dot[3], style::TEXT);
     } else {
-        [0.20, 0.22, 0.27, 0.45]
-    };
-    canvas.glass(panel);
-    let tw = canvas.system_width(label, SMALL, Weight::Semibold);
+        style::panel(canvas, dot, style::BASE, style::MUTED);
+    }
+    let color = if online { style::TEXT } else { style::MUTED };
     canvas.system_text(
-        label,
-        (r[0] + (r[2] - r[0] - tw) / 2.0).floor(),
-        r[1] + (r[3] - r[1] - SMALL) / 2.0,
+        &status_text(state),
+        x + 6.0,
+        y,
         SMALL,
-        Weight::Semibold,
-        WHITE,
+        Weight::Regular,
+        color,
     );
 }
 
-fn big_button(canvas: &mut Canvas<'_>, r: [f32; 4], label: &str, hover: bool, primary: bool) {
-    let mut panel = Panel::new(r[0], r[1], r[2], r[3]);
-    panel.radius = 10.0;
-    panel.shadow = 0.15;
-    panel.tint = match (primary, hover) {
-        (true, false) => [0.04, 0.47, 1.0, 0.85],
-        (true, true) => [0.20, 0.58, 1.0, 0.90],
-        (false, false) => [0.20, 0.22, 0.27, 0.45],
-        (false, true) => [0.32, 0.35, 0.42, 0.50],
+/// Split `text` into lines no wider than `width` at `size`.
+fn wrap(canvas: &Canvas<'_>, text: &str, size: f32, width: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && canvas.system_width(&candidate, size, Weight::Regular) > width {
+            lines.push(std::mem::replace(&mut line, word.to_owned()));
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Draw an 8x8 pixel icon at `px` units per pixel, one rect per run.
+fn icon(canvas: &mut Canvas<'_>, bits: [u8; 8], x: f32, y: f32, px: f32, color: u32) {
+    for (row, byte) in bits.iter().enumerate() {
+        let mut col = 0;
+        while col < 8 {
+            if byte & (0x80 >> col) == 0 {
+                col += 1;
+                continue;
+            }
+            let start = col;
+            while col < 8 && byte & (0x80 >> col) != 0 {
+                col += 1;
+            }
+            let y0 = y + row as f32 * px;
+            canvas.rect(
+                x + start as f32 * px,
+                y0,
+                x + col as f32 * px,
+                y0 + px,
+                color,
+            );
+        }
+    }
+}
+
+/// The one accent: ember with a pixel play mark.
+fn play_button(canvas: &mut Canvas<'_>, r: [f32; 4], hover: bool) {
+    let fill = if hover {
+        style::ACCENT_HOVER
+    } else {
+        style::ACCENT
     };
-    canvas.glass(panel);
-    let tw = canvas.system_width(label, BODY, Weight::Semibold);
+    canvas.rect(r[0], r[1], r[2], r[3], fill);
+    let label = "PLAY";
+    let size = 9.0;
+    let tw = canvas.system_width(label, size, Weight::Semibold);
+    let total = 5.0 + 5.0 + tw;
+    let x = ((r[0] + r[2] - total) / 2.0).round();
+    let cy = ((r[1] + r[3]) / 2.0).round();
+    // A 5x9 pixel triangle.
+    for i in 0..9 {
+        let w = 5.0 - (i as f32 - 4.0).abs();
+        let y = cy - 4.5 + i as f32;
+        canvas.rect(x, y, x + w, y + 1.0, style::ON_ACCENT);
+    }
     canvas.system_text(
         label,
-        (r[0] + (r[2] - r[0] - tw) / 2.0).floor(),
-        r[1] + (r[3] - r[1] - BODY) / 2.0,
-        BODY,
+        x + 10.0,
+        cy - size / 2.0,
+        size,
         Weight::Semibold,
-        0xFFFF_FFFF,
+        style::ON_ACCENT,
     );
+}
+
+fn button(canvas: &mut Canvas<'_>, r: [f32; 4], label: &str, hover: bool) {
+    let fill = if hover { style::HOVER } else { style::CARD };
+    style::panel(canvas, r, fill, style::EDGE);
+    let size = 6.0;
+    let tw = canvas.system_width(label, size, Weight::Semibold);
+    canvas.system_text(
+        label,
+        (r[0] + r[2] - tw) / 2.0,
+        (r[1] + r[3] - size) / 2.0,
+        size,
+        Weight::Semibold,
+        style::TEXT,
+    );
+}
+
+/// A mod or setting card: title, a muted line, and its switch or value.
+fn card(
+    canvas: &mut Canvas<'_>,
+    r: [f32; 4],
+    title: &str,
+    group: &str,
+    value: &Value,
+    hover: bool,
+) {
+    let fill = if hover { style::HOVER } else { style::CARD };
+    style::panel(canvas, r, fill, style::EDGE);
+    let ty = if group.is_empty() {
+        r[1] + (CARD_H - BODY) / 2.0
+    } else {
+        r[1] + 7.0
+    };
+    canvas.system_text(title, r[0] + 10.0, ty, BODY, Weight::Semibold, style::TEXT);
+    if !group.is_empty() {
+        canvas.system_text(
+            group,
+            r[0] + 10.0,
+            r[1] + 18.0,
+            SMALL,
+            Weight::Regular,
+            style::MUTED,
+        );
+    }
+    let cy = (r[1] + r[3]) / 2.0;
+    match value {
+        Value::Switch(on) => {
+            let s = [r[2] - 28.0, cy - 5.0, r[2] - 10.0, cy + 5.0];
+            if *on {
+                canvas.rect(s[0], s[1], s[2], s[3], style::TEXT);
+                canvas.rect(s[2] - 8.0, s[1] + 2.0, s[2] - 2.0, s[3] - 2.0, style::BASE);
+            } else {
+                style::panel(canvas, s, style::BASE, style::MUTED);
+                canvas.rect(s[0] + 2.0, s[1] + 2.0, s[0] + 8.0, s[3] - 2.0, style::MUTED);
+            }
+        }
+        Value::Choice(text) => {
+            let size = 6.5;
+            let tw = canvas.system_width(text, size, Weight::Semibold);
+            let right = r[2] - 10.0;
+            let y = cy - size / 2.0;
+            canvas.system_text("›", right - 3.0, y, size, Weight::Regular, style::MUTED);
+            canvas.system_text(
+                text,
+                right - 8.0 - tw,
+                y,
+                size,
+                Weight::Semibold,
+                style::TEXT,
+            );
+            canvas.system_text(
+                "‹",
+                right - 16.0 - tw,
+                y,
+                size,
+                Weight::Regular,
+                style::MUTED,
+            );
+        }
+    }
 }
 
 /// Put `text` on the clipboard.
@@ -688,6 +1432,24 @@ fn copy(text: &str) {
 mod tests {
     use super::*;
 
+    fn offline() -> Launcher {
+        Launcher::with(Account::SignedOut)
+    }
+
+    fn find(targets: &[(Target, [f32; 4])], target: Target) -> [f32; 4] {
+        targets
+            .iter()
+            .find(|(t, _)| *t == target)
+            .unwrap_or_else(|| panic!("{target:?}"))
+            .1
+    }
+
+    /// The GUI-pixel point at the centre of a design-unit rect.
+    fn centre(layout: Layout, r: [f32; 4]) -> (f32, f32) {
+        let s = view(layout).scale;
+        (s * (r[0] + r[2]) / 2.0, s * (r[1] + r[3]) / 2.0)
+    }
+
     #[test]
     fn addresses_parse_hosts_and_ports() {
         assert_eq!(
@@ -706,38 +1468,108 @@ mod tests {
     }
 
     #[test]
-    fn the_card_fits_and_rows_do_not_overlap() {
-        for size in [(640, 480), (1440, 900), (1920, 1200), (2880, 1800)] {
-            let layout = Layout::new(size, 1.0, 0);
-            let g = geometry(layout, 8);
-            assert!(
-                g.card[2] <= layout.width + 0.5 && g.card[3] <= layout.height + 0.5,
-                "{size:?}"
-            );
-            let rows: Vec<[f32; 4]> = g
-                .targets
-                .iter()
-                .filter(|(t, _)| matches!(t, Target::Server(_)))
-                .map(|(_, r)| *r)
-                .collect();
-            assert_eq!(rows.len(), g.rows.min(8));
-            for pair in rows.windows(2) {
-                assert!(pair[0][3] <= pair[1][1]);
+    fn every_page_fits_and_nothing_overlaps() {
+        for size in [
+            (640, 480),
+            (1440, 900),
+            (1920, 1200),
+            (2880, 1800),
+            (3456, 2234),
+        ] {
+            let layout = Layout::new(size, 2.0, 0);
+            let v = view(layout);
+            assert!(v.width >= 479.0 && v.height >= 299.0, "{size:?} {v:?}");
+            for page in Page::ALL {
+                let targets = geometry(page, v, 40, 0);
+                for (target, r) in &targets {
+                    assert!(
+                        r[0] >= 0.0 && r[1] >= 0.0 && r[2] <= v.width && r[3] <= v.height,
+                        "{size:?} {page:?} {target:?} {r:?}"
+                    );
+                }
+                // Cards, tiles, rows and nav items never overlap each other.
+                let solid: Vec<_> = targets
+                    .iter()
+                    .filter(|(t, _)| {
+                        matches!(
+                            t,
+                            Target::Nav(_)
+                                | Target::Server(_)
+                                | Target::Mod(_)
+                                | Target::Play
+                                | Target::Setting(_, 0)
+                        )
+                    })
+                    .collect();
+                for (i, (a, ra)) in solid.iter().enumerate() {
+                    for (b, rb) in &solid[i + 1..] {
+                        let apart =
+                            ra[2] <= rb[0] || rb[2] <= ra[0] || ra[3] <= rb[1] || rb[3] <= ra[1];
+                        assert!(apart, "{size:?} {page:?} {a:?} {ra:?} / {b:?} {rb:?}");
+                    }
+                }
             }
         }
     }
 
     #[test]
-    fn playing_needs_a_sign_in_except_on_this_mac() {
-        let layout = Layout::new((1440, 900), 1.0, 0);
+    fn the_sidebar_switches_pages_and_cards_change_settings() {
+        let layout = Layout::new((1920, 1200), 2.0, 0);
+        let v = view(layout);
+        let mut launcher = offline();
         let mut settings = Settings::default();
-        let mut launcher = Launcher {
-            account: Arc::new(Mutex::new(Account::SignedOut)),
-            selected: 0,
-            field: None,
-            message: None,
-            started: std::time::Instant::now(),
-        };
+        let off = Status::Off;
+        let targets = geometry(Page::Home, v, 3, 0);
+        let mods = centre(layout, find(&targets, Target::Nav(Page::Mods)));
+        launcher.click(layout, mods, &mut settings, &off);
+        assert_eq!(launcher.page, Page::Mods);
+        // The first Mods card is Keystrokes, on by default.
+        assert!(settings.hud(HudKind::Keystrokes).enabled);
+        let targets = geometry(Page::Mods, v, 3, 0);
+        let keystrokes = centre(layout, find(&targets, Target::Mod(0)));
+        launcher.click(layout, keystrokes, &mut settings, &off);
+        assert!(!settings.hud(HudKind::Keystrokes).enabled);
+        // Settings: the right half of a stepper raises, the left lowers.
+        launcher.page = Page::Settings;
+        let targets = geometry(Page::Settings, v, 3, 0);
+        let fov = settings.video.fov;
+        let raise = centre(layout, find(&targets, Target::Setting(0, 1)));
+        launcher.click(layout, raise, &mut settings, &off);
+        assert_eq!(settings.video.fov, fov + 5.0);
+        let lower = centre(layout, find(&targets, Target::Setting(0, -1)));
+        launcher.click(layout, lower, &mut settings, &off);
+        assert_eq!(settings.video.fov, fov);
+        for _ in 0..30 {
+            SETTINGS[0].step(&mut settings, 1);
+        }
+        assert_eq!(settings.video.fov, 110.0);
+        let limit = SETTINGS
+            .iter()
+            .position(|s| *s == Setting::FrameLimit)
+            .unwrap();
+        for _ in 0..9 {
+            SETTINGS[limit].step(&mut settings, 1);
+        }
+        assert_eq!(settings.toggles.fps_limit, u32::MAX);
+        // Restart only answers once an update is installed.
+        let restart = centre(layout, find(&targets, Target::Restart));
+        let up_to_date = Status::UpToDate;
+        assert_eq!(
+            launcher.click(layout, restart, &mut settings, &up_to_date),
+            None
+        );
+        let ready = Status::Ready("abc".into());
+        assert_eq!(
+            launcher.click(layout, restart, &mut settings, &ready),
+            Some(Action::Restart)
+        );
+    }
+
+    #[test]
+    fn playing_needs_a_sign_in_except_on_this_mac() {
+        let layout = Layout::new((1440, 900), 2.0, 0);
+        let mut settings = Settings::default();
+        let mut launcher = offline();
         let first = settings.servers[0].1.clone();
         assert!(!local(&address(&first).unwrap().0));
         assert_eq!(launcher.play(&settings), None);
@@ -752,20 +1584,12 @@ mod tests {
             launcher.play(&settings),
             Some(Action::Play("localhost".into(), 25565))
         );
-        // Typing an address and pressing Enter adds and selects it.
-        let g = geometry(layout, settings.servers.len());
-        let field = g
-            .targets
-            .iter()
-            .find(|(t, _)| *t == Target::Field)
-            .unwrap()
-            .1;
-        launcher.click(
-            layout,
-            (field[0] + 2.0, field[1] + 2.0),
-            &mut settings,
-            &Status::Off,
-        );
+        // On the Servers page, typing an address and pressing Enter adds
+        // and selects it.
+        launcher.page = Page::Servers;
+        let targets = launcher.targets(view(layout), &settings);
+        let field = centre(layout, find(&targets, Target::Field));
+        launcher.click(layout, field, &mut settings, &Status::Off);
         assert!(launcher.typing());
         use winit::keyboard::KeyCode;
         launcher.key(KeyCode::KeyA, Some("na.minemen.club:25566"), &mut settings);
@@ -773,5 +1597,42 @@ mod tests {
         assert!(!launcher.typing());
         assert_eq!(settings.servers.last().unwrap().1, "na.minemen.club:25566");
         assert_eq!(launcher.selected, settings.servers.len() - 1);
+        // A long list scrolls so the selection stays on screen.
+        for i in 0..20 {
+            settings
+                .servers
+                .push((format!("s{i}"), format!("s{i}.example.com")));
+        }
+        launcher.selected = settings.servers.len() - 1;
+        let targets = launcher.targets(view(layout), &settings);
+        find(&targets, Target::Server(launcher.selected));
+    }
+
+    #[test]
+    fn news_reads_titles_and_lines_newest_first() {
+        let entries = news(include_str!("../NEWS.md"));
+        assert!(entries.len() >= 3);
+        assert_eq!(entries[0].title, "A launcher of its own");
+        assert!(
+            entries
+                .iter()
+                .all(|e| !e.lines.is_empty() && !e.title.is_empty())
+        );
+        assert_eq!(
+            news("# Head\nintro\n## One\n- a\n- b\n## Two\n- c"),
+            vec![
+                Entry {
+                    title: "One".into(),
+                    lines: vec!["a".into(), "b".into()],
+                },
+                Entry {
+                    title: "Two".into(),
+                    lines: vec!["c".into()],
+                },
+            ]
+        );
+        assert_eq!(thousands(41203), "41,203");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000_000), "1,000,000");
     }
 }

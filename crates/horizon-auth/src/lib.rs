@@ -378,6 +378,12 @@ impl Session {
         })
     }
 
+    /// The Minecraft access token, for handing the session to a game process
+    /// over a pipe. Never log it or pass it as an argument.
+    pub fn access_token(&self) -> Option<&str> {
+        self.access_token.as_deref()
+    }
+
     /// The Microsoft refresh token from a device-code or refreshed sign-in,
     /// for [`saved::store`]. Never log it.
     pub fn refresh_token(&self) -> Option<&str> {
