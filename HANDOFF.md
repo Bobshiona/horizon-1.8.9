@@ -1325,3 +1325,25 @@ Third-person held items (other players) use the same rule. Regression: the first
 transform puts the model centre at twice the display translation and spans 1.7 units. Gate: 214
 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build
 and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 47. Game menu and settings
+
+Section 46's held-item fix is `1cb2e9d387`.
+
+The owner found no Minecraft settings. Escape in a world (with no other screen open) now opens a
+liquid-glass game menu (`pause.rs`, after `GuiIngameMenu`): Back to Game, Options, Mods (the mod
+menu) and Disconnect for sessions started from the launcher (Quit Game otherwise); Escape steps back
+a page. Options holds vanilla's FOV (30 to 110, "Normal" at 70, "Quake Pro" at 110), Sensitivity
+(0 to 200%, "*yawn*" and "HYPERSPEED!!!" at the ends) and Render Distance (2 to 16 chunks) as
+draggable sliders, GUI Scale (Auto, Small, Normal, Large, Huge), and View Bobbing and Fullscreen
+switches, labelled from the game's own language file. Changes apply as they happen: FOV, sensitivity
+and bobbing at once; render distance moves the fog and is re-sent to the server (C15) on the next
+tick; GUI scale relays out the interface; fullscreen is borderless. They are saved in
+`settings.json` (`video`, clamped to vanilla's ranges when read) and the app starts with them;
+command-line and validation runs keep their flags. `--smoke-settings` opens the page for captures.
+
+Regressions: Escape and button routing, slider dragging and ends, switches and the GUI scale cycle,
+the vanilla slider labels, sheet geometry on small and large windows, and the video settings' round
+trip and clamping. A capture checked the Options page over the world. Gate: 217 scoped tests,
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.

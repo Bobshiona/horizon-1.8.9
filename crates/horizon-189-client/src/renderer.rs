@@ -162,6 +162,21 @@ impl Renderer {
         Ok(renderer)
     }
 
+    pub fn set_view_distance(&mut self, chunks: u8) {
+        self.view_distance = chunks;
+        if let Some(scene) = &mut self.scene {
+            scene.set_view_distance(&self.queue, &self.config, chunks);
+        }
+    }
+
+    /// Vanilla `guiScale`; the interface layout follows at once.
+    pub fn set_gui_scale(&mut self, scale: u32) {
+        if self.gui_scale != scale {
+            self.gui_scale = scale;
+            self.resize(self.window.inner_size());
+        }
+    }
+
     /// The world camera's vertical FOV (the zoom mod narrows it).
     pub fn set_fov(&mut self, fov: f32) {
         if fov.is_finite() && (fov - self.fov).abs() > 1e-4 {

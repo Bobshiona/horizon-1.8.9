@@ -1042,6 +1042,17 @@ impl Scene {
     }
 
     /// Camera effects for the next `set_camera`.
+    /// Render distance changed: fog moves with it.
+    pub fn set_view_distance(
+        &mut self,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+        chunks: u8,
+    ) {
+        self.fog_end = f32::from(chunks.clamp(2, 16)) * 16.0;
+        self.write_camera(queue, config);
+    }
+
     pub fn set_effects(&mut self, effects: Mat4) {
         self.effects = effects;
     }

@@ -23,6 +23,7 @@ mod network;
 mod options;
 mod outline;
 mod particles;
+mod pause;
 mod pvp_metrics;
 mod renderer;
 mod scene;
@@ -99,6 +100,7 @@ struct App {
     smoke_tab: bool,
     smoke_inventory: bool,
     smoke_menu: bool,
+    smoke_settings: bool,
     smoke_pitch: Option<f32>,
     bench: bool,
     /// Smoothed CPU cost of a frame for the FPS card.
@@ -126,6 +128,8 @@ struct App {
     /// The fullbright state the terrain was last meshed with.
     fullbright: bool,
     menu: menu::Menu,
+    /// The Escape game menu and settings.
+    pause: pause::Pause,
     /// The installed app's launcher screen, shown while not in a world.
     launcher: Option<launcher::Launcher>,
     updater: Option<updater::Updater>,
@@ -202,6 +206,56 @@ impl App {
                 Ok(network) => self.network = Some(network),
                 Err(error) => self.disconnected(event_loop, error.to_string()),
             }
+        }
+    }
+
+    /// Apply the video settings: FOV, sensitivity and bobbing at once,
+    /// render distance to the fog and the server, GUI scale and fullscreen.
+    fn apply_video(&mut self) {
+        let video = self.settings.video;
+        self.fov = video.fov;
+        self.sensitivity = video.sensitivity;
+        self.view_bobbing = video.view_bobbing;
+        self.gui_scale = video.gui_scale;
+        if video.render_distance != self.view_distance {
+            self.view_distance = video.render_distance;
+            if let Some(network) = &self.network
+                && let Ok(mut shared) = network.shared.lock()
+            {
+                shared.view_distance = Some(video.render_distance);
+            }
+            if let Some(server) = &mut self.server {
+                server.view_distance = video.render_distance;
+            }
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_view_distance(video.render_distance);
+            renderer.set_gui_scale(video.gui_scale);
+            if renderer.window.fullscreen().is_some() != video.fullscreen {
+                renderer.window.set_fullscreen(
+                    video
+                        .fullscreen
+                        .then_some(winit::window::Fullscreen::Borderless(None)),
+                );
+            }
+        }
+    }
+
+    fn pause_click(&mut self, event_loop: &ActiveEventLoop, click: pause::Click) {
+        match click {
+            pause::Click::Changed => {
+                self.apply_video();
+                self.save_settings();
+            }
+            pause::Click::Mods => self.menu.toggle(),
+            pause::Click::Leave => {
+                if self.pause.leave_to_launcher {
+                    self.back_to_launcher(event_loop);
+                } else {
+                    event_loop.exit();
+                }
+            }
+            pause::Click::Resume | pause::Click::Nothing => {}
         }
     }
 
@@ -324,6 +378,7 @@ impl App {
             self.zoom = target;
         }
         self.menu.step(dt, &self.settings);
+        self.pause.step(dt);
         if let Some(renderer) = &mut self.renderer {
             renderer.bench = self.bench;
             renderer
@@ -613,6 +668,11 @@ impl ApplicationHandler for App {
                 if self.smoke_frames.is_some() {
                     renderer.window.focus_window();
                 }
+                if self.launcher.is_some() && self.settings.video.fullscreen {
+                    renderer
+                        .window
+                        .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                }
                 renderer.window.request_redraw();
                 self.frame_period = frame_period(&renderer.window);
                 self.renderer = Some(renderer);
@@ -742,6 +802,16 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    if self.pause.active() {
+                        if pressed && !event.repeat && key == KeyCode::Escape {
+                            self.pause.back();
+                            self.save_settings();
+                        }
+                        if !pressed {
+                            self.keyboard.release(key);
+                        }
+                        return;
+                    }
                     if key == KeyCode::Tab {
                         self.tab_held = pressed && !screen;
                     }
@@ -842,6 +912,10 @@ impl ApplicationHandler for App {
                             }
                         }
                         if key == KeyCode::Escape {
+                            // GuiIngameMenu, when no other screen is open.
+                            if !screen && self.network.is_some() {
+                                self.pause.open();
+                            }
                             self.release_cursor();
                         }
                     }
@@ -850,6 +924,15 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x, position.y);
+                if self.pause.active()
+                    && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+                {
+                    let mouse = self.mouse_gui();
+                    if self.pause.moved(layout, mouse, &mut self.settings) == pause::Click::Changed
+                    {
+                        self.apply_video();
+                    }
+                }
                 if self.menu.editing
                     && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
                 {
@@ -946,6 +1029,20 @@ impl ApplicationHandler for App {
                             Some(connection::Action::Reconnect) => self.reconnect(event_loop),
                             Some(connection::Action::Quit) => self.quit_or_back(event_loop),
                             None => {}
+                        }
+                    }
+                    return;
+                }
+                if self.pause.active() {
+                    if button == MouseButton::Left
+                        && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+                    {
+                        if pressed {
+                            let mouse = self.mouse_gui();
+                            let click = self.pause.press(layout, mouse, &mut self.settings);
+                            self.pause_click(event_loop, click);
+                        } else if self.pause.release() {
+                            self.save_settings();
                         }
                     }
                     return;
@@ -1104,7 +1201,8 @@ impl ApplicationHandler for App {
                     })
                     .unwrap_or(false)
                     || self.chat.open
-                    || self.menu.active();
+                    || self.menu.active()
+                    || self.pause.active();
                 if menu && self.captured {
                     self.release_cursor();
                 }
@@ -1334,6 +1432,7 @@ impl ApplicationHandler for App {
                             let frame_ms = self.frame_time.millis();
                             let (settings, menu, rects) =
                                 (&self.settings, &self.menu, &mut self.hud_rects);
+                            let pause = &self.pause;
                             let keys = self.keyboard.keys();
                             let buttons = self.metrics.held();
                             let ping = snapshot
@@ -1387,6 +1486,7 @@ impl ApplicationHandler for App {
                                 if menu.visible() {
                                     menu.draw(canvas, settings, mouse);
                                 }
+                                pause.draw(canvas, settings, mouse);
                             });
                             if let Err(error) = result {
                                 self.fail(event_loop, error);
@@ -1546,6 +1646,9 @@ impl ApplicationHandler for App {
             && let Ok(mut shared) = network.shared.lock()
         {
             shared.pitch = pitch;
+        }
+        if positioned && std::mem::take(&mut self.smoke_settings) {
+            self.pause.open_settings();
         }
         if positioned && std::mem::take(&mut self.smoke_menu) {
             self.menu.toggle();
@@ -1723,6 +1826,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_tab: options.smoke_tab,
         smoke_inventory: options.smoke_inventory,
         smoke_menu: options.smoke_menu,
+        smoke_settings: options.smoke_settings,
         smoke_pitch: options.smoke_pitch,
         bench: options.bench,
         frame_time: Default::default(),
@@ -1757,6 +1861,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             menu.leave = launcher_mode;
             menu
         },
+        pause: {
+            let mut pause = pause::Pause::default();
+            pause.leave_to_launcher = launcher_mode;
+            pause
+        },
         launcher: launcher_mode.then(|| {
             if preview {
                 launcher::Launcher::preview()
@@ -1774,6 +1883,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         sneak_latched: false,
         fullbright: false,
     };
+    if launcher_mode {
+        // The app's own settings, not command-line defaults.
+        app.apply_video();
+    }
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {
         if launcher_mode {

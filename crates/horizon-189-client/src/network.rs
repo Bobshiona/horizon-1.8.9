@@ -114,6 +114,8 @@ pub struct Shared {
     pub game_mode: u8,
     /// The local player aims at an entity, so no block outline is drawn.
     pub aiming_entity: bool,
+    /// A new render distance for the server (C15), sent on the next tick.
+    pub view_distance: Option<u8>,
     pub vitals: crate::gameplay::Vitals,
     pub yaw: f32,
     pub pitch: f32,
@@ -1450,6 +1452,9 @@ fn run_actor(
             }
             {
                 let mut state = lock(shared)?;
+                if let Some(chunks) = state.view_distance.take() {
+                    writer.send(&play::client_settings(chunks))?;
+                }
                 state.previous = state.current;
                 state.current = player.position;
                 state.ticked_at = Some(Instant::now());

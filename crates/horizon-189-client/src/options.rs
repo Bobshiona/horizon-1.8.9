@@ -37,6 +37,8 @@ pub struct Options {
     pub install: bool,
     /// Validation only: show the launcher (signed out, no updates).
     pub smoke_launcher: bool,
+    /// Validation only: open the settings screen once in the world.
+    pub smoke_settings: bool,
     /// With `--install`: the git repository the app updates from.
     pub update_source: Option<String>,
     /// Vanilla `viewBobbing` (on by default).
@@ -82,6 +84,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-menu                  With --smoke-frames, open the mod menu\n\
     --bench                       With --smoke-frames, time uncapped CPU and GPU frames\n\
     --smoke-launcher              With --smoke-frames, show the launcher signed out\n\
+    --smoke-settings              With --smoke-frames, open the settings screen\n\
     --smoke-pitch DEGREES         With --smoke-frames, look down (or up, negative) once in the world\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
@@ -209,6 +212,7 @@ impl Options {
                 "--bench" => options.bench = true,
                 "--install" => options.install = true,
                 "--smoke-launcher" => options.smoke_launcher = true,
+                "--smoke-settings" => options.smoke_settings = true,
                 "--update-source" => options.update_source = Some(value()?),
                 "--smoke-pitch" => {
                     let pitch: f32 = value()?.parse()?;
@@ -275,7 +279,8 @@ impl Options {
             || options.smoke_menu
             || options.bench
             || options.smoke_pitch.is_some()
-            || options.smoke_launcher)
+            || options.smoke_launcher
+            || options.smoke_settings)
             && options.smoke_frames.is_none()
         {
             return Err("Smoke flags and --bench require --smoke-frames".into());

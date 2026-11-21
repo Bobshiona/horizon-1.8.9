@@ -210,12 +210,12 @@ fn approach(value: f32, target: f32, step: f32) -> f32 {
 }
 
 /// Ease-out cubic: fast start, gentle landing.
-fn ease(t: f32) -> f32 {
+pub(crate) fn ease(t: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
 /// `color` with its alpha scaled by `amount`.
-fn fade(color: u32, amount: f32) -> u32 {
+pub(crate) fn fade(color: u32, amount: f32) -> u32 {
     let alpha = ((color >> 24) as f32 * amount.clamp(0.0, 1.0)).round() as u32;
     (alpha << 24) | (color & 0x00FF_FFFF)
 }
@@ -497,7 +497,7 @@ const WHITE: u32 = 0xFFF7_F8FA;
 
 /// An iOS-style switch: a pill track and a white knob; `on` slides from 0
 /// (off) to 1 (on), blending the track from grey to green.
-fn switch(canvas: &mut Canvas<'_>, x: f32, y: f32, on: f32, opacity: f32) {
+pub(crate) fn switch(canvas: &mut Canvas<'_>, x: f32, y: f32, on: f32, opacity: f32) {
     let mut track = Panel::new(x, y, x + 18.0, y + 11.0);
     track.radius = 5.5;
     track.shadow = 0.0;
@@ -516,7 +516,7 @@ fn switch(canvas: &mut Canvas<'_>, x: f32, y: f32, on: f32, opacity: f32) {
     canvas.glass(knob);
 }
 
-fn button(
+pub(crate) fn button(
     canvas: &mut Canvas<'_>,
     rect: [f32; 4],
     label: &str,

@@ -104,6 +104,34 @@ pub struct Toggles {
     pub outline: u8,
 }
 
+/// Vanilla's video and control options the settings screen edits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Video {
+    /// Vertical FOV, 30 to 110 (vanilla's settings range).
+    pub fov: f32,
+    /// `mouseSensitivity`, 0 to 1 (0.5 shows as 100%).
+    pub sensitivity: f32,
+    /// Chunks, 2 to 16.
+    pub render_distance: u8,
+    /// 0 automatic, otherwise the largest allowed scale up to it.
+    pub gui_scale: u32,
+    pub view_bobbing: bool,
+    pub fullscreen: bool,
+}
+
+impl Default for Video {
+    fn default() -> Self {
+        Self {
+            fov: 70.0,
+            sensitivity: 0.5,
+            render_distance: 8,
+            gui_scale: 0,
+            view_bobbing: true,
+            fullscreen: false,
+        }
+    }
+}
+
 /// Crosshair styles the menu cycles through.
 pub const CROSSHAIRS: [&str; 3] = ["Vanilla", "Cross", "Dot"];
 
@@ -129,6 +157,7 @@ pub struct Settings {
     pub toggles: Toggles,
     /// The launcher's server list: shown name and `host[:port]`.
     pub servers: Vec<(String, String)>,
+    pub video: Video,
     path: Option<PathBuf>,
 }
 
@@ -148,6 +177,7 @@ impl Default for Settings {
             hud: HudKind::ALL.map(HudKind::default_hud),
             toggles: Toggles::default(),
             servers: default_servers(),
+            video: Video::default(),
             path: None,
         }
     }
@@ -225,6 +255,22 @@ impl Settings {
                 .take(32)
                 .collect();
         }
+        if let Some(Value::Object(v)) = root.get("video") {
+            let d = Video::default();
+            let number = |key: &str| v.get(key).and_then(Value::as_f64).filter(|n| n.is_finite());
+            let flag =
+                |key: &str, default: bool| v.get(key).and_then(Value::as_bool).unwrap_or(default);
+            settings.video = Video {
+                fov: number("fov").map_or(d.fov, |n| (n as f32).clamp(30.0, 110.0)),
+                sensitivity: number("sensitivity")
+                    .map_or(d.sensitivity, |n| (n as f32).clamp(0.0, 1.0)),
+                render_distance: number("render_distance")
+                    .map_or(d.render_distance, |n| n.clamp(2.0, 16.0) as u8),
+                gui_scale: number("gui_scale").map_or(d.gui_scale, |n| n.clamp(0.0, 4.0) as u32),
+                view_bobbing: flag("view_bobbing", d.view_bobbing),
+                fullscreen: flag("fullscreen", d.fullscreen),
+            };
+        }
         if let Some(Value::Object(t)) = root.get("toggles") {
             let flag =
                 |key: &str, default: bool| t.get(key).and_then(Value::as_bool).unwrap_or(default);
@@ -274,6 +320,14 @@ impl Settings {
             "version": 1,
             "hud": Value::Object(huds),
             "servers": servers,
+            "video": {
+                "fov": self.video.fov,
+                "sensitivity": self.video.sensitivity,
+                "render_distance": self.video.render_distance,
+                "gui_scale": self.video.gui_scale,
+                "view_bobbing": self.video.view_bobbing,
+                "fullscreen": self.video.fullscreen,
+            },
             "toggles": {
                 "zoom": t.zoom,
                 "smooth_zoom": t.smooth_zoom,
@@ -321,7 +375,20 @@ mod tests {
         settings
             .servers
             .push(("Test".into(), "play.example.com:25570".into()));
+        settings.video.fov = 95.0;
+        settings.video.render_distance = 12;
+        settings.video.view_bobbing = false;
         let parsed = Settings::parse(&settings.to_json());
+        assert_eq!(parsed.video, settings.video);
+        let wild = Settings::parse(r#"{"video":{"fov":500,"render_distance":1,"gui_scale":9}}"#);
+        assert_eq!(
+            (
+                wild.video.fov,
+                wild.video.render_distance,
+                wild.video.gui_scale
+            ),
+            (110.0, 2, 4)
+        );
         assert_eq!(parsed.servers, settings.servers);
         assert_eq!(parsed.hud, settings.hud);
         let odd =
