@@ -1529,3 +1529,45 @@ Regressions: the hitbox geometry (12 white edges, 12 red at 1.62, one blue line 
 the combos and that a screen takes them, and chat clearing its history.
 
 Gate: 231 tests.
+
+## 55. Exact eye heights, marker armour stands and baby pigmen
+
+Section 54's hitboxes are `6a6719ec42`.
+
+I mapped every mob's `getEyeHeight` override from the jar, using `EntityList` (`pm`) for the class
+per network type and `aS()F` for the overrides. F3+B's red box now uses them:
+
+| Entity | Eye height |
+| --- | --- |
+| Skeleton | 1.74 (wither skeletons keep the default) |
+| Spider | 0.65 |
+| Giant | 10.440001 |
+| Zombie and zombie pigman | 1.74, children 1.74 - 0.81 in double |
+| Slime and magma cube | 0.625 x height |
+| Ghast | 2.6 |
+| Enderman | 2.55 |
+| Cave spider | 0.45 |
+| Silverfish and endermite | 0.1 |
+| Bat | height / 2 |
+| Witch | 1.62 |
+| Guardian and squid | height / 2 |
+| Sheep | 0.95 x height |
+| Cow, mooshroom, chicken and horse | height |
+| Wolf | 0.8 x height |
+| Snow golem | 1.7 |
+| Villager | 1.62, children 0.81 |
+| Armour stand | 0.9 x height, small 0.5 x height |
+| Anything else | `Entity`'s 0.85 x height |
+
+Two world-crate fixes came out of reading the same classes:
+- `EntityArmorStand.updateBoundingBox` shrinks marker stands to 0 x 0, while small stands keep the
+  full 0.5 x 1.975 box. Entity picking uses these sizes, so marker stands (common for holograms)
+  had full-size boxes that could swallow clicks meant for a player behind them. Vanilla only hits a
+  0.2 cube at the feet (the 0.1 collision border).
+- Zombie pigmen inherit `EntityZombie`'s child flag (watcher 12), which only zombies read before.
+  Baby pigmen now get the halved size.
+
+Regressions: eye heights for zombie, baby zombie, enderman, spider, wither skeleton, creeper,
+baby villager, cow and armour stand; marker and small armour-stand sizes; the baby pigman.
+
+Gate: 232 tests.

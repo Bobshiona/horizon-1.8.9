@@ -996,16 +996,51 @@ impl Renderer {
     }
 }
 
-/// `getEyeHeight` for F3+B's red box: players stand at 1.62 (0.08 lower
-/// sneaking), other living entities default to 0.85 of their height. `None`
-/// for entities that aren't living.
+/// `getEyeHeight` for F3+B's red box, from each class's override in the
+/// jar (`Entity`'s default is 0.85 of the height). `None` for entities that
+/// aren't living.
 fn debug_eye_height(entity: &horizon_world_189::entities::Entity, height: f32) -> Option<f32> {
     use horizon_world_189::entities::Kind;
-    match entity.kind {
-        Kind::Player { .. } => Some(if entity.sneaking() { 1.54 } else { 1.62 }),
-        Kind::Mob(_) => Some(height * 0.85),
-        _ => None,
-    }
+    // EntityZombie and EntityVillager subtract 0.81 in double precision.
+    let child = |eyes: f32| {
+        if entity.child {
+            (f64::from(eyes) - 0.81) as f32
+        } else {
+            eyes
+        }
+    };
+    Some(match entity.kind {
+        Kind::Player { .. } => {
+            if entity.sneaking() {
+                1.62 - 0.08
+            } else {
+                1.62
+            }
+        }
+        // Skeletons; wither skeletons fall back to the default.
+        Kind::Mob(51) if entity.variant != 1 => 1.74,
+        Kind::Mob(52) => 0.65,
+        Kind::Mob(53) => 10.440001,
+        Kind::Mob(54 | 57) => child(1.74),
+        Kind::Mob(55 | 62) => 0.625 * height,
+        Kind::Mob(56) => 2.6,
+        Kind::Mob(58) => 2.55,
+        Kind::Mob(59) => 0.45,
+        Kind::Mob(60 | 67) => 0.1,
+        Kind::Mob(65) => height / 2.0,
+        Kind::Mob(66) => 1.62,
+        Kind::Mob(68 | 94) => height * 0.5,
+        Kind::Mob(91) => 0.95 * height,
+        Kind::Mob(92 | 93 | 96 | 100) => height,
+        Kind::Mob(95) => height * 0.8,
+        Kind::Mob(97) => 1.7,
+        Kind::Mob(120) => child(1.62),
+        Kind::Mob(_) => height * 0.85,
+        // EntityArmorStand: half the height when small.
+        Kind::Object(78) if entity.stand_flags & 0x01 != 0 => height * 0.5,
+        Kind::Object(78) => height * 0.9,
+        _ => return None,
+    })
 }
 
 /// `Entity.getLook(partial)`: living entities look along their head yaw.
@@ -1021,4 +1056,58 @@ fn debug_look(entity: &horizon_world_189::entities::Entity, partial: f32) -> gla
         (entity.yaw, entity.pitch)
     };
     glam::Vec3::from_array(horizon_physics_189::raycast::look(yaw, pitch).map(|v| v as f32))
+}
+
+#[cfg(test)]
+mod eye_tests {
+    use super::debug_eye_height;
+    use horizon_protocol_47::{entities::EntityPacket, nbt::Meta};
+    use horizon_world_189::entities::Entities;
+
+    #[test]
+    fn hitbox_eye_heights_follow_each_get_eye_height() {
+        let mut entities = Entities::default();
+        let mob = |entities: &mut Entities, id, kind, metadata| {
+            entities.apply(EntityPacket::SpawnMob {
+                id,
+                kind,
+                position: [0; 3],
+                yaw: 0,
+                pitch: 0,
+                head_yaw: 0,
+                metadata,
+            });
+            let entity = entities.get(id).unwrap().clone();
+            let height = entity.dimensions().map_or(0.0, |d| d.1);
+            debug_eye_height(&entity, height)
+        };
+        assert_eq!(mob(&mut entities, 1, 54, vec![]), Some(1.74));
+        assert_eq!(
+            mob(&mut entities, 2, 54, vec![(12, Meta::Byte(1))]),
+            Some(0.93)
+        );
+        assert_eq!(mob(&mut entities, 3, 58, vec![]), Some(2.55));
+        assert_eq!(mob(&mut entities, 4, 52, vec![]), Some(0.65));
+        assert_eq!(
+            mob(&mut entities, 5, 51, vec![(13, Meta::Byte(1))]),
+            Some(2.34 * 0.85)
+        );
+        assert_eq!(mob(&mut entities, 6, 50, vec![]), Some(1.7 * 0.85));
+        assert_eq!(
+            mob(&mut entities, 7, 120, vec![(12, Meta::Byte(-1))]),
+            Some(0.81)
+        );
+        assert_eq!(mob(&mut entities, 8, 92, vec![]), Some(1.3));
+        entities.apply(EntityPacket::SpawnObject {
+            id: 9,
+            kind: 78,
+            position: [0; 3],
+            pitch: 0,
+            yaw: 0,
+            data: 0,
+            velocity: None,
+        });
+        let stand = entities.get(9).unwrap();
+        assert_eq!(debug_eye_height(stand, 1.975), Some(1.975 * 0.9));
+    }
 }

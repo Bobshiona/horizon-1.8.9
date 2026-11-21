@@ -273,6 +273,9 @@ impl Entity {
             Kind::Mob(_) => (0.6, 1.8),
             Kind::Object(1) => (1.5, 0.6),
             Kind::Object(10) => (0.98, 0.7),
+            // `EntityArmorStand.updateBoundingBox`: markers shrink to nothing
+            // (small stands keep the full box; only the model is halved).
+            Kind::Object(78) if self.stand_flags & 0x10 != 0 => (0.0, 0.0),
             Kind::Object(78) => (0.5, 1.975),
             _ => return None,
         };
@@ -300,7 +303,8 @@ impl Entity {
             match (index, value) {
                 (0, Meta::Byte(flags)) => self.flags = *flags as u8,
                 (6, Meta::Float(health)) if self.living() => self.health = *health,
-                (12, Meta::Byte(age)) if matches!(self.kind, Kind::Mob(54)) => {
+                // EntityZombie's child flag, which zombie pigmen inherit.
+                (12, Meta::Byte(age)) if matches!(self.kind, Kind::Mob(54 | 57)) => {
                     self.child = *age != 0
                 }
                 (12, Meta::Byte(age)) if matches!(self.kind, Kind::Mob(90..=101 | 120)) => {
@@ -763,6 +767,36 @@ mod tests {
                 head_yaw: 0,
                 metadata,
             });
+        }
+        entities.apply(EntityPacket::SpawnMob {
+            id: 3,
+            kind: 57,
+            position: [0; 3],
+            yaw: 0,
+            pitch: 0,
+            head_yaw: 0,
+            metadata: vec![(12, Meta::Byte(1))],
+        });
+        assert!(entities.get(3).unwrap().child, "baby zombie pigman");
+        for (id, flags, size) in [(4, 0x01, (0.5, 1.975)), (5, 0x10, (0.0, 0.0))] {
+            entities.apply(EntityPacket::SpawnObject {
+                id,
+                kind: 78,
+                position: [0; 3],
+                pitch: 0,
+                yaw: 0,
+                data: 0,
+                velocity: None,
+            });
+            entities.apply(EntityPacket::Metadata {
+                id,
+                entries: vec![(10, Meta::Byte(flags))],
+            });
+            assert_eq!(
+                entities.get(id).unwrap().dimensions(),
+                Some(size),
+                "{flags}"
+            );
         }
         let sheep = entities.get(1).unwrap();
         assert!(sheep.child);
