@@ -1497,3 +1497,35 @@ halved moon), biome names, the F3 toggle, and S03/S41/status 22 reaching `Shared
 ticking.
 
 Gate: 230 tests.
+
+## 54. F3+B hitboxes, F3+D and F3+A
+
+Section 53's F3 is `307db85a5d`.
+
+These are the F3 combinations from the `ave.s` branch: a key pressed while F3 is held, with no
+screen open.
+- **F3+B** toggles `RenderManager.debugBoundingBox`. `renderDebugBoundingBox` draws, for every
+  visible entity that isn't invisible:
+  - its box in white;
+  - for living entities, a red box 0.02 tall at eye height;
+  - its look in blue, two blocks out from the eye. Living entities look along their interpolated
+    head yaw and pitch, others along their yaw (`getVectorForRotation`, the MathHelper table).
+  - The lines are depth tested without writing depth, at the 2-pixel width the block outline
+    leaves set. Reduced debug info hides them, and in F5 your own box draws too.
+  - Eye height is exact for players (1.62, 1.54 sneaking). Other mobs use the default 0.85 of
+    their height, so mobs with their own `getEyeHeight` (zombies, endermen, spiders...) are close
+    but not exact yet.
+- **F3+D** is `GuiNewChat.clearChatMessages`, which clears the lines and the sent history.
+- **F3+A** is `loadRenderers`, which remeshes everything.
+
+As in 1.8.9, F3 itself toggles the overlay on press, and the combination's own key still acts
+(A still strafes).
+
+`outline::segment` and `edges` are shared by the block outline and `outline::hitbox`.
+`--smoke-hitboxes` starts with them on: in F5 on the flat server, the player has the white
+0.6x1.8 box and the red band at the eyes.
+
+Regressions: the hitbox geometry (12 white edges, 12 red at 1.62, one blue line two blocks out),
+the combos and that a screen takes them, and chat clearing its history.
+
+Gate: 231 tests.

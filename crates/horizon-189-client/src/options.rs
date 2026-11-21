@@ -45,6 +45,8 @@ pub struct Options {
     pub smoke_perspective: u8,
     /// Validation only: start with the F3 overlay open.
     pub smoke_debug: bool,
+    /// Validation only: start with F3+B hitboxes on.
+    pub smoke_hitboxes: bool,
     /// Validation only: take an F2 screenshot into this folder near the end.
     pub smoke_screenshot: Option<std::path::PathBuf>,
     /// With `--install`: the git repository the app updates from.
@@ -223,6 +225,7 @@ impl Options {
                 "--smoke-settings" => options.smoke_settings = true,
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
                 "--smoke-debug" => options.smoke_debug = true,
+                "--smoke-hitboxes" => options.smoke_hitboxes = true,
                 "--smoke-perspective" => {
                     let mode: u8 = value()?.parse()?;
                     if mode > 2 {
@@ -302,6 +305,7 @@ impl Options {
             || options.smoke_hide_gui
             || options.smoke_perspective != 0
             || options.smoke_debug
+            || options.smoke_hitboxes
             || options.smoke_screenshot.is_some())
             && options.smoke_frames.is_none()
         {

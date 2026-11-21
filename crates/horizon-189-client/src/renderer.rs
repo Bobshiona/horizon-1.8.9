@@ -37,6 +37,8 @@ pub struct Renderer {
     pub own_body: Option<(i32, horizon_world_189::entities::Entity)>,
     /// F3's `E:`: entities in view this frame.
     pub entities_drawn: usize,
+    /// F3+B.
+    pub hitboxes: bool,
     /// F2: read this frame back into `shot`.
     pub screenshot: bool,
     pub shot: Option<Result<crate::screenshot::Pixels, String>>,
@@ -163,6 +165,7 @@ impl Renderer {
             names: true,
             own_body: None,
             entities_drawn: 0,
+            hitboxes: false,
             screenshot: false,
             shot: None,
             bench: false,
@@ -515,17 +518,37 @@ impl Renderer {
                 &in_view,
             );
         }
+        let origin = scene.origin();
+        let local = |p: [f64; 3]| {
+            glam::Vec3::from_array(std::array::from_fn(|axis| {
+                (p[axis] - origin[axis] as f64) as f32
+            }))
+        };
+        let eye = local(self.pose.position);
+        // One point's world size a block away, at the vertical FOV.
+        let points = self.config.height as f32 / self.window.scale_factor() as f32;
+        let pixel = 2.0 * (self.fov.to_radians() * 0.5).tan() / points.max(1.0);
+        if self.hitboxes {
+            for (_, entity) in drawn.iter().filter(|(_, e)| !e.invisible() && in_view(e)) {
+                let Some(size) = entity.dimensions() else {
+                    continue;
+                };
+                let feet: [f64; 3] = std::array::from_fn(|axis| {
+                    entity.previous[axis]
+                        + (entity.position[axis] - entity.previous[axis]) * f64::from(partial)
+                });
+                crate::outline::hitbox(
+                    &mut tested,
+                    local(feet),
+                    size,
+                    debug_eye_height(entity, size.1),
+                    debug_look(entity, partial),
+                    eye,
+                    pixel,
+                );
+            }
+        }
         if let Some((min, max, style)) = outline {
-            let origin = scene.origin();
-            let local = |p: [f64; 3]| {
-                glam::Vec3::from_array(std::array::from_fn(|axis| {
-                    (p[axis] - origin[axis] as f64) as f32
-                }))
-            };
-            let eye = local(self.pose.position);
-            // One point's world size a block away, at the vertical FOV.
-            let points = self.config.height as f32 / self.window.scale_factor() as f32;
-            let pixel = 2.0 * (self.fov.to_radians() * 0.5).tan() / points.max(1.0);
             crate::outline::outline(&mut tested, local(min), local(max), eye, pixel, style);
         }
         let result = scene
@@ -971,4 +994,31 @@ impl Renderer {
         }
         Ok(true)
     }
+}
+
+/// `getEyeHeight` for F3+B's red box: players stand at 1.62 (0.08 lower
+/// sneaking), other living entities default to 0.85 of their height. `None`
+/// for entities that aren't living.
+fn debug_eye_height(entity: &horizon_world_189::entities::Entity, height: f32) -> Option<f32> {
+    use horizon_world_189::entities::Kind;
+    match entity.kind {
+        Kind::Player { .. } => Some(if entity.sneaking() { 1.54 } else { 1.62 }),
+        Kind::Mob(_) => Some(height * 0.85),
+        _ => None,
+    }
+}
+
+/// `Entity.getLook(partial)`: living entities look along their head yaw.
+fn debug_look(entity: &horizon_world_189::entities::Entity, partial: f32) -> glam::Vec3 {
+    use horizon_world_189::entities::Kind;
+    let (yaw, pitch) = if matches!(entity.kind, Kind::Player { .. } | Kind::Mob(_)) {
+        let lerp = |a: f32, b: f32| a + (b - a) * partial;
+        (
+            lerp(entity.previous_head_yaw, entity.head_yaw),
+            lerp(entity.previous_pitch, entity.pitch),
+        )
+    } else {
+        (entity.yaw, entity.pitch)
+    };
+    glam::Vec3::from_array(horizon_physics_189::raycast::look(yaw, pitch).map(|v| v as f32))
 }

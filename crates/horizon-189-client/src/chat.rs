@@ -86,6 +86,15 @@ impl Chat {
         self.lines.truncate(MAX_LINES);
     }
 
+    /// `GuiNewChat.clearChatMessages` (F3+D): the lines and what was sent.
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.sent.clear();
+        self.history = 0;
+        self.scroll = 0;
+        self.scrolled = false;
+    }
+
     /// A client-side line, such as a copied-link notice.
     pub fn notice(&mut self, res: &Resources, text: &str, tick: f64) {
         self.receive(res, &Formatted::plain(text), tick);
@@ -630,6 +639,19 @@ mod tests {
         // Command shortcuts never type their letter.
         chat.key(KeyCode::KeyV, Some("v"), ModifiersState::SUPER);
         assert_eq!(chat.text().chars().count(), MAX_MESSAGE);
+    }
+
+    #[test]
+    fn f3_d_clears_the_sent_history_too() {
+        let mut chat = Chat::default();
+        chat.open_with("", 0.0);
+        typing(&mut chat, "/l");
+        chat.key(KeyCode::Enter, None, ModifiersState::empty());
+        chat.clear();
+        chat.open_with("", 0.0);
+        chat.key(KeyCode::ArrowUp, None, ModifiersState::empty());
+        assert_eq!(chat.text(), "");
+        assert!(chat.lines.is_empty());
     }
 
     #[test]

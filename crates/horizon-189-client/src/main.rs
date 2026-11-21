@@ -871,6 +871,19 @@ impl ApplicationHandler for App {
                     }
                     if event.state == ElementState::Pressed && !event.repeat {
                         if self.network.is_some() {
+                            if key != KeyCode::F3 && self.keyboard.down(KeyCode::F3) {
+                                match self.view.combo(key, screen) {
+                                    Some(view::Combo::ClearChat) => self.chat.clear(),
+                                    Some(view::Combo::ReloadChunks) => {
+                                        if let Some(network) = &self.network
+                                            && let Ok(mut shared) = network.shared.lock()
+                                        {
+                                            shared.remesh = true;
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
                             self.view.key(key, screen);
                         }
                         if let Some(network) = &self.network
@@ -1410,6 +1423,9 @@ impl ApplicationHandler for App {
                         let world_gui = self.view.world_gui();
                         let first_person = self.view.perspective == 0;
                         renderer.names = world_gui;
+                        // `doRenderEntity` skips the debug box when debug info is reduced.
+                        renderer.hitboxes = self.view.hitboxes
+                            && !snapshot.as_ref().is_some_and(|s| s.reduced_debug);
                         renderer.own_body = snapshot
                             .as_ref()
                             .filter(|s| !first_person && s.game_mode != 3)
@@ -2084,6 +2100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             hide_gui: options.smoke_hide_gui,
             perspective: options.smoke_perspective,
             debug: options.smoke_debug,
+            hitboxes: options.smoke_hitboxes,
         },
         screenshot_dir: options
             .smoke_screenshot

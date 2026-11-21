@@ -68,27 +68,93 @@ const EDGES: [(usize, usize); 12] = [
 /// behind a face at grazing angles still wins the depth test.
 pub fn outline(out: &mut Vec<Vertex>, min: Vec3, max: Vec3, eye: Vec3, pixel: f32, style: Style) {
     let (min, max) = (min - Vec3::splat(0.002), max + Vec3::splat(0.002));
-    let toward = |p: Vec3| eye + (p - eye) * 0.997;
+    edges(out, min, max, eye, pixel, style);
+}
+
+fn edges(out: &mut Vec<Vertex>, min: Vec3, max: Vec3, eye: Vec3, pixel: f32, style: Style) {
     for (a, b) in EDGES {
-        let (a, b) = (corner(min, max, a), corner(min, max, b));
-        let along = (b - a).normalize_or_zero();
-        let half = |p: Vec3| (p - eye).length() * pixel * style.width * 0.5;
-        let (ha, hb) = (half(a), half(b));
-        // Extend each end by half a width so corners close.
-        let (a, b) = (a - along * ha, b + along * hb);
-        let side = |p: Vec3, h: f32| along.cross(p - eye).normalize_or_zero() * h;
-        let (sa, sb) = (side(a, ha), side(b, hb));
-        let quad = [a - sa, a + sa, b + sb, b - sb];
-        for index in [0, 1, 2, 0, 2, 3] {
-            out.push(Vertex {
-                position: toward(quad[index]).to_array(),
-                uv: [0.0; 2],
-                layer: u32::MAX,
-                color: style.color,
-                hurt: style.alpha,
-            });
-        }
+        segment(
+            out,
+            corner(min, max, a),
+            corner(min, max, b),
+            eye,
+            pixel,
+            style,
+        );
     }
+}
+
+/// One line `a..b` as a camera-facing quad of the style's screen width.
+fn segment(out: &mut Vec<Vertex>, a: Vec3, b: Vec3, eye: Vec3, pixel: f32, style: Style) {
+    let toward = |p: Vec3| eye + (p - eye) * 0.997;
+    let along = (b - a).normalize_or_zero();
+    let half = |p: Vec3| (p - eye).length() * pixel * style.width * 0.5;
+    let (ha, hb) = (half(a), half(b));
+    // Extend each end by half a width so corners close.
+    let (a, b) = (a - along * ha, b + along * hb);
+    let side = |p: Vec3, h: f32| along.cross(p - eye).normalize_or_zero() * h;
+    let (sa, sb) = (side(a, ha), side(b, hb));
+    let quad = [a - sa, a + sa, b + sb, b - sb];
+    for index in [0, 1, 2, 0, 2, 3] {
+        out.push(Vertex {
+            position: toward(quad[index]).to_array(),
+            uv: [0.0; 2],
+            layer: u32::MAX,
+            color: style.color,
+            hurt: style.alpha,
+        });
+    }
+}
+
+/// `RenderManager.renderDebugBoundingBox` (F3+B) for an entity standing at
+/// `feet` (mesh-origin coordinates, interpolated): its box in white, for a
+/// living entity a red box 0.02 tall at eye height, and its look two blocks
+/// out in blue from the eye. Vanilla's lines are depth tested without
+/// writing depth, at the `glLineWidth(2)` the block outline leaves set.
+pub fn hitbox(
+    out: &mut Vec<Vertex>,
+    feet: Vec3,
+    (width, height): (f32, f32),
+    eye_height: Option<f32>,
+    look: Vec3,
+    eye: Vec3,
+    pixel: f32,
+) {
+    let line = |color: [f32; 3]| Style {
+        color,
+        alpha: 1.0,
+        width: 2.0,
+    };
+    let f = width / 2.0;
+    let min = feet - Vec3::new(f, 0.0, f);
+    edges(
+        out,
+        min,
+        min + Vec3::new(width, height, width),
+        eye,
+        pixel,
+        line([1.0; 3]),
+    );
+    let eyes = feet.y + eye_height.unwrap_or(height * 0.85);
+    if eye_height.is_some() {
+        edges(
+            out,
+            Vec3::new(feet.x - f, eyes - 0.01, feet.z - f),
+            Vec3::new(feet.x + f, eyes + 0.01, feet.z + f),
+            eye,
+            pixel,
+            line([1.0, 0.0, 0.0]),
+        );
+    }
+    let from = Vec3::new(feet.x, eyes, feet.z);
+    segment(
+        out,
+        from,
+        from + look * 2.0,
+        eye,
+        pixel,
+        line([0.0, 0.0, 1.0]),
+    );
 }
 
 #[cfg(test)]
@@ -116,6 +182,37 @@ mod tests {
             assert!((width - vanilla.width).abs() < 0.05, "{width}");
         }
         assert_eq!(style(3), None);
+        // A standing player's hitbox: twelve white edges, twelve red at
+        // the eyes (1.62) and one blue look line ending two blocks out.
+        let mut out = Vec::new();
+        let look = Vec3::new(0.0, 0.0, 1.0);
+        hitbox(
+            &mut out,
+            Vec3::ZERO,
+            (0.6, 1.8),
+            Some(1.62),
+            look,
+            eye,
+            0.002,
+        );
+        assert_eq!(out.len(), 25 * 6);
+        let colors: Vec<[f32; 3]> = out.chunks(6).map(|q| q[0].color).collect();
+        assert!(colors[..12].iter().all(|&c| c == [1.0; 3]));
+        assert!(colors[12..24].iter().all(|&c| c == [1.0, 0.0, 0.0]));
+        assert_eq!(colors[24], [0.0, 0.0, 1.0]);
+        let red: Vec<f32> = out[72..144].iter().map(|v| v.position[1]).collect();
+        assert!(red.iter().all(|&y| (y - 1.62).abs() < 0.04), "{red:?}");
+        let blue_z = out[144..]
+            .iter()
+            .map(|v| v.position[2])
+            .fold(f32::MIN, f32::max);
+        // Within the 0.3% nudge toward the eye.
+        assert!((1.98..2.1).contains(&blue_z), "{blue_z}");
+        let white_y = out[..72]
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::MIN, f32::max);
+        assert!((1.8..1.85).contains(&white_y), "{white_y}");
         assert_eq!(STYLES.len(), 4);
     }
 }

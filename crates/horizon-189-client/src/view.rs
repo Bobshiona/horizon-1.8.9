@@ -15,6 +15,17 @@ pub struct View {
     pub perspective: u8,
     /// `GameSettings.showDebugInfo` (`avh.aC`).
     pub debug: bool,
+    /// `RenderManager.debugBoundingBox` (F3+B).
+    pub hitboxes: bool,
+}
+
+/// F3 combinations the window carries out.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Combo {
+    /// F3+D: `GuiNewChat.clearChatMessages`.
+    ClearChat,
+    /// F3+A: `RenderGlobal.loadRenderers`.
+    ReloadChunks,
 }
 
 impl View {
@@ -37,6 +48,23 @@ impl View {
             _ => return false,
         }
         true
+    }
+
+    /// A key pressed while F3 is held (the same no-screen branch): B toggles
+    /// hitboxes here, D and A are for the window.
+    pub fn combo(&mut self, key: KeyCode, screen_open: bool) -> Option<Combo> {
+        if screen_open {
+            return None;
+        }
+        match key {
+            KeyCode::KeyB => {
+                self.hitboxes = !self.hitboxes;
+                None
+            }
+            KeyCode::KeyD => Some(Combo::ClearChat),
+            KeyCode::KeyA => Some(Combo::ReloadChunks),
+            _ => None,
+        }
     }
 
     /// `EntityRenderer.updateCameraAndRender`: the in-game overlay (HUD,
@@ -187,6 +215,13 @@ mod tests {
         assert!(!view.key(KeyCode::KeyW, false));
         assert!(view.key(KeyCode::F3, false) && view.debug);
         assert!(!view.key(KeyCode::F3, true) && view.debug);
+        assert_eq!(view.combo(KeyCode::KeyB, false), None);
+        assert!(view.hitboxes);
+        assert_eq!(view.combo(KeyCode::KeyB, true), None);
+        assert!(view.hitboxes, "a screen takes the key");
+        assert_eq!(view.combo(KeyCode::KeyD, false), Some(Combo::ClearChat));
+        assert_eq!(view.combo(KeyCode::KeyA, false), Some(Combo::ReloadChunks));
+        assert_eq!(view.combo(KeyCode::KeyQ, false), None);
         assert!(view.key(KeyCode::F1, false));
         assert!(!view.hide_gui);
     }
