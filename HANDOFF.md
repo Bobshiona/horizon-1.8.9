@@ -1687,3 +1687,42 @@ Regressions: region padding, the grid, the frame edge, two panels sharing one re
 panels (or only degenerate ones) meaning no blur.
 
 Gate: 237 tests.
+
+## 59. Stage entity and label vertices through a staging belt
+
+Section 58's glass region is `312948ea3e`.
+
+The bench player had been saved in a cave at y 35, and villagers summoned around it suffocated.
+That's why earlier crowd numbers swung between runs. With the player back at the world spawn (a
+private change to the bench server, backup kept), 441 villagers came to about 265 FPS: CPU 1.62 ms,
+GPU 1.66 ms median and 4.7 ms p95.
+
+A frame of that crowd uploads 136,656 entity and 81,294 label vertices (40 bytes each), about
+8.7 MB. The profile put a third of the non-waiting main thread in `queue.write_buffer`. With both
+the entity and label draws skipped, but the uploads kept, the GPU still took 1.34 ms against
+terrain's 0.47 ms (temporary switches, not committed). `write_buffer` makes a fresh staging buffer
+per call, and a fresh buffer's megabytes of pages are faulted in, zero-filled and made resident
+every frame. That costs far more than the copy.
+
+`Scene` now stages both through a `wgpu::util::StagingBelt` (8 MiB chunks, reused) into an upload
+encoder. `Renderer::render` submits it ahead of the frame, recalls the belt and polls the device
+without waiting each frame, so chunks come back. An upload left behind by a frame that didn't render
+(occluded) is sent at the next `set_entities`. In a 40 s vsync crowd run the resident size stayed
+at 260 MB.
+
+Bench crowd of 441, alternating with the previous build:
+
+| | FPS | CPU p50 | GPU p50 | GPU p95 |
+| --- | --- | --- | --- | --- |
+| Before | 259–261 | 1.64 ms | 1.73 ms | 5.2 ms |
+| After | 373–399 | 1.02–1.04 ms | 1.36 ms | 1.7–3.0 ms |
+
+The FPS card's on-screen frame cost in that scene went from 3.1 to 2.4 ms. Captures of the crowd
+look the same; pixel diffs aren't meaningful there, since villagers spawn facing random ways. Under
+this load the pacer's budget grows to about 10 ms, because GPU work after present is not in its cost
+estimate. Input age stays about 9.8 ms, still below the old timer's.
+
+No new regression test: this changes how bytes reach the GPU, not what is drawn, and the scene
+tests that render through `Scene` cover the result.
+
+Gate: 237 tests.

@@ -148,6 +148,11 @@ pub struct Scene {
     base_capacity: u64,
     /// Visible columns near to far with their visible-section masks.
     frame: Vec<((i32, i32), u16)>,
+    /// Entity and label vertices go up through reused, mapped staging
+    /// chunks: `queue.write_buffer` makes a fresh staging buffer per call,
+    /// and a crowd's megabytes of fresh pages cost more than the copy.
+    belt: wgpu::util::StagingBelt,
+    upload: Option<wgpu::CommandEncoder>,
     /// The occlusion walk's result and the camera section it started from;
     /// `None` reruns it.
     reached: Option<([i32; 3], HashMap<(i32, i32), u16>)>,
@@ -794,6 +799,8 @@ impl Scene {
             bases,
             base_capacity,
             frame: Vec::new(),
+            belt: wgpu::util::StagingBelt::new(device.clone(), 8 << 20),
+            upload: None,
             reached: None,
             label_pipelines,
             labels,
@@ -1023,11 +1030,37 @@ impl Scene {
                 mapped_at_creation: false,
             });
         }
-        if !bytes.is_empty() {
-            queue.write_buffer(&self.entities, 0, bytes);
+        // A frame that never rendered left its upload unsent: send it now.
+        if let Some(encoder) = self.upload.take() {
+            self.belt.finish();
+            queue.submit([encoder.finish()]);
+            self.belt.recall();
+        }
+        if let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) {
+            let encoder = self.upload.get_or_insert_with(|| {
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Entity upload"),
+                })
+            });
+            self.belt
+                .write_buffer(encoder, &self.entities, 0, size)
+                .copy_from_slice(bytes);
         }
         self.entity_count = u32::try_from(vertices.len())?;
         Ok(())
+    }
+
+    /// This frame's staged uploads, to submit before its draws.
+    pub fn take_upload(&mut self) -> Option<wgpu::CommandBuffer> {
+        let encoder = self.upload.take()?;
+        self.belt.finish();
+        Some(encoder.finish())
+    }
+
+    /// After submitting: staging chunks come back once the GPU is done
+    /// with them (on a later `device.poll`).
+    pub fn recall(&mut self) {
+        self.belt.recall();
     }
 
     /// Replace this frame's overlays, in `label_pipelines` order: glint,
@@ -1054,13 +1087,23 @@ impl Scene {
                 mapped_at_creation: false,
             });
         }
-        let mut offset = 0;
-        for (index, list) in lists.iter().enumerate() {
-            let bytes: &[u8] = bytemuck::cast_slice(list);
-            if !bytes.is_empty() {
-                queue.write_buffer(&self.labels, offset, bytes);
+        let _ = queue;
+        if let Some(total) = wgpu::BufferSize::new(size as u64) {
+            let encoder = self.upload.get_or_insert_with(|| {
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Label upload"),
+                })
+            });
+            let mut view = self.belt.write_buffer(encoder, &self.labels, 0, total);
+            let mut offset = 0;
+            for list in &lists {
+                let bytes: &[u8] = bytemuck::cast_slice(list);
+                view.slice(offset..offset + bytes.len())
+                    .copy_from_slice(bytes);
+                offset += bytes.len();
             }
-            offset += bytes.len() as u64;
+        }
+        for (index, list) in lists.iter().enumerate() {
             self.label_counts[index] = u32::try_from(list.len())?;
         }
         Ok(())

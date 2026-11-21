@@ -977,7 +977,16 @@ impl Renderer {
                 ui.draw_part(&mut pass, part);
             }
         }
-        self.queue.submit([encoder.finish()]);
+        let upload = self.scene.as_mut().and_then(Scene::take_upload);
+        self.queue
+            .submit(upload.into_iter().chain(std::iter::once(encoder.finish())));
+        if let Some(scene) = &mut self.scene {
+            scene.recall();
+        }
+        if !self.bench {
+            // Completes the staging belt's chunk returns without waiting.
+            let _ = self.device.poll(wgpu::PollType::Poll);
+        }
         if self.bench {
             // Submit-to-completion: an upper bound on this frame's GPU time.
             let waited = std::time::Instant::now();
