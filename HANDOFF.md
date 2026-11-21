@@ -1599,3 +1599,51 @@ Regressions:
 - the H and F combos.
 
 Gate: 233 tests.
+
+## 57. Just-in-time vsync pacing
+
+Section 56's F3+H is `a654be72b0`.
+
+The vsync redraw timer fired every 96% of a refresh, free-running against the display. The window's
+CAMetalLayer holds two drawables, one on screen and one being drawn. A frame presented before a
+vsync is shown at it, and only then does the drawable it replaces come free. So the timer either
+landed at a random phase, showing input anywhere from about 2 to 18 ms old, or drifted into
+blocking on the drawable after sampling input, showing it about two refreshes old.
+
+`pacing::Pacer` starts each frame a budget before the vsync after the one its predecessor is
+shown at, so the drawable is already free and the frame shows about a budget old, every frame.
+- **Phase.** Nothing reports vsync times to safe Rust, so the pacer learns them: an acquire that
+  blocks ended at a vsync. While pacing works nothing blocks, so every 120 frames a sync frame
+  starts at once to block and re-measure.
+- **Misses.** A frame that missed its vsync makes the next acquire block. That both re-measures
+  the phase and widens the budget by 1 ms, up to 3/4 of a refresh.
+- **Budget.** It narrows by 0.25 ms per 240 clean frames, down to the slowest recent frame cost
+  plus 1 ms, and never below 2.5 ms.
+- **Wake lateness.** The timer plus a run-loop spin starts frames about 1–2 ms after the asked
+  time. The pacer learns this as a decaying maximum and asks that much earlier.
+- **Uploads.** In `about_to_wait`, mesh uploads only use the idle time before the next frame
+  starts, so they can't push a frame past its vsync.
+
+This applies with vsync, the default `fps_limit` 0. The other limits keep their timers, and
+`--no-jit-pacing` restores the old vsync timer for A/B runs. Smoke runs print
+`FRAME_INPUT_AGE_US`: per frame, the first vsync after present (on the learned phase) minus the
+time input was sampled. They also print `PACING jit misses budget_us`.
+
+On the bench world at 60 Hz, three interleaved pairs of 900 frames:
+
+| | Input age p50 | p95 | p99 | Frame interval p95 | p99 |
+| --- | --- | --- | --- | --- | --- |
+| Just in time | 5.0–5.6 ms | 6.0–6.3 ms | 6.7 ms | 17.8–17.9 ms | 18.8–19.9 ms |
+| Old timer | 17.4–26.2 ms | 18.0–32.1 ms | 22.7–32.8 ms | 17.7–17.8 ms | 18.0–18.4 ms |
+
+Neither mode had an interval over twice the median. Each just-in-time run had 2 misses, while it
+learned at startup. A first, wrong version aimed frames at the vsync their predecessor still
+waited for, and blocked about 12 ms every frame; the per-frame trace that showed this is not
+committed.
+
+Regressions: the vsync grid, the sync frame locking the phase and the next frame starting a budget
+before vsync + 2P and showing a budget old, misses widening the budget and clean frames narrowing
+it to the floor, sync frames every 120, wake-lateness compensation, and a heavy frame raising the
+floor.
+
+Gate: 236 tests.

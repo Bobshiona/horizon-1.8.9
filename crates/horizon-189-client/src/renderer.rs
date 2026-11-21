@@ -50,6 +50,8 @@ pub struct Renderer {
     /// Time this frame spent waiting for the display to hand back a
     /// drawable: pacing, not work.
     pub acquire_wait: std::time::Duration,
+    /// When the last acquire returned: a vsync, if it blocked.
+    pub acquired_at: std::time::Instant,
     skin_loader: crate::skins::Loader,
     skins: std::collections::HashMap<u128, crate::skins::Binding>,
     skin_images: std::collections::HashMap<u128, crate::skins::Loaded>,
@@ -171,6 +173,7 @@ impl Renderer {
             bench: false,
             gpu_time: std::time::Duration::ZERO,
             acquire_wait: std::time::Duration::ZERO,
+            acquired_at: std::time::Instant::now(),
             skin_loader: crate::skins::Loader::new()?,
             skins: Default::default(),
             skin_images: Default::default(),
@@ -739,6 +742,7 @@ impl Renderer {
             self.surface.get_current_texture()
         };
         self.acquire_wait = waited.elapsed();
+        self.acquired_at = std::time::Instant::now();
         let (frame, reconfigure) = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame) => (Some(frame), false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (Some(frame), true),

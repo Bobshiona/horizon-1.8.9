@@ -23,6 +23,7 @@ mod models;
 mod network;
 mod options;
 mod outline;
+mod pacing;
 mod particles;
 mod pause;
 mod pvp_metrics;
@@ -77,6 +78,13 @@ struct App {
     frame_stats: frame_stats::FrameStats,
     /// Present-to-present times in smoke runs: the frame pacing.
     frame_intervals: frame_stats::FrameStats,
+    /// Just-in-time vsync pacing, and (smoke runs) each frame's input age
+    /// when shown.
+    pacer: pacing::Pacer,
+    jit: bool,
+    input_ages: frame_stats::FrameStats,
+    /// When the pacer asked for the redraw now pending.
+    planned: Option<Instant>,
     last_present: Option<Instant>,
     smoke_frames: Option<u64>,
     started: Instant,
@@ -698,6 +706,7 @@ impl ApplicationHandler for App {
                 }
                 renderer.window.request_redraw();
                 self.frame_period = frame_period(&renderer.window);
+                self.pacer.set_period(refresh_period(&renderer.window));
                 self.renderer = Some(renderer);
             }
             Err(error) => self.fail(event_loop, error),
@@ -711,12 +720,14 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size);
                     self.frame_period = frame_period(&renderer.window);
+                    self.pacer.set_period(refresh_period(&renderer.window));
                 }
             }
             // A move can change displays and with them the refresh rate.
             WindowEvent::Moved(_) => {
                 if let Some(renderer) = &self.renderer {
                     self.frame_period = frame_period(&renderer.window);
+                    self.pacer.set_period(refresh_period(&renderer.window));
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -1776,8 +1787,30 @@ impl ApplicationHandler for App {
                         renderer.screenshot = true;
                     }
                     let offscreen = renderer.offscreen_frames;
+                    let vsync = (self.settings.toggles.fps_limit == 0
+                        || self.smoke_frames.is_some())
+                        && !self.bench;
                     match renderer.render(capture.as_deref(), self.smoke_frames.is_some()) {
                         Ok(true) => {
+                            if vsync && capture.is_none() && renderer.offscreen_frames == offscreen
+                            {
+                                let age = self.pacer.presented(pacing::Frame {
+                                    planned: self.planned.take().filter(|_| self.jit),
+                                    sampled: frame_started,
+                                    waited: renderer.acquire_wait,
+                                    acquired: renderer.acquired_at,
+                                    presented: Instant::now(),
+                                });
+                                if let Some(age) = age
+                                    && self.smoke_frames.is_some()
+                                    && (self.network.is_none() || renderer.world_ready())
+                                {
+                                    self.input_ages.record(age);
+                                }
+                                if self.jit {
+                                    self.next_frame = self.pacer.next_start(Instant::now());
+                                }
+                            }
                             if let Some(shot) = renderer.shot.take() {
                                 let done = self.screenshots.0.clone();
                                 match (shot, &self.screenshot_dir) {
@@ -1843,6 +1876,13 @@ impl ApplicationHandler for App {
                     };
                     self.frame_stats.report("FRAME_SUBMIT_US");
                     self.frame_intervals.report("FRAME_INTERVAL_US");
+                    self.input_ages.report("FRAME_INPUT_AGE_US");
+                    eprintln!(
+                        "PACING jit={} misses={} budget_us={}",
+                        self.jit,
+                        self.pacer.misses,
+                        self.pacer.budget().as_micros()
+                    );
                     if self.bench {
                         self.bench_cpu.report("BENCH_CPU_US");
                         self.bench_gpu.report("BENCH_GPU_US");
@@ -1880,9 +1920,18 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Upload rebuilt columns within a frame-sized budget.
+        // Upload rebuilt columns within a frame-sized budget, and when pacing
+        // just in time only in the idle time before the next frame starts.
         let started = Instant::now();
-        while started.elapsed() < Duration::from_millis(6) {
+        let upload = if self.jit {
+            self.next_frame
+                .saturating_duration_since(started)
+                .saturating_sub(Duration::from_millis(1))
+                .clamp(Duration::from_millis(1), Duration::from_millis(6))
+        } else {
+            Duration::from_millis(6)
+        };
+        while started.elapsed() < upload {
             let update = self
                 .network
                 .as_ref()
@@ -1971,6 +2020,7 @@ impl ApplicationHandler for App {
         if now >= self.next_frame {
             if let Some(renderer) = &self.renderer {
                 renderer.window.request_redraw();
+                self.planned = Some(self.next_frame);
             }
             self.next_frame = now + self.redraw_period();
         }
@@ -2010,6 +2060,17 @@ fn frame_period(window: &Window) -> Duration {
     millihertz.map_or(Duration::from_millis(16), |rate| {
         Duration::from_micros(960_000_000 / u64::from(rate))
     })
+}
+
+/// The display's exact refresh period (16.67 ms when it reports none).
+fn refresh_period(window: &Window) -> Duration {
+    window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .filter(|&rate| (20_000..=500_000).contains(&rate))
+        .map_or(Duration::from_micros(16_667), |rate| {
+            Duration::from_nanos(1_000_000_000_000 / u64::from(rate))
+        })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -2068,6 +2129,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         frames: 0,
         frame_stats: Default::default(),
         frame_intervals: Default::default(),
+        pacer: pacing::Pacer::new(Duration::from_micros(16_667)),
+        jit: !options.no_jit_pacing,
+        input_ages: Default::default(),
+        planned: None,
         last_present: None,
         smoke_frames,
         started: Instant::now(),

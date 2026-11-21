@@ -47,6 +47,8 @@ pub struct Options {
     pub smoke_debug: bool,
     /// Validation only: start with F3+B hitboxes on.
     pub smoke_hitboxes: bool,
+    /// Validation only: redraw on the old timer instead of just in time.
+    pub no_jit_pacing: bool,
     /// Validation only: take an F2 screenshot into this folder near the end.
     pub smoke_screenshot: Option<std::path::PathBuf>,
     /// With `--install`: the git repository the app updates from.
@@ -226,6 +228,7 @@ impl Options {
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
                 "--smoke-debug" => options.smoke_debug = true,
                 "--smoke-hitboxes" => options.smoke_hitboxes = true,
+                "--no-jit-pacing" => options.no_jit_pacing = true,
                 "--smoke-perspective" => {
                     let mode: u8 = value()?.parse()?;
                     if mode > 2 {
