@@ -10,6 +10,32 @@ use crate::{
 };
 use glam::{Mat4, Vec3, Vec4};
 use horizon_protocol_47::play::PositionLook;
+use horizon_world_189::entities::{Entity, Kind};
+
+/// `RenderManager.shouldRender`: an entity draws (with its name tag) when a
+/// generous box around it (1.5 blocks out, from half a block below to 3.5
+/// above its interpolated feet) meets the view frustum. Mobs bigger than
+/// that box (giants, slimes and magma cubes, ghasts, the dragon and the
+/// wither) and fishing bobbers, whose line reaches the angler, always draw.
+pub fn entity_in_view(planes: &[Vec4; 5], entity: &Entity, partial: f32, origin: [i64; 3]) -> bool {
+    if matches!(
+        entity.kind,
+        Kind::Mob(53 | 55 | 56 | 62 | 63 | 64) | Kind::Object(90)
+    ) {
+        return true;
+    }
+    let at: [f32; 3] = std::array::from_fn(|axis| {
+        let previous = entity.previous[axis];
+        let feet = previous + (entity.position[axis] - previous) * f64::from(partial);
+        (feet - origin[axis] as f64) as f32
+    });
+    let feet = Vec3::from_array(at);
+    Scene::visible(
+        planes,
+        feet - Vec3::new(1.5, 0.5, 1.5),
+        feet + Vec3::new(1.5, 3.5, 1.5),
+    )
+}
 use std::{collections::HashMap, error::Error};
 
 const MIP_LEVELS: u32 = 5;
@@ -1203,7 +1229,7 @@ impl Scene {
     }
 
     /// Clip-space planes (left, right, bottom, top, near) of the current view.
-    fn planes(&self, config: &wgpu::SurfaceConfiguration) -> [Vec4; 5] {
+    pub fn planes(&self, config: &wgpu::SurfaceConfiguration) -> [Vec4; 5] {
         let m = (self.projection(config) * self.view).transpose();
         let (r0, r1, r2, r3) = (m.x_axis, m.y_axis, m.z_axis, m.w_axis);
         [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 - r2]
@@ -1375,6 +1401,50 @@ mod tests {
             assert!((near - Vec3::new(0.0, 0.0, -0.05)).length() < 1e-6);
             assert!((near.normalize() - Vec3::NEG_Z).length() < 1e-6);
         }
+    }
+
+    #[test]
+    fn entities_behind_or_beside_the_view_are_not_drawn() {
+        // Looking along +Z from the origin with a 70-degree FOV.
+        let projection = Scene::world_projection(70.0, 16.0 / 10.0);
+        let view = Mat4::look_at_rh(Vec3::ZERO, Vec3::Z, Vec3::Y);
+        let m = (projection * view).transpose();
+        let (r0, r1, r2, r3) = (m.x_axis, m.y_axis, m.z_axis, m.w_axis);
+        let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 - r2];
+        let mut tracked = horizon_world_189::entities::Entities::default();
+        tracked.apply(horizon_protocol_47::entities::EntityPacket::SpawnPlayer {
+            id: 1,
+            uuid: 7,
+            position: [0; 3],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let base = tracked.get(1).expect("spawned").clone();
+        let at = |kind, x: f64, z: f64| {
+            let mut entity = base.clone();
+            entity.kind = kind;
+            entity.position = [x, -1.6, z];
+            entity.previous = entity.position;
+            entity_in_view(&planes, &entity, 0.5, [0; 3])
+        };
+        let villager = Kind::Mob(120);
+        assert!(at(villager, 0.0, 10.0));
+        assert!(!at(villager, 0.0, -10.0));
+        assert!(!at(villager, 40.0, 5.0));
+        // Just outside the edge, the generous box still reaches in.
+        assert!(at(villager, 7.0, 5.0));
+        // Oversized mobs and bobbers always draw.
+        assert!(at(Kind::Mob(56), 0.0, -10.0));
+        assert!(at(Kind::Object(90), 0.0, -10.0));
+        // Interpolation uses the partial tick.
+        let mut moving = base.clone();
+        moving.kind = villager;
+        moving.previous = [0.0, -1.6, -10.0];
+        moving.position = [0.0, -1.6, 10.0];
+        assert!(!entity_in_view(&planes, &moving, 0.1, [0; 3]));
+        assert!(entity_in_view(&planes, &moving, 0.9, [0; 3]));
     }
 
     #[test]

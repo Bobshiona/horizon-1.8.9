@@ -986,6 +986,7 @@ pub fn entities(
     glint: &mut Vec<Vertex>,
     millis: u64,
     angler: Option<&Angler>,
+    in_view: &dyn Fn(&Entity) -> bool,
 ) {
     // Whose bobbers are out: they hold `fishing_rod_cast`.
     let anglers: Vec<i32> = entities
@@ -1008,6 +1009,9 @@ pub fn entities(
             }
             None => entity,
         };
+        if !in_view(entity) {
+            continue;
+        }
         let start = out.len();
         let binding = bindings.and_then(|b| b.get(&entity.uuid));
         match entity.kind {
@@ -1421,6 +1425,7 @@ pub fn nametags(
     widths: &[u8; 256],
     board: &crate::scoreboard::Scoreboard,
     own_name: &str,
+    in_view: &dyn Fn(&Entity) -> bool,
 ) {
     // `RendererLivingEntity.canRenderName` with team name-tag visibility.
     let own_team = board.team_of(own_name).map(|(name, _)| name);
@@ -1455,7 +1460,8 @@ pub fn nametags(
             }
         }
     };
-    for (_, entity) in entities {
+    // Labels render with their entity, so they share its frustum check.
+    for (_, entity) in entities.iter().filter(|(_, entity)| in_view(entity)) {
         let distance: f64 = entity
             .position
             .iter()
@@ -2133,6 +2139,7 @@ mod tests {
             &mut Vec::new(),
             0,
             None,
+            &|_| true,
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().any(|v| v.layer == 1001));
@@ -2152,6 +2159,7 @@ mod tests {
             &mut Vec::new(),
             0,
             None,
+            &|_| true,
         );
         assert!(out.iter().any(|v| v.layer == 1000));
         assert!(out.iter().all(|v| v.layer != 1001));
@@ -2192,6 +2200,7 @@ mod tests {
                 &mut Vec::new(),
                 0,
                 None,
+                &|_| true,
             );
             assert!(out.iter().any(|v| v.layer == texture as u32));
             assert!(out.iter().flat_map(|v| v.position).all(f32::is_finite));
@@ -2213,6 +2222,7 @@ mod tests {
                     &mut Vec::new(),
                     0,
                     None,
+                    &|_| true,
                 );
                 assert!(out.iter().all(|v| v.layer != Texture::Wool as u32));
             }
@@ -2261,6 +2271,7 @@ mod tests {
             &mut Vec::new(),
             0,
             None,
+            &|_| true,
         );
         for layer in [Texture::Diamond1, Texture::Diamond2, Texture::DiamondSword] {
             assert!(vertices.iter().any(|v| v.layer == layer as u32));
@@ -2282,6 +2293,7 @@ mod tests {
             &mut Vec::new(),
             0,
             None,
+            &|_| true,
         );
         assert!(vertices.is_empty());
     }

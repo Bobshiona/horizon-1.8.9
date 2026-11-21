@@ -369,6 +369,11 @@ impl Renderer {
                 }
             }
         }
+        let planes = scene.planes(&self.config);
+        let origin = scene.origin();
+        let in_view = |entity: &horizon_world_189::entities::Entity| {
+            crate::scene::entity_in_view(&planes, entity, partial, origin)
+        };
         crate::models::entities(
             &mut vertices,
             entities,
@@ -380,6 +385,7 @@ impl Renderer {
             &mut glint,
             crate::models::millis(),
             angler,
+            &in_view,
         );
         vertices.extend_from_slice(extra);
         through.clear();
@@ -397,6 +403,7 @@ impl Renderer {
                 &registry.glyphs,
                 board,
                 own_name,
+                &in_view,
             );
         }
         let result = scene

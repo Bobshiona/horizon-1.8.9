@@ -1183,3 +1183,34 @@ resizing with clamping, card placement at scale, crosshair centring, the new car
 new settings' round trip and bad-value fallback. A capture checked the menu with the new cards.
 Gate: 200 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64
 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 42. Entity frustum culling for crowded lobbies
+
+Section 41's menu milestone is `0b40409071`.
+
+A crowd benchmark (private bench server, 150 or 441 villagers with visible custom names summoned
+around the camera by console `execute ... summon`) showed entity and name-tag vertices rebuilt and
+uploaded for every loaded entity each frame, wherever it was: 150 named villagers were 43,000 entity
+and 23,500 label vertices (about 2.7 MB a frame), and a CPU sample put `queue.write_buffer` copies
+from `set_entities` at roughly 40% of non-waiting main-thread time.
+
+`scene::entity_in_view` now does `RenderManager.shouldRender`'s frustum check: a generous box (1.5
+blocks out, from half a block below to 3.5 above the interpolated feet) against the view planes.
+Entities that fail are neither meshed nor labelled (labels render with their entity, as vanilla).
+Mobs larger than the box (giant, slime, ghast, magma cube, dragon, wither) and fishing bobbers, whose
+line reaches the angler, always draw. Surrounded by 441 named villagers, two alternating runs each
+(M5, 1920x1200, render distance 12):
+
+| | Before (`0b40409071`) | After |
+| --- | --- | --- |
+| CPU per frame (p50) | 1.61 ms | 0.76 ms |
+| GPU per frame (p50) | 1.78 ms | 1.44 ms |
+| FPS (serialized mean) | ~286 | ~420 |
+
+A crowd entirely in view is unchanged, as expected. Still possible later: a compact indexed entity
+vertex format, or static per-model meshes with per-entity bone transforms, to cut the upload for
+crowds that are in view. Regressions: frustum acceptance in front, rejection behind and beside,
+the box's margin at the edge, always-drawn large mobs and bobbers, and partial-tick interpolation.
+A capture inside the crowd showed no missing entities at the screen edges. Gate: 201 scoped tests,
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.
