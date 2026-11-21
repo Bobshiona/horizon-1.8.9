@@ -32,6 +32,11 @@ fn record(events: &mut VecDeque<Duration>, now: Duration) {
     events.push_back(now);
 }
 impl Metrics {
+    /// Left and right buttons currently held.
+    pub fn held(&self) -> [bool; 2] {
+        self.held
+    }
+
     pub fn presented(&mut self, now: Duration) {
         record(&mut self.frames, now);
     }

@@ -144,6 +144,10 @@ impl Keyboard {
         self.modifiers
     }
 
+    pub fn down(&self, key: KeyCode) -> bool {
+        self.set.contains(&key)
+    }
+
     pub fn held(&self) -> &HashSet<KeyCode> {
         &self.set
     }

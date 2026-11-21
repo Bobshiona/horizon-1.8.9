@@ -212,6 +212,7 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
         scene.entity_layers(),
         &inverted,
         &vertices,
+        None,
     )?;
     ui.load_pages(&queue, &resources, &missing);
     let mut encoder = device.create_command_encoder(&Default::default());
@@ -229,7 +230,8 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
             })],
             ..Default::default()
         });
-        ui.draw(&mut pass);
+        ui.draw_part(&mut pass, 0);
+        ui.draw_part(&mut pass, 1);
     }
     encoder.copy_texture_to_buffer(
         target.as_image_copy(),

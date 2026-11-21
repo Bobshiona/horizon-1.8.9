@@ -27,6 +27,8 @@ pub struct Options {
     pub smoke_tab: bool,
     /// Validation only: open the inventory and hover the first hotbar slot.
     pub smoke_inventory: bool,
+    /// Validation only: open the mod menu once in the world.
+    pub smoke_menu: bool,
     /// Vanilla `viewBobbing` (on by default).
     pub view_bobbing: bool,
     pub help: bool,
@@ -67,6 +69,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-chat TEXT             With --smoke-frames, send TEXT through the chat screen\n\
     --smoke-tab                   With --smoke-frames, hold the player-list key\n\
     --smoke-inventory             With --smoke-frames, open the inventory over a slot\n\
+    --smoke-menu                  With --smoke-frames, open the mod menu\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
@@ -187,6 +190,7 @@ impl Options {
                 "--smoke-chat" => options.smoke_chat = Some(value()?),
                 "--smoke-tab" => options.smoke_tab = true,
                 "--smoke-inventory" => options.smoke_inventory = true,
+                "--smoke-menu" => options.smoke_menu = true,
                 "--no-view-bobbing" => options.view_bobbing = false,
                 "--gui-scale" => {
                     let scale: u32 = value()?.parse()?;
@@ -228,8 +232,12 @@ impl Options {
         {
             return Err("--smoke-chat requires --smoke-frames and --server".into());
         }
-        if (options.smoke_tab || options.smoke_inventory) && options.smoke_frames.is_none() {
-            return Err("--smoke-tab and --smoke-inventory require --smoke-frames".into());
+        if (options.smoke_tab || options.smoke_inventory || options.smoke_menu)
+            && options.smoke_frames.is_none()
+        {
+            return Err(
+                "--smoke-tab, --smoke-inventory and --smoke-menu require --smoke-frames".into(),
+            );
         }
         if options.capture.is_some() && options.smoke_frames.is_none() {
             return Err("--capture requires --smoke-frames".into());

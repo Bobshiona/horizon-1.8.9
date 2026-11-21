@@ -381,6 +381,10 @@ pub struct Canvas<'a> {
     pub out: Vec<Vertex>,
     /// Drawn first with the inverting blend of the crosshair.
     pub inverted: Vec<Vertex>,
+    /// Glass under the interface (0) and under the overlay (1).
+    glass: [Vec<crate::glass::Panel>; 2],
+    /// `out` length where the overlay begins.
+    split: Option<usize>,
     pages: &'a Pages,
     missing: Vec<u8>,
 }
@@ -403,6 +407,8 @@ impl<'a> Canvas<'a> {
             scale: 1.0,
             out: Vec::with_capacity(16 * 1024),
             inverted: Vec::new(),
+            glass: Default::default(),
+            split: None,
             pages,
             missing: Vec::new(),
         }
@@ -430,6 +436,27 @@ impl<'a> Canvas<'a> {
                 color,
             });
         }
+    }
+
+    /// A liquid-glass panel under what is drawn next in this layer.
+    pub fn glass(&mut self, panel: crate::glass::Panel) {
+        let scale = self.scale;
+        let mut panel = panel;
+        for v in &mut panel.rect {
+            *v *= scale;
+        }
+        panel.radius *= scale;
+        self.glass[usize::from(self.split.is_some())].push(panel);
+    }
+
+    /// Start the overlay: later glass frosts everything drawn so far.
+    pub fn overlay(&mut self) {
+        self.split.get_or_insert(self.out.len());
+    }
+
+    /// This frame's glass layers and the overlay's start in `out`.
+    pub fn take_glass(&mut self) -> ([Vec<crate::glass::Panel>; 2], Option<usize>) {
+        (std::mem::take(&mut self.glass), self.split)
     }
 
     /// `Gui.drawRect` with a `0xAARRGGBB` colour; corners in any order.
@@ -855,6 +882,8 @@ pub struct Pass {
     capacity: u64,
     inverted: u32,
     count: u32,
+    /// Vertices before the overlay.
+    split: u32,
     pub pages: Pages,
 }
 
@@ -992,6 +1021,7 @@ impl Pass {
             capacity,
             inverted: 0,
             count: 0,
+            split: 0,
             pages: Pages::default(),
         }
     }
@@ -1097,6 +1127,7 @@ impl Pass {
         entity_layers: u32,
         inverted: &[Vertex],
         vertices: &[Vertex],
+        split: Option<usize>,
     ) -> Result<(), Box<dyn Error>> {
         let [x, y] = layout.scale();
         let screen = [x, y, LAYERS as f32, entity_layers.max(1) as f32];
@@ -1128,22 +1159,30 @@ impl Pass {
         }
         self.inverted = u32::try_from(inverted.len())?;
         self.count = u32::try_from(vertices.len())?;
+        self.split = u32::try_from(split.unwrap_or(vertices.len()).min(vertices.len()))?;
         Ok(())
     }
 
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        if self.inverted + self.count == 0 {
+    /// Part 0 is the interface (inverted crosshair first), part 1 the
+    /// overlay after `Canvas::overlay`.
+    pub fn draw_part(&self, pass: &mut wgpu::RenderPass<'_>, part: usize) {
+        let range = if part == 0 {
+            self.inverted..self.inverted + self.split
+        } else {
+            self.inverted + self.split..self.inverted + self.count
+        };
+        if range.is_empty() && (part == 1 || self.inverted == 0) {
             return;
         }
         pass.set_bind_group(0, &self.bindings, &[]);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
-        if self.inverted > 0 {
+        if part == 0 && self.inverted > 0 {
             pass.set_pipeline(&self.invert_pipeline);
             pass.draw(0..self.inverted, 0..1);
         }
-        if self.count > 0 {
+        if !range.is_empty() {
             pass.set_pipeline(&self.pipeline);
-            pass.draw(self.inverted..self.inverted + self.count, 0..1);
+            pass.draw(range, 0..1);
         }
     }
 }

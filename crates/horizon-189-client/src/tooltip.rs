@@ -52,7 +52,7 @@ pub fn max_damage(item: &Item) -> u16 {
 }
 
 /// `Potion.potionTypes` names by effect ID.
-const EFFECTS: [&str; 24] = [
+pub(crate) const EFFECTS: [&str; 24] = [
     "",
     "moveSpeed",
     "moveSlowdown",

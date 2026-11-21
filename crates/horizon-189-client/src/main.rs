@@ -7,13 +7,16 @@ mod connection;
 mod container_input;
 mod frame_stats;
 mod gameplay;
+mod glass;
 mod hand;
 mod hardness;
 mod hud;
+mod hud_mods;
 mod inventory;
 mod item_data;
 mod items;
 mod keyboard;
+mod menu;
 mod models;
 mod network;
 mod options;
@@ -24,6 +27,7 @@ mod scene;
 #[cfg(test)]
 mod scene_tests;
 mod scoreboard;
+mod settings;
 mod skins;
 mod terrain;
 mod tooltip;
@@ -90,6 +94,7 @@ struct App {
     tab_held: bool,
     smoke_tab: bool,
     smoke_inventory: bool,
+    smoke_menu: bool,
     container_pointer: container_input::Pointer,
     particles: particles::Particles,
     /// The last client tick particles advanced to.
@@ -98,8 +103,19 @@ struct App {
     world_epoch: u64,
     view_bobbing: bool,
     fov: f32,
-    pvp_hud: bool,
     metrics: pvp_metrics::Metrics,
+    settings: settings::Settings,
+    /// Zoom factor applied to the FOV, eased toward its target.
+    zoom: f32,
+    zoom_at: Instant,
+    /// Toggle Sprint / Toggle Sneak latches.
+    sprint_latched: bool,
+    sneak_latched: bool,
+    /// The fullbright state the terrain was last meshed with.
+    fullbright: bool,
+    menu: menu::Menu,
+    /// HUD card rectangles from the last frame, for the layout editor.
+    hud_rects: Vec<(settings::HudKind, [f32; 4])>,
 }
 
 /// What one frame reads from the simulation, under one lock.
@@ -124,6 +140,9 @@ struct Snapshot {
     cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
     visuals: Vec<particles::Event>,
     breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
+    armor: [Option<horizon_protocol_47::nbt::Item>; 4],
+    potions: Vec<(u8, i8, i32)>,
+    current: [f64; 3],
 }
 
 impl App {
@@ -191,6 +210,56 @@ impl App {
 
     /// `setIngameNotInFocus`: release the cursor and unpress every key, as
     /// `KeyBinding.unPressAllKeys` does when a screen opens.
+    /// Per-frame mod state: zoom easing, the frame cap's present mode and
+    /// the fullbright remesh.
+    fn update_mods(&mut self) {
+        let toggles = self.settings.toggles;
+        let now = Instant::now();
+        let dt = now.duration_since(self.zoom_at).as_secs_f32().min(0.25);
+        self.zoom_at = now;
+        let target = if toggles.zoom && self.captured && self.keyboard.down(KeyCode::KeyC) {
+            0.25
+        } else {
+            1.0
+        };
+        self.zoom = if toggles.smooth_zoom {
+            self.zoom + (target - self.zoom) * (1.0 - (-dt * 14.0).exp())
+        } else {
+            target
+        };
+        if (self.zoom - target).abs() < 1e-3 {
+            self.zoom = target;
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_vsync(toggles.fps_limit == 0 || self.smoke_frames.is_some());
+        }
+        if toggles.fullbright != self.fullbright {
+            self.fullbright = toggles.fullbright;
+            terrain::FULLBRIGHT.store(self.fullbright, std::sync::atomic::Ordering::Relaxed);
+            if let Some(network) = &self.network
+                && let Ok(mut shared) = network.shared.lock()
+            {
+                shared.remesh = true;
+            }
+        }
+    }
+
+    /// The wait between redraws for the frame cap.
+    fn redraw_period(&self) -> Duration {
+        match self.settings.toggles.fps_limit {
+            _ if self.smoke_frames.is_some() => self.frame_period,
+            0 => self.frame_period,
+            u32::MAX => Duration::ZERO,
+            fps => Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1))),
+        }
+    }
+
+    fn save_settings(&self) {
+        if let Err(error) = self.settings.save() {
+            eprintln!("SETTINGS_SAVE_FAILED {error}");
+        }
+    }
+
     fn release_cursor(&mut self) {
         if let Some(renderer) = &self.renderer {
             let _ = renderer.window.set_cursor_grab(CursorGrabMode::None);
@@ -319,7 +388,15 @@ impl App {
             return;
         };
         let keys = if self.captured {
-            self.keyboard.keys()
+            let mut keys = self.keyboard.keys();
+            let toggles = self.settings.toggles;
+            if toggles.toggle_sprint {
+                keys.sprint = self.sprint_latched;
+            }
+            if toggles.toggle_sneak {
+                keys.sneak = self.sneak_latched;
+            }
+            keys
         } else {
             Keys::default()
         };
@@ -344,7 +421,8 @@ impl App {
             return;
         };
         let f = self.sensitivity * 0.6 + 0.2;
-        let factor = f * f * f * 8.0;
+        // Zoom slows the look with the narrower view.
+        let factor = f * f * f * 8.0 * self.zoom;
         let yaw_delta = dx as f32 * factor;
         let pitch_delta = (-dy) as f32 * factor;
         if (yaw_delta == 0.0 && pitch_delta == 0.0)
@@ -526,8 +604,46 @@ impl ApplicationHandler for App {
                         self.open_chat(if key == KeyCode::Slash { "/" } else { "" });
                         return;
                     }
+                    // Right Shift opens the mod menu over the world; while it
+                    // or the HUD editor is up it takes every key.
+                    if pressed
+                        && !event.repeat
+                        && key == KeyCode::ShiftRight
+                        && !screen
+                        && self.network.is_some()
+                    {
+                        self.menu.toggle();
+                        if !self.menu.active() {
+                            self.save_settings();
+                        }
+                        return;
+                    }
+                    if self.menu.active() {
+                        if pressed && !event.repeat && key == KeyCode::Escape {
+                            self.menu.close();
+                            self.save_settings();
+                        }
+                        if !pressed {
+                            self.keyboard.release(key);
+                        }
+                        return;
+                    }
                     if key == KeyCode::Tab {
                         self.tab_held = pressed && !screen;
+                    }
+                    if pressed && !event.repeat {
+                        let toggles = self.settings.toggles;
+                        if toggles.toggle_sprint
+                            && matches!(
+                                key,
+                                KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft
+                            )
+                        {
+                            self.sprint_latched = !self.sprint_latched;
+                        }
+                        if toggles.toggle_sneak && key == KeyCode::ShiftLeft {
+                            self.sneak_latched = !self.sneak_latched;
+                        }
                     }
                     if event.state == ElementState::Pressed {
                         self.keyboard.press(key, event.repeat);
@@ -620,6 +736,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x, position.y);
+                if self.menu.editing
+                    && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+                {
+                    let mouse = self.mouse_gui();
+                    self.menu.moved(layout, mouse, &mut self.settings);
+                }
                 if let (Some(network), Some(renderer)) = (&self.network, &self.renderer)
                     && let Ok(state) = network.shared.lock()
                     && state.inventory.open
@@ -683,13 +805,30 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                if self.pvp_hud
-                    && let Some(index) = match button {
-                        MouseButton::Left => Some(0),
-                        MouseButton::Right => Some(1),
-                        _ => None,
+                if self.menu.active() {
+                    let mouse = self.mouse_gui();
+                    if button == MouseButton::Left
+                        && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+                    {
+                        if !pressed {
+                            if self.menu.release() {
+                                self.save_settings();
+                            }
+                        } else if self.menu.editing {
+                            self.menu.press(mouse, &self.hud_rects);
+                        } else if self.menu.click(layout, mouse, &mut self.settings)
+                            != menu::Click::Nothing
+                        {
+                            self.save_settings();
+                        }
                     }
-                {
+                    return;
+                }
+                if let Some(index) = match button {
+                    MouseButton::Left => Some(0),
+                    MouseButton::Right => Some(1),
+                    _ => None,
+                } {
                     let eligible = self.focused
                         && self.captured
                         && !self.chat.open
@@ -815,7 +954,8 @@ impl ApplicationHandler for App {
                             .map(|s| s.inventory.open || s.vitals.health <= 0.0)
                     })
                     .unwrap_or(false)
-                    || self.chat.open;
+                    || self.chat.open
+                    || self.menu.active();
                 if menu && self.captured {
                     self.release_cursor();
                 }
@@ -823,6 +963,7 @@ impl ApplicationHandler for App {
                     self.capture_cursor();
                 }
                 self.menu_open = menu;
+                self.update_mods();
                 self.apply_look();
                 let pose = self.camera_pose();
                 let tick = self.tick();
@@ -852,6 +993,9 @@ impl ApplicationHandler for App {
                         cracks: s.cracks.clone(),
                         visuals: std::mem::take(&mut s.visuals),
                         breaks: std::mem::take(&mut s.breaks),
+                        armor: s.armor.clone(),
+                        potions: s.potions.clone(),
+                        current: s.current,
                     })
                 });
                 if let Some(s) = &snapshot {
@@ -925,6 +1069,7 @@ impl ApplicationHandler for App {
                                 hand::camera_effects(&snapshot.hand, partial, self.view_bobbing);
                             renderer.set_camera_effects(effects);
                         }
+                        renderer.set_fov(self.fov * self.zoom);
                         renderer.set_pose(pose);
                         let empty = scoreboard::Scoreboard::default();
                         let (board, own_name) = snapshot
@@ -1006,9 +1151,17 @@ impl ApplicationHandler for App {
                         if let Some(snapshot) = &snapshot {
                             let (hud, chat) = (&mut self.hud, &mut self.chat);
                             let tab_held = self.tab_held || self.smoke_tab;
-                            let pvp = self
-                                .pvp_hud
-                                .then(|| self.metrics.sample(self.started.elapsed()));
+                            let sample = self.metrics.sample(self.started.elapsed());
+                            let (settings, menu, rects) =
+                                (&self.settings, &self.menu, &mut self.hud_rects);
+                            let keys = self.keyboard.keys();
+                            let buttons = self.metrics.held();
+                            let ping = snapshot
+                                .own
+                                .as_ref()
+                                .and_then(|(uuid, _)| snapshot.tab.entries.get(uuid))
+                                .map(|entry| entry.ping);
+                            let yaw = pose.yaw;
                             let result = renderer.draw_ui(tick, |canvas, registry, skin| {
                                 let frame = hud::Frame {
                                     view: &snapshot.view,
@@ -1026,16 +1179,30 @@ impl ApplicationHandler for App {
                                     skin,
                                 };
                                 hud.draw(canvas, registry, &frame);
-                                if let Some(pvp) = pvp
-                                    && !snapshot.view.open
-                                    && snapshot.vitals.health > 0.0
+                                if (!snapshot.view.open && snapshot.vitals.health > 0.0)
+                                    || menu.editing
                                 {
-                                    hud::pvp_overlay(canvas, registry, pvp);
+                                    let mods = hud_mods::ModFrame {
+                                        settings,
+                                        keys,
+                                        buttons,
+                                        cps: [sample.left, sample.right],
+                                        fps: sample.fps,
+                                        armor: &snapshot.armor,
+                                        potions: &snapshot.potions,
+                                        position: snapshot.current,
+                                        yaw,
+                                        ping,
+                                    };
+                                    *rects = hud_mods::draw(canvas, registry, &mods, menu.editing);
                                 }
                                 chat.draw(canvas, tick, mouse);
                                 hud.draw_after_chat(canvas, &frame);
                                 if snapshot.view.open && snapshot.vitals.health > 0.0 {
                                     hud::inventory(canvas, registry, &snapshot.view, mouse);
+                                }
+                                if menu.active() {
+                                    menu.draw(canvas, settings, mouse);
                                 }
                             });
                             if let Err(error) = result {
@@ -1063,7 +1230,7 @@ impl ApplicationHandler for App {
                         Ok(true) => {
                             if self.network.is_none() || renderer.world_ready() {
                                 self.frames += 1;
-                                if self.pvp_hud && renderer.offscreen_frames == offscreen {
+                                if renderer.offscreen_frames == offscreen {
                                     self.metrics.presented(self.started.elapsed());
                                 }
                                 if self.smoke_frames.is_some() && capture.is_none() {
@@ -1155,6 +1322,9 @@ impl ApplicationHandler for App {
             self.auto_captured = true;
             self.capture_cursor();
         }
+        if positioned && std::mem::take(&mut self.smoke_menu) {
+            self.menu.toggle();
+        }
         if positioned && std::mem::take(&mut self.smoke_inventory) {
             if let Some(network) = &self.network
                 && let Ok(mut state) = network.shared.lock()
@@ -1206,7 +1376,7 @@ impl ApplicationHandler for App {
             if let Some(renderer) = &self.renderer {
                 renderer.window.request_redraw();
             }
-            self.next_frame = now + self.frame_period;
+            self.next_frame = now + self.redraw_period();
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
     }
@@ -1296,6 +1466,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         tab_held: false,
         smoke_tab: options.smoke_tab,
         smoke_inventory: options.smoke_inventory,
+        smoke_menu: options.smoke_menu,
         container_pointer: container_input::Pointer::default(),
         particles: particles::Particles::default(),
         particle_tick: 0,
@@ -1303,8 +1474,28 @@ fn main() -> Result<(), Box<dyn Error>> {
         world_epoch: 0,
         view_bobbing: options.view_bobbing,
         fov: options.fov,
-        pvp_hud: options.pvp_hud,
         metrics: pvp_metrics::Metrics::default(),
+        settings: {
+            // Validation runs use the defaults and never touch the file.
+            let mut settings = settings::Settings::load(
+                smoke_frames
+                    .is_none()
+                    .then(settings::default_path)
+                    .flatten(),
+            );
+            if options.pvp_hud {
+                settings.hud_mut(settings::HudKind::Fps).enabled = true;
+                settings.hud_mut(settings::HudKind::Cps).enabled = true;
+            }
+            settings
+        },
+        menu: menu::Menu::default(),
+        hud_rects: Vec::new(),
+        zoom: 1.0,
+        zoom_at: Instant::now(),
+        sprint_latched: false,
+        sneak_latched: false,
+        fullbright: false,
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {

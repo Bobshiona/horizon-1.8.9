@@ -196,9 +196,21 @@ fn position_random(x: i32, y: i32, z: i32) -> i64 {
 
 /// `WorldProvider.generateLightBrightnessTable` for the overworld, then a
 /// mid-gamma lightmap approximation. Rendering only; no simulation reads it.
+/// The Fullbright mod: `gammaSetting` far past "Bright", as fullbright
+/// mods set it, so every level renders near full light.
+pub static FULLBRIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn brightness(level: u8) -> f32 {
     let f = 1.0 - f32::from(level.min(15)) / 15.0;
     let base = (1.0 - f) / (f * 3.0 + 1.0);
+    if FULLBRIGHT.load(std::sync::atomic::Ordering::Relaxed) {
+        // EntityRenderer.updateLightmap with gamma 10: the ambient floor,
+        // then the gamma curve far past 1, clamped.
+        let floor = base * 0.96 + 0.03;
+        let lifted = 1.0 - (1.0 - floor).powi(4);
+        let gamma = 10.0;
+        return (floor * (1.0 - gamma) + lifted * gamma).clamp(0.0, 1.0) * 0.96 + 0.03;
+    }
     let lifted = 1.0 - (1.0 - base).powi(4);
     (base * 0.5 + lifted * 0.5) * 0.96 + 0.03
 }

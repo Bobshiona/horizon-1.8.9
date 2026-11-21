@@ -27,6 +27,7 @@ pub struct Renderer {
     /// See-through and depth-tested label vertices, reused between frames.
     label_vertices: [Vec<crate::terrain::Vertex>; 5],
     ui: Option<crate::ui::Pass>,
+    glass: crate::glass::GlassPass,
     pub layout: crate::ui::Layout,
     gui_scale: u32,
     fov: f32,
@@ -120,6 +121,7 @@ impl Renderer {
             registry.as_deref(),
             scene.as_ref(),
         );
+        let glass = crate::glass::GlassPass::new(&device, config.format);
         let mut renderer = Self {
             window,
             instance,
@@ -137,6 +139,7 @@ impl Renderer {
             entity_vertices: Vec::new(),
             label_vertices: Default::default(),
             ui,
+            glass,
             layout: crate::ui::Layout::new((size.width, size.height), 1.0, gui_scale),
             gui_scale,
             fov,
@@ -148,6 +151,38 @@ impl Renderer {
         };
         renderer.resize(size);
         Ok(renderer)
+    }
+
+    /// The world camera's vertical FOV (the zoom mod narrows it).
+    pub fn set_fov(&mut self, fov: f32) {
+        if fov.is_finite() && (fov - self.fov).abs() > 1e-4 {
+            self.fov = fov.clamp(1.0, 170.0);
+            if let Some(scene) = &mut self.scene {
+                scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
+            }
+        }
+    }
+
+    /// Vsync on (FIFO), or immediate presentation for uncapped frame rates.
+    pub fn set_vsync(&mut self, vsync: bool) {
+        let mode = if vsync
+            || !self
+                .surface
+                .get_capabilities(&self.adapter)
+                .present_modes
+                .contains(&wgpu::PresentMode::Immediate)
+        {
+            wgpu::PresentMode::Fifo
+        } else {
+            wgpu::PresentMode::Immediate
+        };
+        if self.config.present_mode != mode {
+            self.config.present_mode = mode;
+            if self.drawable {
+                self.surface.configure(&self.device, &self.config);
+            }
+            eprintln!("present_mode={mode:?}");
+        }
     }
 
     /// The interface draws in gamma space through a non-sRGB view.
@@ -192,6 +227,7 @@ impl Renderer {
         let skins = &self.skins;
         let skin = |uuid: u128| skins.get(&uuid).map(|binding| binding.skin);
         draw(&mut canvas, &registry, &skin);
+        let (glass, split) = canvas.take_glass();
         let (vertices, inverted, missing) = canvas.finish();
         pass.upload(
             &self.device,
@@ -200,6 +236,14 @@ impl Renderer {
             scene.entity_layers(),
             &inverted,
             &vertices,
+            split,
+        )?;
+        self.glass.upload(
+            &self.device,
+            &self.queue,
+            self.layout.factor,
+            (self.config.width, self.config.height),
+            [&glass[0], &glass[1]],
         )?;
         pass.load_pages(&self.queue, &registry.gui, &missing);
         Ok(())
@@ -570,6 +614,7 @@ impl Renderer {
                         self.registry.as_deref(),
                         self.scene.as_ref(),
                     );
+                    self.glass = crate::glass::GlassPass::new(&self.device, self.config.format);
                 }
                 self.resize(self.window.inner_size());
                 return Ok(false);
@@ -698,21 +743,28 @@ impl Renderer {
             });
             scene.draw_hand(&mut pass);
         }
-        if let Some(ui) = &self.ui {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Legacy interface"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &plain,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            ui.draw(&mut pass);
+        // Glass under the interface, the interface, then glass under the
+        // overlay (which frosts the interface too) and the overlay.
+        let copyable = texture.usage().contains(wgpu::TextureUsages::COPY_SRC);
+        for part in 0..2 {
+            self.glass
+                .encode(&mut encoder, part, texture, copyable, &view);
+            if let Some(ui) = &self.ui {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Legacy interface"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &plain,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                ui.draw_part(&mut pass, part);
+            }
         }
         self.queue.submit([encoder.finish()]);
         if let Some(path) = capture {

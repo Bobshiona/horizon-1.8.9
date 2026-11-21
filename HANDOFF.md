@@ -1054,3 +1054,36 @@ five-tick `blockHitDelay`. Regression `broken_blocks_are_removed_locally_and_ins
 failed first. Gate: 176 scoped tests (92 client, 2 login CLI, 1 assets, 6 auth, 18 physics,
 38 protocol, 19 world), strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release
 build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 38. Mods, liquid-glass menu and frame cap
+
+Section 37's break-prediction fix is `5f19ddeedb`.
+
+The owner lifted the earlier deferral of zoom, keystrokes and cosmetic polish and asked for a full PvP
+mod set with an Apple-style glass interface. First milestone:
+
+- **Glass renderer** (`glass.rs`, `glass.wgsl`): the finished frame is copied, blurred with a dual-Kawase
+  chain (half, quarter, eighth resolution, then back up) and sampled by rounded-rect panels with
+  edge refraction, vibrancy, tint, a specular rim and a soft shadow. Panels come in two layers: under
+  the interface (HUD cards) and under an overlay (`Canvas::overlay`), which re-copies the frame so menu
+  glass frosts the HUD too. Without a copyable drawable the panels fall back to tinted glass.
+- **Settings** (`settings.rs`): JSON at `~/Library/Application Support/Horizon 1.8.9/settings.json`,
+  written atomically; malformed values fall back to defaults. Smoke runs never read or write it.
+- **Mod menu** (`menu.rs`, Right Shift): cards with iOS-style switches for every mod, a frame-limit
+  card, Edit HUD (drag cards; Right Shift or Escape finishes) and Done. Escape closes it; it takes all
+  keys while open. `--smoke-menu` opens it for captures.
+- **HUD mods** (`hud_mods.rs`): keystrokes (WASD, mouse buttons with CPS, space), CPS, FPS, armour
+  status (`item_slot` with durability), potion effects (vanilla icons, names, `getDurationString`,
+  counted down client-side), coordinates with facing, and own tab-list ping. `--pvp-hud` now enables
+  the FPS and CPS cards; the old text overlay is gone.
+- **Gameplay mods**: smooth zoom on C (FOV x0.25, eased, look speed scaled), Toggle Sprint and Toggle
+  Sneak latches, Fullbright (a gamma-10 lightmap baked into a full remesh), and a frame cap: Display
+  (vsync), 60-360 or Unlimited (immediate presentation, no redraw wait).
+
+Hypixel-allowed mods only (no reach display, radar or auto-anything). Still to do: Apple system font
+(Core Text) for the menu, open/close animation, per-card settings (scale, colours), more mods
+(crosshair, block outline, hit colour, nick hider, scoreboard), and measured performance work.
+Regressions: settings round trip and atomic save, menu geometry and click/drag behaviour, glass vertex
+expansion, potion duration and facing formatting. Captures checked the menu over the world and the
+HUD cards. Gate: 182 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks,
+ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

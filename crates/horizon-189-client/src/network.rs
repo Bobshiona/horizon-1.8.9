@@ -105,6 +105,13 @@ pub struct Shared {
     /// local player's own breaks), for break particles.
     pub visuals: Vec<crate::particles::Event>,
     pub breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
+    /// Worn armour, helmet first, for the armour HUD.
+    pub armor: [Option<horizon_protocol_47::nbt::Item>; 4],
+    /// Active effects: ID, amplifier and remaining ticks (counted down each
+    /// tick as `PotionEffect.onUpdate` does on the client).
+    pub potions: Vec<(u8, i8, i32)>,
+    /// Rebuild every column (a lighting setting changed).
+    pub remesh: bool,
 }
 
 /// A server message for the window: chat, the action bar or completions.
@@ -529,6 +536,7 @@ fn run_actor(
     let mut controller = crate::gameplay::Controller::default();
     let mut game_mode = 0;
     let mut vitals = crate::gameplay::Vitals::default();
+    let mut potions: Vec<(u8, i8, i32)> = Vec::new();
     let mut hand = crate::hand::Tracked::default();
     let mut capabilities = entity_packets::Abilities {
         invulnerable: false,
@@ -740,6 +748,7 @@ fn run_actor(
                         inventory = crate::inventory::Inventory::default();
                         controller.reset_player();
                         vitals = crate::gameplay::Vitals::default();
+                        potions.clear();
                         player = Player::default();
                         // PlayerControllerMP.flipPlayer initializes the new player's yaw.
                         player.yaw = -180.0;
@@ -1101,6 +1110,8 @@ fn run_actor(
                                 _ => {}
                             }
                             apply_effect(&mut player, effect.effect, Some(effect.amplifier));
+                            potions.retain(|p| p.0 != effect.effect);
+                            potions.push((effect.effect, effect.amplifier, effect.duration));
                         }
                     }
                     play::Packet::Other { id: 0x1e, fields } => {
@@ -1115,6 +1126,7 @@ fn run_actor(
                                 _ => {}
                             }
                             apply_effect(&mut player, effect, None);
+                            potions.retain(|p| p.0 != effect);
                         }
                     }
                     play::Packet::Other { id: 0x02, fields } => {
@@ -1276,6 +1288,11 @@ fn run_actor(
                     })
                     .sum();
                 state.vitals = vitals;
+                for potion in &mut potions {
+                    potion.2 = potion.2.saturating_sub(1).max(0);
+                }
+                state.armor = std::array::from_fn(|i| inventory.player[5 + i].clone());
+                state.potions.clone_from(&potions);
                 if state.input.actions.is_empty() {
                     state.input.actions = std::mem::take(&mut input.actions);
                 }
@@ -1403,6 +1420,10 @@ fn run_actor(
         next_tick = now + tick - remainder;
         if positioned {
             let _ = mesher.send(MeshCommand::Focus(player.position));
+        }
+        if std::mem::take(&mut lock(shared)?.remesh) {
+            let keys: Vec<_> = read(world)?.columns().map(|(key, _)| key).collect();
+            let _ = mesher.send(MeshCommand::Dirty(keys));
         }
     }
     Ok(())
