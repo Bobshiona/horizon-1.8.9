@@ -9,7 +9,7 @@ use horizon_protocol_47::nbt::Item;
 use std::f32::consts::PI;
 
 /// The per-tick state the hand and camera interpolate between.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Tracked {
     /// `itemToRender`.
     pub item: Option<Item>,
@@ -27,6 +27,76 @@ pub struct Tracked {
     pub dead: Option<u32>,
     /// Ticks the held item has been in use.
     pub using: Option<u32>,
+    /// Previous and current `fovModifierHand`, eased each tick toward
+    /// `fov_modifier`.
+    pub fov: [f32; 2],
+}
+
+impl Default for Tracked {
+    fn default() -> Self {
+        Self {
+            item: None,
+            equip: [0.0; 2],
+            arm: [[0.0; 2]; 2],
+            walked: [0.0; 2],
+            camera: [[0.0; 2]; 2],
+            hurt: 0,
+            dead: None,
+            using: None,
+            // fovModifierHand starts at 1 (no change).
+            fov: [1.0; 2],
+        }
+    }
+}
+
+/// `AbstractClientPlayer.getFovModifier` (`bet.o`): flying widens by 1.1,
+/// then the movement-speed attribute against the walk speed (sprinting and
+/// Speed widen, Slowness narrows), and drawing a bow narrows by up to 15%.
+pub fn fov_modifier(flying: bool, speed: f64, walk_speed: f32, bow_ticks: Option<u32>) -> f32 {
+    let mut f = if flying { 1.1f32 } else { 1.0 };
+    f = (f64::from(f) * ((speed / f64::from(walk_speed) + 1.0) / 2.0)) as f32;
+    if walk_speed == 0.0 || !f.is_finite() {
+        f = 1.0;
+    }
+    if let Some(ticks) = bow_ticks {
+        let drawn = ticks as f32 / 20.0;
+        let drawn = if drawn > 1.0 { 1.0 } else { drawn * drawn };
+        f *= 1.0 - drawn * 0.15;
+    }
+    f
+}
+
+/// `ActiveRenderInfo.getBlockAtEntityViewpoint` for water: the eye's block,
+/// or the one above when the eye is over the liquid's surface.
+pub fn eye_in_water(world: &horizon_world_189::World, eye: [f64; 3]) -> bool {
+    let [x, y, z] = eye.map(|v| v.floor() as i32);
+    let water = |state: horizon_world_189::BlockState| matches!(state.block_id(), 8 | 9);
+    let Some(state) = world.block(x, y, z) else {
+        return false;
+    };
+    if !water(state) {
+        return false;
+    }
+    let level = state.metadata();
+    let percent = f32::from(if level >= 8 { 0 } else { level } + 1) / 9.0;
+    let surface = (y + 1) as f32 - (percent - 0.111_111_11);
+    if eye[1] as f32 >= surface {
+        return world.block(x, y + 1, z).is_some_and(water);
+    }
+    true
+}
+
+/// `EntityRenderer.getFOVModifier` for the world: the FOV setting times
+/// the eased modifier, narrowed while dying and by 60/70 under water.
+pub fn world_fov(setting: f32, state: &Tracked, partial: f32, in_water: bool) -> f32 {
+    let mut fov = setting * lerp(state.fov[0], state.fov[1], partial);
+    if let Some(dead) = state.dead {
+        fov /= (1.0 - 500.0 / (dead as f32 + partial + 500.0)) * 2.0 + 1.0;
+    }
+    if in_water {
+        fov = fov * 60.0 / 70.0;
+    }
+    fov
 }
 
 fn same_stack(a: &Item, b: &Item) -> bool {
@@ -36,7 +106,19 @@ fn same_stack(a: &Item, b: &Item) -> bool {
 impl Tracked {
     /// `ItemRenderer.updateEquippedItem`, `EntityPlayerSP`'s arm sway and the
     /// player's bobbing state, once per client tick.
-    pub fn tick(&mut self, held: Option<&Item>, player: &Player, using: Option<u32>, alive: bool) {
+    pub fn tick(
+        &mut self,
+        held: Option<&Item>,
+        player: &Player,
+        using: Option<u32>,
+        alive: bool,
+        walk_speed: f32,
+    ) {
+        // EntityRenderer.updateFovModifierHand.
+        let bow = using.filter(|_| held.is_some_and(|item| item.id == 261));
+        let target = fov_modifier(player.flying, player.speed.value(), walk_speed, bow);
+        self.fov[0] = self.fov[1];
+        self.fov[1] = (self.fov[1] + (target - self.fov[1]) * 0.5).clamp(0.1, 1.5);
         self.equip[0] = self.equip[1];
         let changed = match (&self.item, held) {
             (Some(a), Some(b)) => !same_stack(a, b),
@@ -592,22 +674,22 @@ mod tests {
             equip: [1.0; 2],
             ..Tracked::default()
         };
-        state.tick(Some(&sword), &player, None, true);
+        state.tick(Some(&sword), &player, None, true, 0.1);
         // A new stack lowers the hand 0.4 per tick before swapping.
         assert!((state.equip[1] - 0.6).abs() < 1e-6);
-        state.tick(Some(&sword), &player, None, true);
-        state.tick(Some(&sword), &player, None, true);
+        state.tick(Some(&sword), &player, None, true, 0.1);
+        state.tick(Some(&sword), &player, None, true, 0.1);
         assert_eq!(state.item.as_ref().map(|i| i.id), Some(276));
         // Then it rises 0.4 per tick back to fully equipped.
         for _ in 0..3 {
-            state.tick(Some(&sword), &player, None, true);
+            state.tick(Some(&sword), &player, None, true, 0.1);
         }
         assert!((state.equip[1] - 1.0).abs() < 1e-6);
         // Starting to block re-equips once.
-        state.tick(Some(&sword), &player, Some(0), true);
+        state.tick(Some(&sword), &player, Some(0), true, 0.1);
         assert_eq!(state.equip[1], 0.0);
         state.hurt();
-        state.tick(Some(&sword), &player, Some(1), true);
+        state.tick(Some(&sword), &player, Some(1), true, 0.1);
         assert_eq!(state.hurt, 9);
         assert_eq!(use_action(&sword), Some(UseAction::Block));
     }
@@ -626,6 +708,59 @@ mod tests {
         assert!((side - 1.7).abs() < 1e-5, "{side}");
         let rod = first_person_generated(346);
         assert!((rod.transform_vector3(Vec3::Y).length() - 1.7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn fov_widens_for_sprint_speed_and_flight_and_narrows_for_bows() {
+        assert_eq!(fov_modifier(false, 0.1, 0.1, None), 1.0);
+        // Sprinting multiplies speed by 1.3: (1.3 + 1) / 2.
+        assert!((fov_modifier(false, 0.13, 0.1, None) - 1.15).abs() < 1e-6);
+        assert!((fov_modifier(true, 0.1, 0.1, None) - 1.1).abs() < 1e-6);
+        assert_eq!(fov_modifier(false, 0.13, 0.0, None), 1.0);
+        // A fully drawn bow (20 ticks) narrows by 15%; ten ticks by 3.75%.
+        assert!((fov_modifier(false, 0.1, 0.1, Some(20)) - 0.85).abs() < 1e-6);
+        assert!((fov_modifier(false, 0.1, 0.1, Some(10)) - 0.9625).abs() < 1e-6);
+        // The hand eases halfway each tick and the world FOV interpolates.
+        let mut state = Tracked {
+            fov: [1.0; 2],
+            ..Tracked::default()
+        };
+        let mut player = Player::default();
+        player.speed.apply(horizon_physics_189::player::Modifier {
+            uuid: horizon_physics_189::player::SPRINT_UUID,
+            amount: 0.3,
+            operation: 2,
+        });
+        state.tick(None, &player, None, true, 0.1);
+        assert!((state.fov[1] - 1.075).abs() < 1e-6);
+        assert!((world_fov(70.0, &state, 0.5, false) - 70.0 * 1.0375).abs() < 1e-4);
+        assert!((world_fov(70.0, &state, 1.0, true) - 1.075 * 60.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_eye_is_under_water_below_the_surface_only() {
+        use horizon_world_189::{BlockState, ColumnData, ColumnUpdate, World};
+        let mut world = World::default();
+        world.apply(ColumnUpdate::Data {
+            x: 0,
+            z: 0,
+            full: true,
+            data: Box::new(ColumnData {
+                sections: Default::default(),
+                biomes: None,
+            }),
+        });
+        assert!(!eye_in_water(&world, [0.5, 1.5, 0.5]));
+        // Still water (level 0): its surface sits 1/9 - 1/9 = 0 below the top.
+        world.set_block(0, 1, 0, BlockState(9 << 4));
+        assert!(eye_in_water(&world, [0.5, 1.5, 0.5]));
+        assert!(eye_in_water(&world, [0.5, 1.99, 0.5]));
+        assert!(!eye_in_water(&world, [0.5, 2.0, 0.5]));
+        // Flowing water at level 7 is shallow: above its surface is air.
+        world.set_block(0, 1, 0, BlockState((8 << 4) | 7));
+        assert!(eye_in_water(&world, [0.5, 1.05, 0.5]));
+        assert!(!eye_in_water(&world, [0.5, 1.5, 0.5]));
+        assert!(!eye_in_water(&world, [40.5, 1.5, 0.5]), "unloaded");
     }
 
     #[test]

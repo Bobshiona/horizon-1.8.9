@@ -1464,6 +1464,7 @@ fn run_actor(
                     &player,
                     controller.using.then_some(controller.use_ticks),
                     vitals.health > 0.0,
+                    capabilities.walk_speed,
                 );
                 state.hand = hand.clone();
                 // `RenderGlobal.drawBlockDamageTexture`'s list, own dig last.

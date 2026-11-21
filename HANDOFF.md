@@ -1366,3 +1366,22 @@ model's feet land on the box point, a player's head 54 pixels higher, +x to the 
 facing the viewer nearer. A capture showed the model holding a sword and turned toward the mouse.
 Gate: 218 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64
 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 49. Sprint, Speed, flight and bow FOV
+
+Section 48's inventory model is `879856e9f1`.
+
+The world FOV never changed with movement. Ported from the jar: `AbstractClientPlayer.getFovModifier`
+(`bet.o`) starts at 1, times 1.1 when flying, times (movement speed / walk speed + 1) / 2, falling
+back to 1 for a zero walk speed or a non-finite result, then for a bow in use times 1 - 0.15 x
+min(1, (ticks / 20)^2). `EntityRenderer.updateFovModifierHand` (`bfk.l`) eases the hand modifier
+halfway toward it each tick, clamped to 0.1 to 1.5, and `getFOVModifier` (`bfk.a(float, boolean)`)
+multiplies the FOV setting by it at the partial tick, divides while dying by
+(1 - 500 / (deathTime + partial + 500)) x 2 + 1, and scales by 60/70 when the eye is under water
+(`getBlockAtEntityViewpoint`, including the liquid-surface check). The hand keeps its fixed 70.
+`hand::fov_modifier`, `Tracked.fov` (starting at 1), `hand::world_fov` and `hand::eye_in_water`; the
+walk speed comes from S39 and the speed attribute already carries sprint and potion modifiers. The
+zoom mod multiplies after. Regressions: sprint 1.15, flight 1.1, bow draw 0.85 and 0.9625, zero walk
+speed, the halfway easing and interpolation, under-water scaling and the surface check.
+
+Gate: 220 tests.

@@ -1317,7 +1317,15 @@ impl ApplicationHandler for App {
                                 hand::camera_effects(&snapshot.hand, partial, self.view_bobbing);
                             renderer.set_camera_effects(effects);
                         }
-                        renderer.set_fov(self.fov * self.zoom);
+                        let in_water = self
+                            .network
+                            .as_ref()
+                            .and_then(|n| n.world.try_read().ok())
+                            .is_some_and(|world| hand::eye_in_water(&world, pose.position));
+                        let fov = snapshot.as_ref().map_or(self.fov, |s| {
+                            hand::world_fov(self.fov, &s.hand, partial, in_water)
+                        });
+                        renderer.set_fov(fov * self.zoom);
                         renderer.set_pose(pose);
                         let empty = scoreboard::Scoreboard::default();
                         let (board, own_name) = snapshot
