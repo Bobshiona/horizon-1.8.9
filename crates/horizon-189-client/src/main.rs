@@ -30,6 +30,7 @@ mod scene;
 #[cfg(test)]
 mod scene_tests;
 mod scoreboard;
+mod screenshot;
 mod settings;
 mod skins;
 mod sysfont;
@@ -119,6 +120,13 @@ struct App {
     view_bobbing: bool,
     /// F1, F3 and F5.
     view: view::View,
+    /// F2: where screenshots go, and the worker's results for chat.
+    screenshot_dir: Option<std::path::PathBuf>,
+    screenshots: (
+        std::sync::mpsc::Sender<Result<String, String>>,
+        std::sync::mpsc::Receiver<Result<String, String>>,
+    ),
+    smoke_screenshot: bool,
     fov: f32,
     metrics: pvp_metrics::Metrics,
     settings: settings::Settings,
@@ -725,6 +733,14 @@ impl ApplicationHandler for App {
                 }
                 if let PhysicalKey::Code(key) = event.physical_key {
                     let pressed = event.state == ElementState::Pressed;
+                    // `dispatchKeypresses`: F2 works over any screen.
+                    if pressed
+                        && !event.repeat
+                        && key == KeyCode::F2
+                        && let Some(renderer) = &mut self.renderer
+                    {
+                        renderer.screenshot = true;
+                    }
                     if self.launcher_shown() {
                         if pressed {
                             if key == KeyCode::KeyQ && self.modifiers.super_key() {
@@ -1316,6 +1332,15 @@ impl ApplicationHandler for App {
                     }
                     self.particle_tick = now;
                 }
+                while let Ok(result) = self.screenshots.1.try_recv() {
+                    let text = screenshot::message(&result);
+                    eprintln!("SCREENSHOT {text}");
+                    if let Some(registry) = self.renderer.as_ref().and_then(|r| r.registry.clone())
+                    {
+                        let tick = self.tick();
+                        self.chat.notice(&registry.gui, &text, tick);
+                    }
+                }
                 if let Some(renderer) = &mut self.renderer {
                     if let Some((pose, partial, entities)) = pose {
                         if let Some(snapshot) = &snapshot {
@@ -1573,9 +1598,31 @@ impl ApplicationHandler for App {
                         .is_some_and(|limit| self.frames + 1 >= limit)
                         && (self.network.is_none() || renderer.world_ready());
                     let capture = if last { self.capture.take() } else { None };
+                    if self
+                        .smoke_frames
+                        .is_some_and(|limit| self.frames + 120 >= limit)
+                        && (self.network.is_none() || renderer.world_ready())
+                        && std::mem::take(&mut self.smoke_screenshot)
+                    {
+                        renderer.screenshot = true;
+                    }
                     let offscreen = renderer.offscreen_frames;
                     match renderer.render(capture.as_deref(), self.smoke_frames.is_some()) {
                         Ok(true) => {
+                            if let Some(shot) = renderer.shot.take() {
+                                let done = self.screenshots.0.clone();
+                                match (shot, &self.screenshot_dir) {
+                                    (Ok(pixels), Some(dir)) => {
+                                        screenshot::save(pixels, dir.clone(), done);
+                                    }
+                                    (Ok(_), None) => {
+                                        let _ = done.send(Err("no home folder".into()));
+                                    }
+                                    (Err(error), _) => {
+                                        let _ = done.send(Err(error));
+                                    }
+                                }
+                            }
                             if self.network.is_none() || renderer.world_ready() {
                                 self.frames += 1;
                                 if renderer.offscreen_frames == offscreen {
@@ -1894,6 +1941,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         view: view::View {
             hide_gui: options.smoke_hide_gui,
         },
+        screenshot_dir: options
+            .smoke_screenshot
+            .clone()
+            .or_else(screenshot::directory),
+        screenshots: std::sync::mpsc::channel(),
+        smoke_screenshot: options.smoke_screenshot.is_some(),
         fov: options.fov,
         metrics: pvp_metrics::Metrics::default(),
         settings: {

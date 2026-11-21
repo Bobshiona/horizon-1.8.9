@@ -1403,3 +1403,22 @@ the world. Regression: the toggle only without a screen, the overlay returning w
 world GUI staying off.
 
 Gate: 221 tests.
+
+## 51. F2 screenshots
+
+Section 50's F1 is `a17d749e30`.
+
+F2 did nothing. From `Minecraft.dispatchKeypresses` (`ave.Z`, which runs over any screen) and
+`ScreenShotHelper` (`avj`): the frame goes to `screenshots/` as RGB PNG named
+`yyyy-MM-dd_HH.mm.ss.png` in local time, then `_2`, `_3`… while the name is taken, and chat shows
+`Saved screenshot as` with the file name underlined (or `Couldn't save screenshot: <reason>`). The
+folder is `screenshots/` under the app's Application Support folder. The readback stays on the frame
+(`Renderer::read_frame`, shared with `--capture`); encoding and writing run on a worker thread so
+a screenshot never stalls a fight, and the result reaches chat through a channel. Local time comes
+from `date +%z` since std has no time zones (UTC if that fails). Clicking the name to open the file
+is not done yet. `--smoke-screenshot DIR` takes one near the end of a smoke run: the bench capture
+showed the chat line and the folder held a 1920x1200 RGB PNG with the right local time.
+Regressions: the stamp (epoch, a leap day, a Pacific offset), the free-name suffixes, the message,
+and an opaque RGB write.
+
+Gate: 223 tests.

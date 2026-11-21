@@ -33,6 +33,9 @@ pub struct Renderer {
     fov: f32,
     /// Name tags: off while F1 hides the GUI (`Minecraft.isGuiEnabled`).
     pub names: bool,
+    /// F2: read this frame back into `shot`.
+    pub screenshot: bool,
+    pub shot: Option<Result<crate::screenshot::Pixels, String>>,
     offscreen: Option<wgpu::Texture>,
     pub offscreen_frames: u64,
     /// `--bench`: wait for each frame's GPU work and keep its duration.
@@ -154,6 +157,8 @@ impl Renderer {
             offscreen: None,
             offscreen_frames: 0,
             names: true,
+            screenshot: false,
+            shot: None,
             bench: false,
             gpu_time: std::time::Duration::ZERO,
             acquire_wait: std::time::Duration::ZERO,
@@ -588,12 +593,11 @@ impl Renderer {
         }
     }
 
-    /// Read the presented frame back and write it as an sRGB PNG.
-    fn capture(
+    /// Read the presented frame back as tightly packed RGBA.
+    fn read_frame(
         &self,
         texture: &wgpu::Texture,
-        path: &std::path::Path,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<crate::screenshot::Pixels, Box<dyn Error>> {
         if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
             return Err("Surface does not allow frame capture".into());
         }
@@ -640,16 +644,26 @@ impl Renderer {
         }
         drop(data);
         buffer.unmap();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut encoder = png::Encoder::new(std::fs::File::create(path)?, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.write_header()?.write_image_data(&rgba)?;
+        Ok(crate::screenshot::Pixels {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    /// Read the presented frame back and write it as an sRGB PNG.
+    fn capture(
+        &self,
+        texture: &wgpu::Texture,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn Error>> {
+        let pixels = self.read_frame(texture)?;
+        crate::screenshot::write_png(path, &pixels, false)?;
         eprintln!(
-            "FRAME_CAPTURED path={} size={width}x{height}",
-            path.display()
+            "FRAME_CAPTURED path={} size={}x{}",
+            path.display(),
+            pixels.width,
+            pixels.height
         );
         Ok(())
     }
@@ -913,6 +927,9 @@ impl Renderer {
         }
         if let Some(path) = capture {
             self.capture(texture, path)?;
+        }
+        if std::mem::take(&mut self.screenshot) {
+            self.shot = Some(self.read_frame(texture).map_err(|e| e.to_string()));
         }
         if let Some(frame) = frame {
             self.window.pre_present_notify();
