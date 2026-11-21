@@ -31,6 +31,8 @@ pub struct Options {
     pub smoke_menu: bool,
     /// Validation only: uncapped presentation with per-frame GPU timing.
     pub bench: bool,
+    /// Validation only: look this many degrees down once in the world.
+    pub smoke_pitch: Option<f32>,
     /// Vanilla `viewBobbing` (on by default).
     pub view_bobbing: bool,
     pub help: bool,
@@ -73,6 +75,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-inventory             With --smoke-frames, open the inventory over a slot\n\
     --smoke-menu                  With --smoke-frames, open the mod menu\n\
     --bench                       With --smoke-frames, time uncapped CPU and GPU frames\n\
+    --smoke-pitch DEGREES         With --smoke-frames, look down (or up, negative) once in the world\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
@@ -195,6 +198,13 @@ impl Options {
                 "--smoke-inventory" => options.smoke_inventory = true,
                 "--smoke-menu" => options.smoke_menu = true,
                 "--bench" => options.bench = true,
+                "--smoke-pitch" => {
+                    let pitch: f32 = value()?.parse()?;
+                    if !(-90.0..=90.0).contains(&pitch) {
+                        return Err("--smoke-pitch must be between -90 and 90".into());
+                    }
+                    options.smoke_pitch = Some(pitch);
+                }
                 "--no-view-bobbing" => options.view_bobbing = false,
                 "--gui-scale" => {
                     let scale: u32 = value()?.parse()?;
@@ -236,11 +246,15 @@ impl Options {
         {
             return Err("--smoke-chat requires --smoke-frames and --server".into());
         }
-        if (options.smoke_tab || options.smoke_inventory || options.smoke_menu || options.bench)
+        if (options.smoke_tab
+            || options.smoke_inventory
+            || options.smoke_menu
+            || options.bench
+            || options.smoke_pitch.is_some())
             && options.smoke_frames.is_none()
         {
             return Err(
-                "--smoke-tab, --smoke-inventory, --smoke-menu and --bench require --smoke-frames"
+                "--smoke-tab, --smoke-inventory, --smoke-menu, --smoke-pitch and --bench require --smoke-frames"
                     .into(),
             );
         }
@@ -412,6 +426,10 @@ mod tests {
         assert!(parse(&["--bench"]).is_err());
         let options = parse(&["--smoke-frames", "10", "--bench"]).expect("bench smoke");
         assert!(options.bench);
+        assert!(parse(&["--smoke-pitch", "30"]).is_err());
+        assert!(parse(&["--smoke-frames", "10", "--smoke-pitch", "91"]).is_err());
+        let tilted = parse(&["--smoke-frames", "10", "--smoke-pitch", "30"]).expect("pitch");
+        assert_eq!(tilted.smoke_pitch, Some(30.0));
     }
 
     #[test]

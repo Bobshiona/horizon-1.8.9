@@ -93,6 +93,8 @@ pub struct Controller {
     pub edits: Vec<([i32; 3], horizon_world_189::BlockState)>,
     /// `PlayerCapabilities.disableDamage`, from S39.
     pub invulnerable: bool,
+    /// The last tick's `objectMouseOver` was an entity (no block outline).
+    pub aiming_entity: bool,
     raycaster: raycast::Raycaster,
 }
 
@@ -215,6 +217,7 @@ impl Controller {
             player.pitch,
             game_mode == 1,
         );
+        self.aiming_entity = matches!(hit, Some(Hit::Entity { .. }));
         let mut use_pressed = false;
         while let Some(action) = input.actions.pop_front() {
             match action {

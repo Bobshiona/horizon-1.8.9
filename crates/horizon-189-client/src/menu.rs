@@ -18,6 +18,7 @@ pub enum Entry {
     Fullbright,
     ScoreboardNumbers,
     Crosshair,
+    BlockOutline,
     FpsLimit,
 }
 
@@ -34,6 +35,7 @@ fn entries() -> Vec<Entry> {
         Entry::Fullbright,
         Entry::ScoreboardNumbers,
         Entry::Crosshair,
+        Entry::BlockOutline,
         Entry::FpsLimit,
     ]);
     list
@@ -50,11 +52,13 @@ impl Entry {
             Entry::Fullbright => "Fullbright",
             Entry::ScoreboardNumbers => "Scoreboard Numbers",
             Entry::Crosshair => "Crosshair",
+            Entry::BlockOutline => "Block Outline",
             Entry::FpsLimit => "Frame Limit",
         }
     }
 
-    /// A switch state, or `None` for value cards (crosshair, frame limit).
+    /// A switch state, or `None` for value cards (crosshair, outline, frame
+    /// limit).
     pub fn enabled(self, settings: &Settings) -> Option<bool> {
         let t = &settings.toggles;
         Some(match self {
@@ -65,11 +69,15 @@ impl Entry {
             Entry::ToggleSneak => t.toggle_sneak,
             Entry::Fullbright => t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers,
-            Entry::Crosshair | Entry::FpsLimit => return None,
+            Entry::Crosshair | Entry::BlockOutline | Entry::FpsLimit => return None,
         })
     }
 
     pub fn value(self, settings: &Settings) -> String {
+        if self == Entry::BlockOutline {
+            let styles = crate::outline::STYLES;
+            return styles[usize::from(settings.toggles.outline) % styles.len()].to_owned();
+        }
         if self == Entry::Crosshair {
             return CROSSHAIRS[usize::from(settings.toggles.crosshair) % CROSSHAIRS.len()]
                 .to_owned();
@@ -96,6 +104,9 @@ impl Entry {
             Entry::Fullbright => t.fullbright = !t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers = !t.scoreboard_numbers,
             Entry::Crosshair => t.crosshair = (t.crosshair + 1) % CROSSHAIRS.len() as u8,
+            Entry::BlockOutline => {
+                t.outline = (t.outline + 1) % crate::outline::STYLES.len() as u8;
+            }
             Entry::FpsLimit => {
                 let at = FPS_LIMITS
                     .iter()
@@ -598,6 +609,13 @@ mod tests {
             })
             .collect();
         assert_eq!(styles, ["Cross", "Dot", "Vanilla", "Cross"]);
+        let outlines: Vec<String> = (0..4)
+            .map(|_| {
+                menu.click(layout, centre(Entry::BlockOutline), &mut settings);
+                Entry::BlockOutline.value(&settings)
+            })
+            .collect();
+        assert_eq!(outlines, ["Thick", "White", "Off", "Vanilla"]);
     }
 
     #[test]

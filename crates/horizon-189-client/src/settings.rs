@@ -100,6 +100,8 @@ pub struct Toggles {
     pub scoreboard_numbers: bool,
     /// Crosshair style: 0 vanilla, 1 gapped cross, 2 dot.
     pub crosshair: u8,
+    /// Block outline style (`outline::STYLES`); 0 is vanilla's.
+    pub outline: u8,
 }
 
 /// Crosshair styles the menu cycles through.
@@ -116,6 +118,7 @@ impl Default for Toggles {
             fps_limit: 0,
             scoreboard_numbers: true,
             crosshair: 0,
+            outline: 0,
         }
     }
 }
@@ -217,6 +220,11 @@ impl Settings {
                     .and_then(Value::as_u64)
                     .filter(|&v| v < CROSSHAIRS.len() as u64)
                     .map_or(d.crosshair, |v| v as u8),
+                outline: t
+                    .get("outline")
+                    .and_then(Value::as_u64)
+                    .filter(|&v| v < crate::outline::STYLES.len() as u64)
+                    .map_or(d.outline, |v| v as u8),
             };
         }
         settings
@@ -244,6 +252,7 @@ impl Settings {
                 "fps_limit": t.fps_limit,
                 "scoreboard_numbers": t.scoreboard_numbers,
                 "crosshair": t.crosshair,
+                "outline": t.outline,
             },
         });
         serde_json::to_string_pretty(&root).unwrap_or_default()
@@ -277,6 +286,7 @@ mod tests {
         settings.toggles.toggle_sprint = true;
         settings.toggles.scoreboard_numbers = false;
         settings.toggles.crosshair = 2;
+        settings.toggles.outline = 3;
         let parsed = Settings::parse(&settings.to_json());
         assert_eq!(parsed.hud, settings.hud);
         assert_eq!(parsed.toggles, settings.toggles);
@@ -285,8 +295,8 @@ mod tests {
         let odd = Settings::parse(r#"{"hud":{"fps":{"x":7,"y":"no","scale":100}}}"#);
         let fps = odd.hud(HudKind::Fps);
         assert_eq!((fps.x, fps.y, fps.scale), (1.0, 0.02, 3.0));
-        let style = Settings::parse(r#"{"toggles":{"crosshair":9}}"#);
-        assert_eq!(style.toggles.crosshair, 0);
+        let style = Settings::parse(r#"{"toggles":{"crosshair":9,"outline":4}}"#);
+        assert_eq!((style.toggles.crosshair, style.toggles.outline), (0, 0));
         assert!(style.toggles.scoreboard_numbers);
     }
 

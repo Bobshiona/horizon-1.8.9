@@ -20,6 +20,7 @@ mod menu;
 mod models;
 mod network;
 mod options;
+mod outline;
 mod particles;
 mod pvp_metrics;
 mod renderer;
@@ -96,6 +97,7 @@ struct App {
     smoke_tab: bool,
     smoke_inventory: bool,
     smoke_menu: bool,
+    smoke_pitch: Option<f32>,
     bench: bool,
     bench_gpu: frame_stats::FrameStats,
     bench_cpu: frame_stats::FrameStats,
@@ -120,6 +122,10 @@ struct App {
     /// The fullbright state the terrain was last meshed with.
     fullbright: bool,
     menu: menu::Menu,
+    /// Per-frame block targeting for the outline (no entities: the tick's
+    /// own ray says when an entity is aimed at).
+    selector: horizon_physics_189::raycast::Raycaster,
+    no_entities: horizon_world_189::entities::Entities,
     /// HUD card rectangles from the last frame, for the layout editor.
     hud_rects: Vec<(settings::HudKind, [f32; 4])>,
 }
@@ -149,6 +155,7 @@ struct Snapshot {
     armor: [Option<horizon_protocol_47::nbt::Item>; 4],
     potions: Vec<(u8, i8, i32)>,
     current: [f64; 3],
+    aiming_entity: bool,
 }
 
 impl App {
@@ -1016,6 +1023,7 @@ impl ApplicationHandler for App {
                         armor: s.armor.clone(),
                         potions: s.potions.clone(),
                         current: s.current,
+                        aiming_entity: s.aiming_entity,
                     })
                 });
                 if let Some(s) = &snapshot {
@@ -1155,6 +1163,34 @@ impl ApplicationHandler for App {
                                     .map_or(0.0, |v| ((f32::from(v) + partial) / 6.0).min(1.0)),
                             }
                         });
+                        // EntityRenderer.getMouseOver for the outline, each frame:
+                        // only where vanilla draws it (players who may edit, not
+                        // while aiming at an entity).
+                        let outline = crate::outline::style(self.settings.toggles.outline)
+                            .zip(snapshot.as_ref())
+                            .filter(|(_, s)| matches!(s.game_mode, 0 | 1) && !s.aiming_entity)
+                            .and_then(|(style, s)| {
+                                let world = self.network.as_ref()?.world.try_read().ok()?;
+                                let hit = self.selector.select(
+                                    &world,
+                                    &self.no_entities,
+                                    pose.position,
+                                    pose.yaw,
+                                    pose.pitch,
+                                    s.game_mode == 1,
+                                );
+                                let Some(horizon_physics_189::raycast::Hit::Block { at, .. }) = hit
+                                else {
+                                    return None;
+                                };
+                                let bounds =
+                                    horizon_physics_189::raycast::selection_box(&world, at)?;
+                                Some((
+                                    horizon_physics_189::shapes::lo(bounds),
+                                    horizon_physics_189::shapes::hi(bounds),
+                                    style,
+                                ))
+                            });
                         if let Err(error) = renderer.set_entities(
                             &entities,
                             partial,
@@ -1164,6 +1200,7 @@ impl ApplicationHandler for App {
                             angler.as_ref(),
                             snapshot.as_ref().map_or(&[][..], |s| &s.cracks),
                             &extra,
+                            outline,
                         ) {
                             self.fail(event_loop, error);
                             return;
@@ -1360,6 +1397,13 @@ impl ApplicationHandler for App {
             self.auto_captured = true;
             self.capture_cursor();
         }
+        if positioned
+            && let Some(pitch) = self.smoke_pitch.take()
+            && let Some(network) = &self.network
+            && let Ok(mut shared) = network.shared.lock()
+        {
+            shared.pitch = pitch;
+        }
         if positioned && std::mem::take(&mut self.smoke_menu) {
             self.menu.toggle();
         }
@@ -1505,6 +1549,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_tab: options.smoke_tab,
         smoke_inventory: options.smoke_inventory,
         smoke_menu: options.smoke_menu,
+        smoke_pitch: options.smoke_pitch,
         bench: options.bench,
         bench_gpu: Default::default(),
         bench_cpu: Default::default(),
@@ -1533,6 +1578,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             settings
         },
         menu: menu::Menu::default(),
+        selector: Default::default(),
+        no_entities: Default::default(),
         hud_rects: Vec::new(),
         zoom: 1.0,
         zoom_at: Instant::now(),

@@ -5,7 +5,7 @@ use crate::{
     shapes::{bb, collision_boxes, expand, hi, lo},
     trig,
 };
-use horizon_world_189::{World, entities::Entities};
+use horizon_world_189::{BlockState, World, entities::Entities};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
@@ -61,6 +61,49 @@ pub fn intercept(bounds: Aabb, start: [f64; 3], delta: [f64; 3]) -> Option<(f64,
     best
 }
 
+/// Boxes the look ray can hit at `at`: the collision boxes, or the inset
+/// legacy bounds of plants and signs, which have no collision box.
+fn target_boxes(world: &World, at: [i32; 3], state: BlockState, area: Aabb, out: &mut Vec<Aabb>) {
+    out.clear();
+    collision_boxes(world, at, state, area, out);
+    let id = state.block_id();
+    if out.is_empty()
+        && matches!(id, 6 | 30..=32 | 37..=40 | 50 | 59 | 63 | 68 | 83 | 104..=106 | 115 | 141 | 142 | 175..=177)
+    {
+        let [x, y, z] = at.map(f64::from);
+        out.push(bb([x + 0.1, y, z + 0.1], [x + 0.9, y + 1.0, z + 0.9]));
+    }
+}
+
+/// `Block.getSelectedBoundingBox` for the outline: the union of the
+/// targetable boxes, with fences, walls and fence gates one block tall as
+/// their selection bounds are (their collision is 1.5). `None` for air,
+/// liquids and unloaded cells.
+pub fn selection_box(world: &World, at: [i32; 3]) -> Option<Aabb> {
+    let state = world.block(at[0], at[1], at[2])?;
+    let id = state.block_id();
+    if id == 0 || matches!(id, 8..=11) {
+        return None;
+    }
+    let [x, y, z] = at.map(f64::from);
+    let area = expand(bb([x, y, z], [x + 1.0, y + 1.0, z + 1.0]), 1.0, 1.0, 1.0);
+    let mut boxes = Vec::new();
+    target_boxes(world, at, state, area, &mut boxes);
+    let first = *boxes.first()?;
+    let (mut low, mut high) = (lo(first), hi(first));
+    for bounds in &boxes[1..] {
+        let (l, h) = (lo(*bounds), hi(*bounds));
+        for axis in 0..3 {
+            low[axis] = low[axis].min(l[axis]);
+            high[axis] = high[axis].max(h[axis]);
+        }
+    }
+    if matches!(id, 85 | 107 | 113 | 139 | 183..=192) {
+        high[1] = high[1].min(y + 1.0);
+    }
+    Some(bb(low, high))
+}
+
 #[derive(Default)]
 pub struct Raycaster {
     boxes: Vec<Aabb>,
@@ -100,18 +143,9 @@ impl Raycaster {
                     if id == 0 || matches!(id, 8..=11) {
                         continue;
                     }
-                    boxes.clear();
-                    collision_boxes(world, at, state, area, boxes);
                     // Plants and wall/standing signs have selection bounds despite a
-                    // null collision box. Use their legacy inset plant/sign bounds.
-                    if boxes.is_empty()
-                        && matches!(id,6|30..=32|37..=40|50|59|63|68|83|104..=106|115|141|142|175..=177)
-                    {
-                        boxes.push(bb(
-                            [f64::from(x) + 0.1, f64::from(y), f64::from(z) + 0.1],
-                            [f64::from(x) + 0.9, f64::from(y) + 1.0, f64::from(z) + 0.9],
-                        ));
-                    }
+                    // null collision box: their legacy inset plant/sign bounds.
+                    target_boxes(world, at, state, area, boxes);
                     for &bounds in boxes.iter() {
                         if let Some((t, face)) = intercept(bounds, eye, delta)
                             && (t < nearest || hit.is_none())
@@ -188,6 +222,47 @@ mod tests {
     use super::*;
     use horizon_protocol_47::entities::EntityPacket;
     use horizon_world_189::{BlockState, ColumnData, ColumnUpdate};
+    #[test]
+    fn selection_boxes_follow_block_bounds() {
+        let mut world = World::default();
+        world.apply(ColumnUpdate::Data {
+            x: 0,
+            z: 0,
+            full: true,
+            data: Box::new(ColumnData {
+                sections: Default::default(),
+                biomes: None,
+            }),
+        });
+        let corners = |world: &World, at| selection_box(world, at).map(|b| (lo(b), hi(b)));
+        assert_eq!(corners(&world, [1, 1, 1]), None, "air");
+        world.set_block(1, 1, 1, BlockState(1 << 4));
+        assert_eq!(
+            corners(&world, [1, 1, 1]),
+            Some(([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]))
+        );
+        // A bottom stone slab is half a block.
+        world.set_block(3, 1, 1, BlockState(44 << 4));
+        assert_eq!(
+            corners(&world, [3, 1, 1]),
+            Some(([3.0, 1.0, 1.0], [4.0, 1.5, 2.0]))
+        );
+        // A lone fence post: its 1.5-tall collision, selected one block tall.
+        world.set_block(5, 1, 5, BlockState(85 << 4));
+        let (low, high) = corners(&world, [5, 1, 5]).unwrap();
+        assert_eq!((low[1], high[1]), (1.0, 2.0));
+        assert!(low[0] > 5.0 && high[0] < 6.0);
+        // Tall grass has no collision but the inset plant bounds.
+        world.set_block(7, 1, 7, BlockState((31 << 4) | 1));
+        assert_eq!(
+            corners(&world, [7, 1, 7]),
+            Some(([7.1, 1.0, 7.1], [7.9, 2.0, 7.9]))
+        );
+        world.set_block(9, 1, 9, BlockState(9 << 4));
+        assert_eq!(corners(&world, [9, 1, 9]), None, "water");
+        assert_eq!(corners(&world, [40, 1, 40]), None, "unloaded");
+    }
+
     #[test]
     fn blocks_occlude_entities_and_survival_reach_stays_three() {
         let mut world = World::default();

@@ -285,6 +285,7 @@ impl Renderer {
         angler: Option<&crate::models::Angler>,
         cracks: &[([i32; 3], horizon_world_189::BlockState, u8)],
         extra: &[crate::terrain::Vertex],
+        outline: Option<([f64; 3], [f64; 3], crate::outline::Style)>,
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
             return Ok(());
@@ -405,6 +406,19 @@ impl Renderer {
                 own_name,
                 &in_view,
             );
+        }
+        if let Some((min, max, style)) = outline {
+            let origin = scene.origin();
+            let local = |p: [f64; 3]| {
+                glam::Vec3::from_array(std::array::from_fn(|axis| {
+                    (p[axis] - origin[axis] as f64) as f32
+                }))
+            };
+            let eye = local(self.pose.position);
+            // One point's world size a block away, at the vertical FOV.
+            let points = self.config.height as f32 / self.window.scale_factor() as f32;
+            let pixel = 2.0 * (self.fov.to_radians() * 0.5).tan() / points.max(1.0);
+            crate::outline::outline(&mut tested, local(min), local(max), eye, pixel, style);
         }
         let result = scene
             .set_entities(&self.device, &self.queue, &vertices)

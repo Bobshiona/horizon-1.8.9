@@ -112,6 +112,8 @@ pub struct Shared {
     pub swing: Option<u8>,
     pub using_item: bool,
     pub game_mode: u8,
+    /// The local player aims at an entity, so no block outline is drawn.
+    pub aiming_entity: bool,
     pub vitals: crate::gameplay::Vitals,
     pub yaw: f32,
     pub pitch: f32,
@@ -1482,6 +1484,7 @@ fn run_actor(
                         state.cracks.push((at, block, stage));
                     }
                 }
+                state.aiming_entity = controller.aiming_entity;
                 if state.effects.len() < 64 {
                     state.effects.append(&mut controller.effects);
                 }

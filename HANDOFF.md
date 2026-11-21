@@ -1214,3 +1214,33 @@ the box's margin at the edge, always-drawn large mobs and bobbers, and partial-t
 A capture inside the crowd showed no missing entities at the screen edges. Gate: 201 scoped tests,
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 43. Block selection outline
+
+Section 42's entity culling is `24b17db3b8`.
+
+The client drew no selection box. It now does `RenderGlobal.drawSelectionBoundingBox`: the targeted
+block's selection box grown by 0.002, black at 0.4 alpha, two points wide, depth-tested, after the
+world (with the depth-tested labels, in gamma space). Metal has no wide lines, so each of the twelve
+edges is a camera-facing quad whose width stays constant on screen (`outline.rs`); edges are pulled
+0.3% toward the eye so the half of a quad that dips behind a face at grazing angles still passes.
+
+- **Targeting**: the window thread casts `EntityRenderer.getMouseOver`'s block ray every frame from
+  the interpolated eye (`try_read` on the world, so it never waits on the network thread), so the
+  box follows the mouse at frame rate. Entities are not re-traced per frame: the tick's own ray
+  reports when an entity is aimed at (`Shared.aiming_entity`), and then no box is drawn, as vanilla.
+- **When**: `isDrawBlockOutline` only for players who may edit, so survival and creative; adventure
+  (Hypixel lobbies) and spectator draw none.
+- **Shape**: `raycast::selection_box` is the union of the boxes the look ray can hit (collision
+  boxes, or the inset plant and sign bounds), with fences, walls and gates one block tall as their
+  selection bounds are. The ray now shares that box list (`target_boxes`).
+- **Block Outline card**: Vanilla, Thick (4 points, 0.6 alpha), White (0.8 alpha) or Off.
+- `--smoke-pitch DEGREES` (validation, with `--smoke-frames`) tilts the view once in the world, so a
+  capture can show the box.
+
+Regressions: selection boxes (air, full cube, bottom slab, fence post height, inset tall grass,
+water, unloaded), outline geometry (twelve edges, constant screen width, near the grown box), the
+outline card cycle, settings round trip, and the new option's validation. A capture on the bench
+world, looking 40 degrees down, showed the box on the targeted grass block. Gate: 203 scoped tests,
+strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.
