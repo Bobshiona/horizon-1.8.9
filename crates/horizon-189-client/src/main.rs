@@ -2,6 +2,7 @@
 //! transport and platform gates recorded in HANDOFF.md.
 #![forbid(unsafe_code)]
 
+mod arena;
 mod chat;
 mod connection;
 mod container_input;
@@ -163,6 +164,8 @@ struct App {
     pause: pause::Pause,
     /// The installed app's launcher screen, shown while not in a world.
     launcher: Option<launcher::Launcher>,
+    /// The launcher's live scene.
+    arena: Option<arena::Arena>,
     updater: Option<updater::Updater>,
     /// Started by the launcher: leaving the game reopens it.
     from_launcher: bool,
@@ -1426,6 +1429,49 @@ impl ApplicationHandler for App {
                     }
                 }
                 if let Some(renderer) = &mut self.renderer {
+                    // The launcher's live scene: the island, your skin, and
+                    // the page's camera.
+                    if let (Some(arena), Some(launcher)) = (&mut self.arena, &self.launcher)
+                        && self.network.is_none()
+                    {
+                        if !arena.meshed
+                            && let Some(registry) = renderer.registry.clone()
+                        {
+                            arena.meshed = true;
+                            for update in arena::meshes(&registry, arena.world()) {
+                                if let Err(error) = renderer.apply_mesh(update) {
+                                    self.fail(event_loop, error);
+                                    return;
+                                }
+                            }
+                        }
+                        if let Some(session) = launcher.session() {
+                            arena.show_skin(session.profile.uuid);
+                        }
+                        let layout = renderer.layout;
+                        let pointer = (
+                            mouse.0 / layout.width.max(1.0) * 2.0 - 1.0,
+                            mouse.1 / layout.height.max(1.0) * 2.0 - 1.0,
+                        );
+                        let (camera, player) = arena.frame(launcher.page(), pointer);
+                        renderer.set_pose(camera);
+                        let own = arena.own();
+                        let name = own.as_ref().map_or(String::new(), |(_, p)| p.name.clone());
+                        if let Err(error) = renderer.set_entities(
+                            &[(0, player)],
+                            1.0,
+                            &scoreboard::Scoreboard::default(),
+                            &name,
+                            own.as_ref(),
+                            None,
+                            &[],
+                            &[],
+                            None,
+                        ) {
+                            self.fail(event_loop, error);
+                            return;
+                        }
+                    }
                     if let Some((pose, partial, entities)) = pose {
                         if let Some(snapshot) = &snapshot {
                             let effects =
@@ -1810,8 +1856,8 @@ impl ApplicationHandler for App {
                             .as_ref()
                             .map_or(updater::Status::Off, updater::Updater::status);
                         let settings = &self.settings;
-                        if let Err(error) = renderer.draw_ui(tick, |canvas, _, _| {
-                            launcher.draw(canvas, settings, &status, mouse);
+                        if let Err(error) = renderer.draw_ui(tick, |canvas, registry, skin| {
+                            launcher.draw(canvas, registry, skin, settings, &status, mouse);
                         }) {
                             self.fail(event_loop, error);
                             return;
@@ -2291,6 +2337,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }),
         updater: (launcher_mode && !preview).then(updater::Updater::start),
+        arena: launcher_mode.then(arena::Arena::new),
         from_launcher,
         closing: false,
         selector: Default::default(),

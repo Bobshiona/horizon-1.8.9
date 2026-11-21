@@ -5,6 +5,8 @@ Newest first. The launcher's News page shows this file; write for players.
 ## Bob Client, with a launcher of its own
 - Horizon 1.8.9 is now Bob Client. The app renames itself on this update; nothing else to do.
 - Bob Client opens to its own launcher now: your account, Play, quick play with live player counts and ping, news, mods and settings.
+- The launcher is a live scene drawn by the client itself: you, sword in hand, on a floating island. The camera moves to each page, and you look where your mouse goes.
+- Number keys 1 to 5 switch launcher pages, like the hotbar.
 - Updates download and build in the launcher, so the game window just plays.
 - HUD cards are graphite: clearer over a bright sky, and cheaper to draw than glass.
 

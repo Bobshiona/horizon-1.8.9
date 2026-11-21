@@ -13,6 +13,43 @@ use std::{
     time::Duration,
 };
 
+/// A player's public profile with its skin textures, from Mojang's profile
+/// service (the same lookup servers make; no token). For the launcher's
+/// scene, which has no server to send it.
+pub fn profile(uuid: u128) -> Option<Profile> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(5))
+        .redirects(0)
+        .build();
+    let url = format!("https://sessionserver.mojang.com/session/minecraft/profile/{uuid:032x}");
+    let body = agent.get(&url).call().ok()?.into_string().ok()?;
+    parse_profile(&body)
+}
+
+fn parse_profile(body: &str) -> Option<Profile> {
+    let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    let properties = json
+        .get("properties")?
+        .as_array()?
+        .iter()
+        .filter_map(|p| {
+            Some(horizon_protocol_47::player_list::Property {
+                name: p.get("name")?.as_str()?.to_owned(),
+                value: p.get("value")?.as_str()?.to_owned(),
+                signature: p
+                    .get("signature")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            })
+        })
+        .collect();
+    Some(Profile {
+        name: json.get("name")?.as_str()?.to_owned(),
+        properties,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Descriptor {
     skin: String,
@@ -229,6 +266,18 @@ impl Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_lookups_keep_the_textures_property() {
+        let body =
+            r#"{"id":"0123","name":"Bob","properties":[{"name":"textures","value":"e30="}]}"#;
+        let profile = parse_profile(body).unwrap();
+        assert_eq!(profile.name, "Bob");
+        assert_eq!(profile.properties[0].name, "textures");
+        assert_eq!(profile.properties[0].value, "e30=");
+        assert!(parse_profile("{}").is_none());
+    }
+
     use horizon_protocol_47::player_list::Property;
     #[test]
     fn descriptors_keep_slim_and_capes_on_the_texture_cdn() {

@@ -1870,3 +1870,42 @@ the content area; rail clicks, search, Escape order and wheel limits; the existi
 animation and editor-resize tests.
 
 Gate: 247 tests.
+
+## 65. The live arena launcher
+
+Previous commit: 156c7b9827. The graphite launcher read as a generic dark dashboard (near-black,
+one vermilion accent, hairline rules, all-caps labels). The launcher is now a live 1.8.9 scene
+drawn by the client's own renderer, with the interface in Minecraft's own visual language.
+
+- **The scene (`arena.rs`).** An in-memory world: a seeded floating island (grass over dirt
+  over a tapering stone and gravel underside, poppies, dandelions, tall grass and a small oak),
+  meshed once with `Registry::mesh_column` and uploaded with `apply_mesh`. The player stands
+  in the middle holding a diamond sword, in a three-quarter pose facing the camera; the head
+  follows the pointer (up to 40 degrees across, 25 up or down); the idle arm sway runs on
+  wall-clock ticks. Each page has a camera framing (angle round the player, distance, height,
+  and a sideways aim that puts the player left of centre); a page change glides there in 0.9 s
+  (ease-out cubic) from wherever the camera was, and a slow 7-degree drift keeps it alive.
+  Signed in, the player's own skin comes from Mojang's public profile lookup by UUID
+  (`skins::profile`; no token).
+- **The interface.** Minecraft's font for everything (the wordmark at 3x, Play at 2x), with its
+  drop shadow. Pages are a vertical hotbar: hotbar slots from widgets.png holding a bed,
+  compass, book, redstone and comparator, the open page in the hotbar's selection frame, slot
+  numbers in the corner, and keys 1-5 to switch (not while typing an address). Servers sit in
+  vanilla's tooltip frame (`drawHoveringText`'s violet fill and purple border; white for the
+  selected one) with `GuiServerList`'s ping bars from icons.png (bars by ping, the animated
+  pinging frames, the cross when unreachable). Play is a 2x vanilla button with a diamond
+  sword and the server's name. The address box is `GuiTextField`. Mods and Settings are
+  two-column lists of vanilla buttons in a tooltip frame; News is paged (Back and Next).
+- **Crisp at any size.** The 480x300 design space is scaled by a whole number of physical
+  pixels, so font and sprites never blur.
+
+Verified with captures of every page at 960x600: live counts and ping bars, the island and
+player, no overlaps.
+
+Regressions: the island (solid under the player, floating, the same every launch), every page's
+framing putting the player in front and left of centre, the glide starting from the last
+framing and landing exactly, whole-pixel scales and no overlaps at six window sizes, hotbar
+clicks and number keys (not while typing), stepper halves and end stops, Restart only when
+ready, News paging bounds, and profile parsing for skins.
+
+Gate: 251 tests.
