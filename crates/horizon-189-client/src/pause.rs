@@ -1,12 +1,20 @@
 //! The game menu Escape opens in a world (`GuiIngameMenu`) and the video
-//! and controls settings behind it, as liquid-glass sheets: FOV,
-//! sensitivity and render distance sliders, GUI scale, view bobbing and
-//! fullscreen. Settings apply as they change and are saved by the caller.
+//! and controls settings behind it: FOV, sensitivity and render distance
+//! sliders, GUI scale, view bobbing and fullscreen. Settings apply as they
+//! change and are saved by the caller.
+//!
+//! Two looks, switched by the "Vanilla Menu" setting: liquid-glass sheets,
+//! or vanilla's own screens from widgets.png. The vanilla game menu is
+//! `GuiIngameMenu` (`axp`) button for button; Achievements, Statistics and
+//! Open to LAN show disabled, as this client has none of those screens. Its
+//! options page lays this client's settings out on `GuiOptions`' grid.
 use crate::{
     glass::Panel,
+    hud::button_widget,
     menu::{button, ease, fade, switch},
     settings::{Settings, Video},
     sysfont::Weight,
+    ui::WIDGETS,
     ui::{Canvas, Layout},
 };
 
@@ -95,6 +103,10 @@ enum Target {
     GuiScale,
     Bobbing,
     Fullscreen,
+    /// Glass or vanilla menus.
+    MenuStyle,
+    /// A vanilla button this client has nothing behind (translation key).
+    Inert(&'static str),
     Done,
 }
 
@@ -105,7 +117,7 @@ struct Geometry {
 }
 
 const BUTTON_H: f32 = 20.0;
-const ROW_H: f32 = 24.0;
+const ROW_H: f32 = 22.0;
 const PAD: f32 = 12.0;
 const TITLE: f32 = 9.5;
 const BODY: f32 = 7.5;
@@ -119,7 +131,58 @@ fn centred(layout: Layout, width: f32, height: f32) -> [f32; 4] {
     [x0, y0, x0 + width, y0 + height]
 }
 
-fn geometry(page: Page, layout: Layout) -> Geometry {
+/// `GuiScreen` sizes are whole GUI pixels.
+fn gui_size(layout: Layout) -> (i32, i32) {
+    (layout.width as i32, layout.height as i32)
+}
+
+fn vanilla_geometry(page: Page, layout: Layout) -> Geometry {
+    let (w, h) = gui_size(layout);
+    let rect =
+        |x: i32, y: i32, width: i32| [x as f32, y as f32, (x + width) as f32, (y + 20) as f32];
+    let mut targets = Vec::new();
+    match page {
+        Page::Settings => {
+            // GuiOptions: two columns of 150, 24 apart, from height/6 - 12.
+            let rows = [
+                Target::Slider(Slider::Fov),
+                Target::Slider(Slider::Sensitivity),
+                Target::Slider(Slider::Distance),
+                Target::GuiScale,
+                Target::Bobbing,
+                Target::Fullscreen,
+                Target::MenuStyle,
+            ];
+            for (i, target) in rows.into_iter().enumerate() {
+                let i = i as i32;
+                targets.push((
+                    target,
+                    rect(w / 2 - 155 + i % 2 * 160, h / 6 - 12 + 24 * (i >> 1), 150),
+                ));
+            }
+            targets.push((Target::Done, rect(w / 2 - 100, h / 6 + 168, 200)));
+        }
+        _ => {
+            // GuiIngameMenu.initGui, with its -16 offset.
+            let (left, right, top) = (w / 2 - 100, w / 2 + 2, h / 4 - 16);
+            targets.push((Target::Resume, rect(left, top + 24, 200)));
+            targets.push((Target::Inert("gui.achievements"), rect(left, top + 48, 98)));
+            targets.push((Target::Inert("gui.stats"), rect(right, top + 48, 98)));
+            targets.push((Target::Settings, rect(left, top + 96, 98)));
+            targets.push((Target::Inert("menu.shareToLan"), rect(right, top + 96, 98)));
+            targets.push((Target::Leave, rect(left, top + 120, 200)));
+        }
+    }
+    Geometry {
+        sheet: [0.0, 0.0, w as f32, h as f32],
+        targets,
+    }
+}
+
+fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
+    if vanilla {
+        return vanilla_geometry(page, layout);
+    }
     match page {
         Page::Settings => {
             let rows = [
@@ -129,6 +192,7 @@ fn geometry(page: Page, layout: Layout) -> Geometry {
                 Target::GuiScale,
                 Target::Bobbing,
                 Target::Fullscreen,
+                Target::MenuStyle,
             ];
             let width = 300.0f32.min(layout.width - 8.0);
             let height = 34.0 + rows.len() as f32 * ROW_H + 8.0 + BUTTON_H + PAD;
@@ -225,7 +289,7 @@ impl Pause {
     }
 
     pub fn press(&mut self, layout: Layout, mouse: (f32, f32), settings: &mut Settings) -> Click {
-        let g = geometry(self.page, layout);
+        let g = geometry(self.page, layout, settings.toggles.vanilla_menu);
         let Some(target) = g
             .targets
             .iter()
@@ -272,6 +336,11 @@ impl Pause {
                 video.fullscreen = !video.fullscreen;
                 Click::Changed
             }
+            Target::MenuStyle => {
+                settings.toggles.vanilla_menu = !settings.toggles.vanilla_menu;
+                Click::Changed
+            }
+            Target::Inert(_) => Click::Nothing,
         }
     }
 
@@ -280,15 +349,19 @@ impl Pause {
         let Some(slider) = self.drag else {
             return Click::Nothing;
         };
-        let g = geometry(self.page, layout);
+        let vanilla = settings.toggles.vanilla_menu;
+        let g = geometry(self.page, layout, vanilla);
         let Some(&(_, rect)) = g.targets.iter().find(|(t, _)| *t == Target::Slider(slider)) else {
             return Click::Nothing;
         };
         let before = settings.video;
-        slider.set(
-            &mut settings.video,
-            (mouse.0 - rect[0]) / (rect[2] - rect[0]),
-        );
+        // GuiOptionSlider: the knob's 8 pixels ride inside the button.
+        let t = if vanilla {
+            (mouse.0 - (rect[0] + 4.0)) / (rect[2] - rect[0] - 8.0)
+        } else {
+            (mouse.0 - rect[0]) / (rect[2] - rect[0])
+        };
+        slider.set(&mut settings.video, t);
         if settings.video == before {
             Click::Nothing
         } else {
@@ -306,10 +379,14 @@ impl Pause {
             return;
         }
         canvas.overlay();
+        if settings.toggles.vanilla_menu {
+            self.draw_vanilla(canvas, settings, mouse);
+            return;
+        }
         let e = ease(self.shown);
         let (w, h) = (canvas.layout.width, canvas.layout.height);
         canvas.rect(0.0, 0.0, w, h, fade(0x5000_0000, e));
-        let g = geometry(self.page, canvas.layout);
+        let g = geometry(self.page, canvas.layout, false);
         let mut sheet = Panel::new(g.sheet[0], g.sheet[1], g.sheet[2], g.sheet[3]);
         sheet.radius = 14.0;
         sheet.shadow = 0.4;
@@ -398,16 +475,96 @@ impl Pause {
                     };
                     button(canvas, rect, &value, hover, false, e);
                 }
-                Target::Bobbing | Target::Fullscreen => {
-                    let (key, on) = if target == Target::Bobbing {
-                        ("options.viewBobbing", video.view_bobbing)
-                    } else {
-                        ("options.fullscreen", video.fullscreen)
+                Target::Bobbing | Target::Fullscreen | Target::MenuStyle => {
+                    let (label, on) = match target {
+                        Target::Bobbing => (translate("options.viewBobbing"), video.view_bobbing),
+                        Target::Fullscreen => (translate("options.fullscreen"), video.fullscreen),
+                        _ => ("Vanilla Menu".to_owned(), settings.toggles.vanilla_menu),
                     };
-                    row_label(canvas, g.sheet[0] + PAD, rect, &translate(key), e);
+                    row_label(canvas, g.sheet[0] + PAD, rect, &label, e);
                     switch(canvas, rect[0], rect[1], if on { 1.0 } else { 0.0 }, e);
                 }
+                Target::Inert(_) => {}
             }
+        }
+    }
+
+    /// `GuiIngameMenu` and `GuiOptions` as vanilla draws them: the dark
+    /// default background, a white title, widgets.png buttons and sliders.
+    fn draw_vanilla(&self, canvas: &mut Canvas<'_>, settings: &Settings, mouse: (f32, f32)) {
+        let (w, h) = (canvas.layout.width, canvas.layout.height);
+        canvas.gradient(0.0, 0.0, w, h, 0xC010_1010, 0xD010_1010);
+        let res = canvas.res;
+        let translate = |key: &str| res.translate(key).to_owned();
+        let (title, title_y) = match self.page {
+            Page::Settings => (translate("options.title"), 15.0),
+            _ => (translate("menu.game"), 40.0),
+        };
+        let (gw, _) = gui_size(canvas.layout);
+        canvas.centered(&title, (gw / 2) as f32, title_y, 0xFFFF_FFFF, true);
+        let on_off = |on: bool| translate(if on { "options.on" } else { "options.off" });
+        let video = &settings.video;
+        let g = geometry(self.page, canvas.layout, true);
+        for &(target, rect) in &g.targets {
+            let hover = inside(rect, mouse);
+            let size = [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]];
+            let label = match target {
+                Target::Resume => translate("menu.returnToGame"),
+                Target::Settings => translate("menu.options"),
+                Target::Mods => "Mods".to_owned(),
+                Target::Leave if self.leave_to_launcher => translate("menu.disconnect"),
+                Target::Leave => translate("menu.quit"),
+                Target::Done => translate("gui.done"),
+                Target::Inert(key) => translate(key),
+                Target::GuiScale => {
+                    let value = match video.gui_scale {
+                        0 => translate("options.guiScale.auto"),
+                        1 => translate("options.guiScale.small"),
+                        2 => translate("options.guiScale.normal"),
+                        3 => translate("options.guiScale.large"),
+                        _ => "Huge".to_owned(),
+                    };
+                    format!("{}: {value}", translate("options.guiScale"))
+                }
+                Target::Bobbing => format!(
+                    "{}: {}",
+                    translate("options.viewBobbing"),
+                    on_off(video.view_bobbing)
+                ),
+                Target::Fullscreen => format!(
+                    "{}: {}",
+                    translate("options.fullscreen"),
+                    on_off(video.fullscreen)
+                ),
+                Target::MenuStyle => "Menu Style: Vanilla".to_owned(),
+                Target::Slider(slider) => {
+                    // GuiOptionSlider: the disabled texture behind, the knob,
+                    // then the text.
+                    let [x, y, width, height] = size;
+                    let half = (width / 2.0).floor();
+                    let white = [1.0; 4];
+                    canvas.sprite(WIDGETS, x, y, 0.0, 46.0, half, height, white);
+                    canvas.sprite(
+                        WIDGETS,
+                        x + half,
+                        y,
+                        200.0 - half,
+                        46.0,
+                        half,
+                        height,
+                        white,
+                    );
+                    let knob = x + (slider.get(video).clamp(0.0, 1.0) * (width - 8.0)).floor();
+                    canvas.sprite(WIDGETS, knob, y, 0.0, 66.0, 4.0, 20.0, white);
+                    canvas.sprite(WIDGETS, knob + 4.0, y, 196.0, 66.0, 4.0, 20.0, white);
+                    let color = if hover { 0xFFFF_FFA0 } else { 0xFFE0_E0E0 };
+                    let text = slider.label(video, &translate);
+                    canvas.centered(&text, x + half, y + 6.0, color, true);
+                    continue;
+                }
+            };
+            let enabled = !matches!(target, Target::Inert(_));
+            button_widget(canvas, &label, size, enabled, hover && enabled);
         }
     }
 }
@@ -426,7 +583,7 @@ mod tests {
     }
 
     fn rect(page: Page, layout: Layout, target: Target) -> [f32; 4] {
-        geometry(page, layout)
+        geometry(page, layout, false)
             .targets
             .into_iter()
             .find(|(t, _)| *t == target)
@@ -515,11 +672,77 @@ mod tests {
     }
 
     #[test]
+    fn the_vanilla_menu_is_gui_ingame_menu_and_switches_back() {
+        // 1920x1080 at GUI scale 4: a 480 x 270 screen.
+        let layout = Layout::new((1920, 1080), 1.0, 4);
+        let mut settings = Settings::default();
+        settings.toggles.vanilla_menu = true;
+        let g = geometry(Page::Menu, layout, true);
+        let at = |target| g.targets.iter().find(|(t, _)| *t == target).unwrap().1;
+        // height/4 - 16 = 51; width/2 - 100 = 140.
+        assert_eq!(at(Target::Resume), [140.0, 75.0, 340.0, 95.0]);
+        assert_eq!(
+            at(Target::Inert("gui.achievements")),
+            [140.0, 99.0, 238.0, 119.0]
+        );
+        assert_eq!(at(Target::Inert("gui.stats")), [242.0, 99.0, 340.0, 119.0]);
+        assert_eq!(at(Target::Settings), [140.0, 147.0, 238.0, 167.0]);
+        assert_eq!(
+            at(Target::Inert("menu.shareToLan")),
+            [242.0, 147.0, 340.0, 167.0]
+        );
+        assert_eq!(at(Target::Leave), [140.0, 171.0, 340.0, 191.0]);
+        let mut pause = Pause::default();
+        pause.open();
+        let lan = at(Target::Inert("menu.shareToLan"));
+        assert_eq!(
+            pause.press(layout, centre(lan), &mut settings),
+            Click::Nothing
+        );
+        assert!(pause.active(), "disabled buttons do nothing");
+        pause.press(layout, centre(at(Target::Settings)), &mut settings);
+        assert_eq!(pause.page, Page::Settings);
+        // GuiOptions' grid: the 7th row starts the 4th line, left column.
+        let options = geometry(Page::Settings, layout, true);
+        let row = |target| {
+            options
+                .targets
+                .iter()
+                .find(|(t, _)| *t == target)
+                .unwrap()
+                .1
+        };
+        assert_eq!(row(Target::Slider(Slider::Fov)), [85.0, 33.0, 235.0, 53.0]);
+        assert_eq!(
+            row(Target::Slider(Slider::Sensitivity)),
+            [245.0, 33.0, 395.0, 53.0]
+        );
+        assert_eq!(row(Target::MenuStyle), [85.0, 105.0, 235.0, 125.0]);
+        assert_eq!(row(Target::Done), [140.0, 213.0, 340.0, 233.0]);
+        // The vanilla slider's knob rides 4 pixels in from each end.
+        let fov = row(Target::Slider(Slider::Fov));
+        pause.press(layout, (fov[0] + 4.0, fov[1] + 5.0), &mut settings);
+        assert_eq!(settings.video.fov, 30.0);
+        pause.moved(layout, (fov[2] - 4.0, fov[1]), &mut settings);
+        assert_eq!(settings.video.fov, 110.0);
+        pause.release();
+        // Menu Style switches back to the glass sheets, which can switch again.
+        assert_eq!(
+            pause.press(layout, centre(row(Target::MenuStyle)), &mut settings),
+            Click::Changed
+        );
+        assert!(!settings.toggles.vanilla_menu);
+        let glass = rect(Page::Settings, layout, Target::MenuStyle);
+        pause.press(layout, centre(glass), &mut settings);
+        assert!(settings.toggles.vanilla_menu);
+    }
+
+    #[test]
     fn sheets_fit_small_and_large_windows() {
         for size in [(640, 480), (1440, 900), (2880, 1864)] {
             let layout = Layout::new(size, 1.0, 0);
             for page in [Page::Menu, Page::Settings] {
-                let g = geometry(page, layout);
+                let g = geometry(page, layout, false);
                 assert!(g.sheet[2] <= layout.width + 0.5 && g.sheet[3] <= layout.height + 0.5);
                 for (_, r) in &g.targets {
                     assert!(r[0] >= g.sheet[0] && r[2] <= g.sheet[2] && r[3] <= g.sheet[3]);

@@ -112,6 +112,7 @@ struct App {
     smoke_inventory: bool,
     smoke_menu: bool,
     smoke_settings: bool,
+    smoke_pause: bool,
     smoke_pitch: Option<f32>,
     bench: bool,
     /// Smoothed CPU cost of a frame for the FPS card.
@@ -1964,6 +1965,9 @@ impl ApplicationHandler for App {
         {
             shared.pitch = pitch;
         }
+        if positioned && std::mem::take(&mut self.smoke_pause) {
+            self.pause.open();
+        }
         if positioned && std::mem::take(&mut self.smoke_settings) {
             self.pause.open_settings();
         }
@@ -2160,6 +2164,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_inventory: options.smoke_inventory,
         smoke_menu: options.smoke_menu,
         smoke_settings: options.smoke_settings,
+        smoke_pause: options.smoke_pause,
         smoke_pitch: options.smoke_pitch,
         bench: options.bench,
         frame_time: Default::default(),
@@ -2199,6 +2204,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .then(settings::default_path)
                     .flatten(),
             );
+            if options.smoke_vanilla_menu {
+                settings.toggles.vanilla_menu = true;
+            }
             if options.pvp_hud {
                 settings.hud_mut(settings::HudKind::Fps).enabled = true;
                 settings.hud_mut(settings::HudKind::Cps).enabled = true;

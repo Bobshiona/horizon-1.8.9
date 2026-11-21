@@ -47,6 +47,10 @@ pub struct Options {
     pub smoke_debug: bool,
     /// Validation only: start with F3+B hitboxes on.
     pub smoke_hitboxes: bool,
+    /// Validation only: open the game menu once in the world.
+    pub smoke_pause: bool,
+    /// Validation only: use the vanilla-style menus.
+    pub smoke_vanilla_menu: bool,
     /// Validation only: redraw on the old timer instead of just in time.
     pub no_jit_pacing: bool,
     /// Validation only: take an F2 screenshot into this folder near the end.
@@ -228,6 +232,8 @@ impl Options {
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
                 "--smoke-debug" => options.smoke_debug = true,
                 "--smoke-hitboxes" => options.smoke_hitboxes = true,
+                "--smoke-pause" => options.smoke_pause = true,
+                "--smoke-vanilla-menu" => options.smoke_vanilla_menu = true,
                 "--no-jit-pacing" => options.no_jit_pacing = true,
                 "--smoke-perspective" => {
                     let mode: u8 = value()?.parse()?;
@@ -309,6 +315,8 @@ impl Options {
             || options.smoke_perspective != 0
             || options.smoke_debug
             || options.smoke_hitboxes
+            || options.smoke_pause
+            || options.smoke_vanilla_menu
             || options.smoke_screenshot.is_some())
             && options.smoke_frames.is_none()
         {

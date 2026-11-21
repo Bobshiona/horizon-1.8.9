@@ -100,6 +100,8 @@ pub struct Toggles {
     pub scoreboard_numbers: bool,
     /// F3+H (`GameSettings.advancedItemTooltips`).
     pub advanced_tooltips: bool,
+    /// Vanilla's game menu and options instead of the glass sheets.
+    pub vanilla_menu: bool,
     /// Crosshair style: 0 vanilla, 1 gapped cross, 2 dot.
     pub crosshair: u8,
     /// Block outline style (`outline::STYLES`); 0 is vanilla's.
@@ -148,6 +150,7 @@ impl Default for Toggles {
             fps_limit: 0,
             scoreboard_numbers: true,
             advanced_tooltips: false,
+            vanilla_menu: false,
             crosshair: 0,
             outline: 0,
         }
@@ -290,6 +293,7 @@ impl Settings {
                     .map_or(d.fps_limit, |v| u32::try_from(v).unwrap_or(u32::MAX)),
                 scoreboard_numbers: flag("scoreboard_numbers", d.scoreboard_numbers),
                 advanced_tooltips: flag("advanced_tooltips", d.advanced_tooltips),
+                vanilla_menu: flag("vanilla_menu", d.vanilla_menu),
                 crosshair: t
                     .get("crosshair")
                     .and_then(Value::as_u64)
@@ -341,6 +345,7 @@ impl Settings {
                 "fps_limit": t.fps_limit,
                 "scoreboard_numbers": t.scoreboard_numbers,
                 "advanced_tooltips": t.advanced_tooltips,
+                "vanilla_menu": t.vanilla_menu,
                 "crosshair": t.crosshair,
                 "outline": t.outline,
             },

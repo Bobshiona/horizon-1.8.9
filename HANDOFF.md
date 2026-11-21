@@ -1744,3 +1744,35 @@ genuine GPU time after present.
 Regression: a miss after a frame slower than its lead leaves the budget alone.
 
 Gate: 237 tests.
+
+## 61. Vanilla menu option
+
+Section 60's pacing fix is `dd6445fead`.
+
+The owner asked for the default menu back on Escape, or a way to switch. The new "Vanilla Menu"
+setting (`toggles.vanilla_menu`, saved; off by default) switches the Escape menu and its options
+page between the glass sheets and vanilla's own screens. It can be flipped from the Right Shift mod
+menu, the glass options sheet (a switch row) or the vanilla options page ("Menu Style" button).
+
+- **Game menu.** It is `GuiIngameMenu` (`axp.b`) button for button: Back to Game (200 wide at
+  height/4 + 8), Achievements and Statistics (98 wide at + 32), Options... and Open to LAN
+  (+ 80), and Disconnect (+ 104). The title is at y 40 in white, over the default
+  0xC0101010–0xD0101010 gradient. Achievements, Statistics and Open to LAN draw disabled, since
+  this client has none of those screens (LAN is disabled in multiplayer anyway). The leave
+  button keeps its meaning: Disconnect in launcher sessions, Quit otherwise.
+- **Options page.** This client's settings on `GuiOptions`' grid: 150 wide, two columns 160
+  apart, rows 24 apart from height/6 - 12, Done at height/6 + 168. Sliders are
+  `GuiOptionSlider`: the disabled texture behind, a knob from (0, 66) and (196, 66) riding 4
+  pixels in from each end, then the text.
+- Buttons are `GuiButton.drawButton` from widgets.png (`avs`), through the existing
+  `hud::button_widget`.
+
+The glass settings rows are now 22 apart instead of 24, so the extra row still fits a 640x480
+window. `--smoke-pause` and `--smoke-vanilla-menu` set up captures: the game menu, the vanilla
+options page and the glass sheet with its new switch all render as described.
+
+Regressions: every vanilla game-menu rect at 480x270, disabled buttons doing nothing, Options...
+opening the page, the options grid and Done, the vanilla slider's 4-pixel inset at both ends, and
+Menu Style switching to glass and back.
+
+Gate: 238 tests.

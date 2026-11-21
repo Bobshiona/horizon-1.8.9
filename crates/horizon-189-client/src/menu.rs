@@ -20,6 +20,7 @@ pub enum Entry {
     Crosshair,
     BlockOutline,
     FpsLimit,
+    VanillaMenu,
 }
 
 /// Frame caps the FPS card cycles through; 0 follows the display.
@@ -37,6 +38,7 @@ fn entries() -> Vec<Entry> {
         Entry::Crosshair,
         Entry::BlockOutline,
         Entry::FpsLimit,
+        Entry::VanillaMenu,
     ]);
     list
 }
@@ -51,6 +53,7 @@ impl Entry {
             Entry::ToggleSneak => "Toggle Sneak",
             Entry::Fullbright => "Fullbright",
             Entry::ScoreboardNumbers => "Scoreboard Numbers",
+            Entry::VanillaMenu => "Vanilla Menu",
             Entry::Crosshair => "Crosshair",
             Entry::BlockOutline => "Block Outline",
             Entry::FpsLimit => "Frame Limit",
@@ -69,6 +72,7 @@ impl Entry {
             Entry::ToggleSneak => t.toggle_sneak,
             Entry::Fullbright => t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers,
+            Entry::VanillaMenu => t.vanilla_menu,
             Entry::Crosshair | Entry::BlockOutline | Entry::FpsLimit => return None,
         })
     }
@@ -103,6 +107,7 @@ impl Entry {
             Entry::ToggleSneak => t.toggle_sneak = !t.toggle_sneak,
             Entry::Fullbright => t.fullbright = !t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers = !t.scoreboard_numbers,
+            Entry::VanillaMenu => t.vanilla_menu = !t.vanilla_menu,
             Entry::Crosshair => t.crosshair = (t.crosshair + 1) % CROSSHAIRS.len() as u8,
             Entry::BlockOutline => {
                 t.outline = (t.outline + 1) % crate::outline::STYLES.len() as u8;
