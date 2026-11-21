@@ -449,9 +449,15 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// Physical pixels for `size` GUI pixels of system-font text.
+    /// Physical pixels per GUI pixel under the current `scale`.
+    fn system_factor(&self) -> f32 {
+        self.layout.factor as f32 * self.scale
+    }
+
+    /// Physical pixels for `size` GUI pixels of system-font text, rasterised
+    /// at the current `scale` so scaled text stays sharp.
     fn system_pixels(&self, size: f32) -> u32 {
-        (f64::from(size) * self.layout.factor).round().max(4.0) as u32
+        (size * self.system_factor()).round().max(4.0) as u32
     }
 
     /// Width in GUI pixels of system-font text (the Minecraft font's width
@@ -467,7 +473,7 @@ impl<'a> Canvas<'a> {
             .filter_map(|c| font.glyph(pixels, weight, c))
             .map(|g| g.advance)
             .sum();
-        advance / self.layout.factor as f32
+        advance / self.system_factor()
     }
 
     /// San Francisco text whose line box starts at (x, y) and is `size` GUI
@@ -481,7 +487,8 @@ impl<'a> Canvas<'a> {
         weight: crate::sysfont::Weight,
         color: u32,
     ) -> f32 {
-        let factor = self.layout.factor as f32;
+        // `quad` applies `scale`; glyphs are placed in unscaled GUI units.
+        let factor = self.system_factor();
         let pixels = self.system_pixels(size);
         let mut quads = Vec::new();
         let width = {
@@ -613,6 +620,17 @@ impl<'a> Canvas<'a> {
                 [u * s, (v + h) * s],
             ],
             sheet,
+            [1.0; 4],
+        );
+    }
+
+    /// A solid rectangle with the crosshair's inverting blend.
+    pub fn inverted_rect(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        self.quad(
+            true,
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+            [[0.0; 2]; 4],
+            UNTEXTURED,
             [1.0; 4],
         );
     }

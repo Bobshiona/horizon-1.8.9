@@ -35,6 +35,29 @@ pub struct Frame<'a> {
     pub heads: bool,
     /// Entity-array layer of a player's loaded skin, if any.
     pub skin: &'a dyn Fn(u128) -> Option<u32>,
+    /// Scoreboard Numbers mod: the sidebar's red score column.
+    pub sidebar_numbers: bool,
+    /// Crosshair mod style (`settings::CROSSHAIRS`).
+    pub crosshair: u8,
+}
+
+/// Crosshair mod bars around the screen centre pixel, in GUI pixels; empty
+/// for the vanilla sprite. Both styles are centred on the same pixel as
+/// vanilla's.
+pub fn crosshair_bars(style: u8, width: f32, height: f32) -> Vec<[f32; 4]> {
+    let (cx, cy) = ((width / 2.0).floor(), (height / 2.0).floor());
+    match style {
+        // A gapped plus: four 4-pixel arms, 1.5 pixels clear of the centre.
+        1 => vec![
+            [cx - 5.0, cy, cx - 1.0, cy + 1.0],
+            [cx + 2.0, cy, cx + 6.0, cy + 1.0],
+            [cx, cy - 5.0, cx + 1.0, cy - 1.0],
+            [cx, cy + 2.0, cx + 1.0, cy + 6.0],
+        ],
+        // A two-pixel dot.
+        2 => vec![[cx - 0.5, cy - 0.5, cx + 1.5, cy + 1.5]],
+        _ => Vec::new(),
+    }
 }
 
 /// Overlay state that outlives one frame.
@@ -158,9 +181,14 @@ impl Hud {
             return;
         };
         let res = canvas.res;
+        let numbers = frame.sidebar_numbers;
         let mut width = res.width(&title);
         for (name, points) in &lines {
-            width = width.max(res.width(&format!("{name}: §c{points}")));
+            width = width.max(if numbers {
+                res.width(&format!("{name}: §c{points}"))
+            } else {
+                res.width(name)
+            });
         }
         let (w, h) = (canvas.layout.width, canvas.layout.height);
         let height = (lines.len() * 9) as f32;
@@ -172,9 +200,11 @@ impl Hud {
             let y = bottom - (index + 1) as f32 * 9.0;
             canvas.rect(left - 2.0, y, right, y + 9.0, 0x5000_0000);
             canvas.text(name, left, y, 0xFFFF_FFFF, false);
-            let value = format!("§c{points}");
-            let value_x = right - res.width(&value) as f32;
-            canvas.text(&value, value_x, y, 0xFFFF_FFFF, false);
+            if numbers {
+                let value = format!("§c{points}");
+                let value_x = right - res.width(&value) as f32;
+                canvas.text(&value, value_x, y, 0xFFFF_FFFF, false);
+            }
             if index + 1 == count {
                 canvas.rect(left - 2.0, y - 10.0, right, y - 1.0, 0x6000_0000);
                 canvas.rect(left - 2.0, y - 1.0, right, y, 0x5000_0000);
@@ -233,15 +263,21 @@ impl Hud {
             self.died_at = None;
         }
         if frame.game_mode != 3 {
-            canvas.inverted_sprite(
-                ICONS,
-                (w / 2.0).floor() - 7.0,
-                (h / 2.0).floor() - 7.0,
-                0.0,
-                0.0,
-                16.0,
-                16.0,
-            );
+            let bars = crosshair_bars(frame.crosshair, w, h);
+            if bars.is_empty() {
+                canvas.inverted_sprite(
+                    ICONS,
+                    (w / 2.0).floor() - 7.0,
+                    (h / 2.0).floor() - 7.0,
+                    0.0,
+                    0.0,
+                    16.0,
+                    16.0,
+                );
+            }
+            for [x0, y0, x1, y1] in bars {
+                canvas.inverted_rect(x0, y0, x1, y1);
+            }
         }
         if frame.game_mode != 3 {
             self.hotbar(canvas, registry, frame);
@@ -1039,6 +1075,28 @@ fn tab_list(canvas: &mut Canvas<'_>, frame: &Frame<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crosshair_styles_centre_on_vanillas_pixel() {
+        assert!(crosshair_bars(0, 427.0, 240.0).is_empty());
+        let centre = (213.5, 120.5);
+        for style in [1, 2] {
+            let bars = crosshair_bars(style, 427.0, 240.0);
+            let (mut sx, mut sy, mut area) = (0.0, 0.0, 0.0);
+            for [x0, y0, x1, y1] in &bars {
+                let a = (x1 - x0) * (y1 - y0);
+                sx += (x0 + x1) / 2.0 * a;
+                sy += (y0 + y1) / 2.0 * a;
+                area += a;
+            }
+            assert_eq!((sx / area, sy / area), centre, "style {style}");
+        }
+        // The cross leaves its centre pixel clear.
+        let cross = crosshair_bars(1, 427.0, 240.0);
+        assert!(cross.iter().all(|[x0, y0, x1, y1]| {
+            !(*x0 <= 213.0 && *x1 >= 214.0 && *y0 <= 120.0 && *y1 >= 121.0)
+        }));
+    }
 
     #[test]
     fn respawn_waits_for_the_death_screen_buttons() {

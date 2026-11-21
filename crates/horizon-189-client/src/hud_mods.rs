@@ -3,7 +3,7 @@
 //! `Settings`; drawing returns the card rectangles for the HUD editor.
 use crate::{
     glass::Panel,
-    settings::{HudKind, Settings},
+    settings::{Hud, HudKind, Settings},
     sysfont::Weight,
     terrain::Registry,
     ui::Canvas,
@@ -165,8 +165,22 @@ fn card(canvas: &mut Canvas<'_>, rect: [f32; 4], editing: bool) {
     canvas.glass(panel);
 }
 
-/// Draw every enabled card (all of them while editing); returns their
-/// rectangles in GUI pixels.
+/// Where a card of unscaled `size` sits on a `screen`-sized interface:
+/// its saved corner, scaled, kept fully on screen and on whole pixels.
+fn place(hud: Hud, size: (f32, f32), screen: (f32, f32)) -> [f32; 4] {
+    let scale = hud.scale.clamp(0.5, 3.0);
+    let (w, h) = (size.0 * scale, size.1 * scale);
+    let x = (hud.x * screen.0)
+        .clamp(0.0, (screen.0 - w).max(0.0))
+        .floor();
+    let y = (hud.y * screen.1)
+        .clamp(0.0, (screen.1 - h).max(0.0))
+        .floor();
+    [x, y, x + w, y + h]
+}
+
+/// Draw every enabled card (all of them while editing) at its own scale;
+/// returns their on-screen rectangles in GUI pixels.
 pub fn draw(
     canvas: &mut Canvas<'_>,
     registry: &Registry,
@@ -193,14 +207,13 @@ pub fn draw(
         } else {
             (w + 2.0 * PAD, h + 2.0 * PAD)
         };
-        let x = (hud.x * screen_w)
-            .clamp(0.0, (screen_w - cw).max(0.0))
-            .floor();
-        let y = (hud.y * screen_h)
-            .clamp(0.0, (screen_h - ch).max(0.0))
-            .floor();
+        let placed = place(hud, (cw, ch), (screen_w, screen_h));
+        rects.push((kind, placed));
+        // Draw in the card's own units under `GlStateManager.scale`.
+        let scale = hud.scale.clamp(0.5, 3.0);
+        canvas.scale = scale;
+        let (x, y) = (placed[0] / scale, placed[1] / scale);
         let rect = [x, y, x + cw, y + ch];
-        rects.push((kind, rect));
         let disabled = editing && !hud.enabled;
         match kind {
             HudKind::Keystrokes => keystrokes(canvas, frame, x, y, editing),
@@ -265,6 +278,7 @@ pub fn draw(
                 }
             }
         }
+        canvas.scale = 1.0;
     }
     rects
 }
@@ -334,6 +348,34 @@ fn keystrokes(canvas: &mut Canvas<'_>, frame: &ModFrame<'_>, x: f32, y: f32, edi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaled_cards_stay_on_screen_at_their_corner() {
+        let hud = |x, y, scale| Hud {
+            enabled: true,
+            x,
+            y,
+            scale,
+        };
+        let screen = (480.0, 270.0);
+        assert_eq!(
+            place(hud(0.1, 0.2, 1.0), (40.0, 10.0), screen),
+            [48.0, 54.0, 88.0, 64.0]
+        );
+        assert_eq!(
+            place(hud(0.1, 0.2, 2.0), (40.0, 10.0), screen),
+            [48.0, 54.0, 128.0, 74.0]
+        );
+        // Pushed back inside at the far edge, and out-of-range scales clamp.
+        assert_eq!(
+            place(hud(1.0, 1.0, 2.0), (40.0, 10.0), screen),
+            [400.0, 250.0, 480.0, 270.0]
+        );
+        assert_eq!(
+            place(hud(0.0, 0.0, 9.0), (40.0, 10.0), screen),
+            [0.0, 0.0, 120.0, 30.0]
+        );
+    }
 
     #[test]
     fn durations_and_facing_follow_vanilla_formatting() {

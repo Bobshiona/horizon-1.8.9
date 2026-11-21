@@ -1159,3 +1159,27 @@ and position fits the packed format), `VisGraph` connectivity, the occlusion wal
 ordering and stale-origin handling, and `--bench` option validation. Captures before and after
 matched. Gate: 195 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks,
 ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 41. Menu motion, card sizes, scoreboard and crosshair mods
+
+Section 40's performance work is `993e2583f1`.
+
+- **Motion**: the menu sheet eases in over 0.22 s (ease-out cubic), rising 12 GUI pixels into place
+  as it fades, and plays the same in reverse on close; it stays drawn while closing but takes no
+  input. Switches slide their knob and blend the track from grey to green over 0.16 s. Glass panels
+  gained an `opacity` (the shader's spare `params.w`), applied to the shadow and body alike.
+- **Card sizes**: in Edit HUD the scroll wheel resizes the card under the mouse in 0.1 steps from 0.5x
+  to 3x (`Hud.scale`, saved). Cards draw under `Canvas::scale` from their saved corner and are kept
+  on screen at their scaled size. System-font text now rasterises at the scaled pixel size, so a
+  scaled card's text stays sharp.
+- **Scoreboard Numbers** (on by default): off hides the sidebar's red score column and narrows the
+  sidebar to the names, as Lunar's scoreboard mod does.
+- **Crosshair**: Vanilla (the inverted sprite), Cross (a gapped plus of four 4-pixel arms) or Dot (2x2
+  pixels). Both custom styles use the vanilla crosshair's inverting blend
+  (`Canvas::inverted_rect`) and are centred on its pixel.
+
+Regressions: the open/close and switch animations (including staying visible while closing), scroll
+resizing with clamping, card placement at scale, crosshair centring, the new cards' clicks, and the
+new settings' round trip and bad-value fallback. A capture checked the menu with the new cards.
+Gate: 200 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64
+release build and `VANILLA_189_REFERENCE_GATE_PASS`.

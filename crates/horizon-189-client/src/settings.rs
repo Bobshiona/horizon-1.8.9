@@ -96,7 +96,14 @@ pub struct Toggles {
     /// Frame cap: 0 follows the display (vsync), otherwise frames per second;
     /// `u32::MAX` is unlimited.
     pub fps_limit: u32,
+    /// The sidebar's red score numbers (vanilla shows them).
+    pub scoreboard_numbers: bool,
+    /// Crosshair style: 0 vanilla, 1 gapped cross, 2 dot.
+    pub crosshair: u8,
 }
+
+/// Crosshair styles the menu cycles through.
+pub const CROSSHAIRS: [&str; 3] = ["Vanilla", "Cross", "Dot"];
 
 impl Default for Toggles {
     fn default() -> Self {
@@ -107,6 +114,8 @@ impl Default for Toggles {
             toggle_sneak: false,
             fullbright: false,
             fps_limit: 0,
+            scoreboard_numbers: true,
+            crosshair: 0,
         }
     }
 }
@@ -202,6 +211,12 @@ impl Settings {
                     .get("fps_limit")
                     .and_then(Value::as_u64)
                     .map_or(d.fps_limit, |v| u32::try_from(v).unwrap_or(u32::MAX)),
+                scoreboard_numbers: flag("scoreboard_numbers", d.scoreboard_numbers),
+                crosshair: t
+                    .get("crosshair")
+                    .and_then(Value::as_u64)
+                    .filter(|&v| v < CROSSHAIRS.len() as u64)
+                    .map_or(d.crosshair, |v| v as u8),
             };
         }
         settings
@@ -227,6 +242,8 @@ impl Settings {
                 "toggle_sneak": t.toggle_sneak,
                 "fullbright": t.fullbright,
                 "fps_limit": t.fps_limit,
+                "scoreboard_numbers": t.scoreboard_numbers,
+                "crosshair": t.crosshair,
             },
         });
         serde_json::to_string_pretty(&root).unwrap_or_default()
@@ -258,6 +275,8 @@ mod tests {
         settings.hud_mut(HudKind::Cps).enabled = true;
         settings.toggles.fps_limit = 240;
         settings.toggles.toggle_sprint = true;
+        settings.toggles.scoreboard_numbers = false;
+        settings.toggles.crosshair = 2;
         let parsed = Settings::parse(&settings.to_json());
         assert_eq!(parsed.hud, settings.hud);
         assert_eq!(parsed.toggles, settings.toggles);
@@ -266,6 +285,9 @@ mod tests {
         let odd = Settings::parse(r#"{"hud":{"fps":{"x":7,"y":"no","scale":100}}}"#);
         let fps = odd.hud(HudKind::Fps);
         assert_eq!((fps.x, fps.y, fps.scale), (1.0, 0.02, 3.0));
+        let style = Settings::parse(r#"{"toggles":{"crosshair":9}}"#);
+        assert_eq!(style.toggles.crosshair, 0);
+        assert!(style.toggles.scoreboard_numbers);
     }
 
     #[test]

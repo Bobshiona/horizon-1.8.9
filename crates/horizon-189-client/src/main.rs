@@ -236,6 +236,7 @@ impl App {
         if (self.zoom - target).abs() < 1e-3 {
             self.zoom = target;
         }
+        self.menu.step(dt, &self.settings);
         if let Some(renderer) = &mut self.renderer {
             renderer.bench = self.bench;
             renderer
@@ -769,6 +770,16 @@ impl ApplicationHandler for App {
                         .wheel(f64::from(notches), self.modifiers.shift_key());
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } if self.menu.editing => {
+                let notches = self.notches(delta);
+                let mouse = self.mouse_gui();
+                if self
+                    .menu
+                    .scroll(mouse, notches, &self.hud_rects, &mut self.settings)
+                {
+                    self.save_settings();
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } if self.captured => {
                 let amount = f64::from(self.notches(delta));
                 if let Some(network) = &self.network
@@ -1186,6 +1197,8 @@ impl ApplicationHandler for App {
                                     tab_held,
                                     heads: snapshot.encrypted,
                                     skin,
+                                    sidebar_numbers: settings.toggles.scoreboard_numbers,
+                                    crosshair: settings.toggles.crosshair,
                                 };
                                 hud.draw(canvas, registry, &frame);
                                 if (!snapshot.view.open && snapshot.vitals.health > 0.0)
@@ -1210,7 +1223,7 @@ impl ApplicationHandler for App {
                                 if snapshot.view.open && snapshot.vitals.health > 0.0 {
                                     hud::inventory(canvas, registry, &snapshot.view, mouse);
                                 }
-                                if menu.active() {
+                                if menu.visible() {
                                     menu.draw(canvas, settings, mouse);
                                 }
                             });

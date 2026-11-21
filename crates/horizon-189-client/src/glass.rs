@@ -19,6 +19,8 @@ pub struct Panel {
     pub shadow: f32,
     /// sRGB tint; alpha is how much of it replaces the frost.
     pub tint: [f32; 4],
+    /// The whole panel's opacity, shadow included, for fades.
+    pub opacity: f32,
 }
 
 impl Panel {
@@ -29,6 +31,7 @@ impl Panel {
             highlight: 0.55,
             shadow: 0.28,
             tint: [0.08, 0.09, 0.12, 0.42],
+            opacity: 1.0,
         }
     }
 }
@@ -55,7 +58,12 @@ fn vertices(panels: &[Panel], out: &mut Vec<PanelVertex>) {
         }
         let center = [(x0 + x1) / 2.0, (y0 + y1) / 2.0];
         let half = [(x1 - x0) / 2.0, (y1 - y0) / 2.0];
-        let params = [panel.radius.max(0.0), panel.highlight, panel.shadow, 1.0];
+        let params = [
+            panel.radius.max(0.0),
+            panel.highlight,
+            panel.shadow,
+            panel.opacity.clamp(0.0, 1.0),
+        ];
         let (a, b) = ([x0 - MARGIN, y0 - MARGIN], [x1 + MARGIN, y1 + MARGIN]);
         let corners = [a, [b[0], a[1]], b, [a[0], b[1]]];
         for i in [0, 1, 2, 0, 2, 3] {

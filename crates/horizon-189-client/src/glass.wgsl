@@ -53,7 +53,7 @@ struct PanelOut {
     // GUI pixels, relative to the panel centre.
     @location(0) local: vec2<f32>,
     @location(1) @interpolate(flat) half_size: vec2<f32>,
-    // x: corner radius, y: rim highlight, z: shadow, w: blur strength.
+    // x: corner radius, y: rim highlight, z: shadow, w: panel opacity.
     @location(2) @interpolate(flat) params: vec4<f32>,
     @location(3) @interpolate(flat) tint: vec4<f32>,
 }
@@ -93,7 +93,7 @@ fn fragment_panel(in: PanelOut) -> @location(0) vec4<f32> {
     if d > 0.0 {
         // Outside: a soft shadow that fades over a few GUI pixels.
         let shadow = in.params.z * exp(-d * 0.45) * (1.0 - smoothstep(0.0, pixel, -d + pixel));
-        return vec4<f32>(0.0, 0.0, 0.0, shadow);
+        return vec4<f32>(0.0, 0.0, 0.0, shadow * in.params.w);
     }
     let coverage = clamp(-d / pixel + 0.5, 0.0, 1.0);
     // Light bends at the rim: sample slightly inward, like a thick lens.
@@ -113,5 +113,6 @@ fn fragment_panel(in: PanelOut) -> @location(0) vec4<f32> {
     color += vec3<f32>(rim * in.params.y * (0.35 + 0.65 * top));
     // A faint sheen over the upper half.
     color += vec3<f32>(0.04 * in.params.y * smoothstep(0.2, -1.0, in.local.y / max(in.half_size.y, 1.0)));
-    return vec4<f32>(color * coverage, coverage);
+    let alpha = coverage * in.params.w;
+    return vec4<f32>(color * alpha, alpha);
 }

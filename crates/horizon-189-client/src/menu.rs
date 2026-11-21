@@ -2,7 +2,7 @@
 //! switches, plus a HUD layout editor where cards are dragged into place.
 use crate::{
     glass::Panel,
-    settings::{HudKind, Settings},
+    settings::{CROSSHAIRS, HudKind, Settings},
     sysfont::Weight,
     ui::{Canvas, Layout},
 };
@@ -16,6 +16,8 @@ pub enum Entry {
     ToggleSprint,
     ToggleSneak,
     Fullbright,
+    ScoreboardNumbers,
+    Crosshair,
     FpsLimit,
 }
 
@@ -30,6 +32,8 @@ fn entries() -> Vec<Entry> {
         Entry::ToggleSprint,
         Entry::ToggleSneak,
         Entry::Fullbright,
+        Entry::ScoreboardNumbers,
+        Entry::Crosshair,
         Entry::FpsLimit,
     ]);
     list
@@ -44,11 +48,13 @@ impl Entry {
             Entry::ToggleSprint => "Toggle Sprint",
             Entry::ToggleSneak => "Toggle Sneak",
             Entry::Fullbright => "Fullbright",
+            Entry::ScoreboardNumbers => "Scoreboard Numbers",
+            Entry::Crosshair => "Crosshair",
             Entry::FpsLimit => "Frame Limit",
         }
     }
 
-    /// A switch state, or `None` for the frame-limit value card.
+    /// A switch state, or `None` for value cards (crosshair, frame limit).
     pub fn enabled(self, settings: &Settings) -> Option<bool> {
         let t = &settings.toggles;
         Some(match self {
@@ -58,11 +64,16 @@ impl Entry {
             Entry::ToggleSprint => t.toggle_sprint,
             Entry::ToggleSneak => t.toggle_sneak,
             Entry::Fullbright => t.fullbright,
-            Entry::FpsLimit => return None,
+            Entry::ScoreboardNumbers => t.scoreboard_numbers,
+            Entry::Crosshair | Entry::FpsLimit => return None,
         })
     }
 
     pub fn value(self, settings: &Settings) -> String {
+        if self == Entry::Crosshair {
+            return CROSSHAIRS[usize::from(settings.toggles.crosshair) % CROSSHAIRS.len()]
+                .to_owned();
+        }
         match settings.toggles.fps_limit {
             0 => "Display".to_owned(),
             u32::MAX => "Unlimited".to_owned(),
@@ -83,6 +94,8 @@ impl Entry {
             Entry::ToggleSprint => t.toggle_sprint = !t.toggle_sprint,
             Entry::ToggleSneak => t.toggle_sneak = !t.toggle_sneak,
             Entry::Fullbright => t.fullbright = !t.fullbright,
+            Entry::ScoreboardNumbers => t.scoreboard_numbers = !t.scoreboard_numbers,
+            Entry::Crosshair => t.crosshair = (t.crosshair + 1) % CROSSHAIRS.len() as u8,
             Entry::FpsLimit => {
                 let at = FPS_LIMITS
                     .iter()
@@ -157,17 +170,94 @@ pub enum Click {
     Nothing,
 }
 
+/// Seconds for the sheet to open or close, and for a switch to slide.
+const OPEN_SECONDS: f32 = 0.22;
+const SWITCH_SECONDS: f32 = 0.16;
+/// HUD card sizes the editor's scroll wheel steps through.
+const SCALE_STEP: f32 = 0.1;
+const SCALE_RANGE: (f32, f32) = (0.5, 3.0);
+
+fn approach(value: f32, target: f32, step: f32) -> f32 {
+    if value < target {
+        (value + step).min(target)
+    } else {
+        (value - step).max(target)
+    }
+}
+
+/// Ease-out cubic: fast start, gentle landing.
+fn ease(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// `color` with its alpha scaled by `amount`.
+fn fade(color: u32, amount: f32) -> u32 {
+    let alpha = ((color >> 24) as f32 * amount.clamp(0.0, 1.0)).round() as u32;
+    (alpha << 24) | (color & 0x00FF_FFFF)
+}
+
 #[derive(Default)]
 pub struct Menu {
     pub open: bool,
     pub editing: bool,
     /// The card being dragged and the grab offset from its corner.
     drag: Option<(HudKind, (f32, f32))>,
+    /// Sheet animation, 0 hidden to 1 shown, moving toward `open`.
+    shown: f32,
+    /// Each card's switch knob, 0 off to 1 on, in menu order.
+    knobs: Vec<f32>,
 }
 
 impl Menu {
     pub fn active(&self) -> bool {
         self.open || self.editing
+    }
+
+    /// Still drawn: open, editing, or animating closed.
+    pub fn visible(&self) -> bool {
+        self.active() || self.shown > 0.0
+    }
+
+    /// Advance the open/close and switch animations by `dt` seconds.
+    pub fn step(&mut self, dt: f32, settings: &Settings) {
+        let dt = dt.clamp(0.0, 0.1);
+        let target = if self.open { 1.0 } else { 0.0 };
+        self.shown = approach(self.shown, target, dt / OPEN_SECONDS);
+        let list = entries();
+        self.knobs.resize(list.len(), f32::NAN);
+        for (knob, entry) in self.knobs.iter_mut().zip(list) {
+            if let Some(on) = entry.enabled(settings) {
+                let target = f32::from(u8::from(on));
+                *knob = if knob.is_nan() {
+                    target
+                } else {
+                    approach(*knob, target, dt / SWITCH_SECONDS)
+                };
+            }
+        }
+    }
+
+    /// Editor: the scroll wheel resizes the card under the mouse; true when
+    /// settings changed.
+    pub fn scroll(
+        &mut self,
+        mouse: (f32, f32),
+        notches: i32,
+        cards: &[(HudKind, [f32; 4])],
+        settings: &mut Settings,
+    ) -> bool {
+        if !self.editing || notches == 0 {
+            return false;
+        }
+        let Some(&(kind, _)) = cards.iter().rev().find(|(_, r)| inside(*r, mouse)) else {
+            return false;
+        };
+        let hud = settings.hud_mut(kind);
+        let scale = ((hud.scale + SCALE_STEP * notches as f32) / SCALE_STEP).round() * SCALE_STEP;
+        let scale = scale.clamp(SCALE_RANGE.0, SCALE_RANGE.1);
+        let changed = (scale - hud.scale).abs() > 1e-4;
+        hud.scale = scale;
+        changed
     }
 
     pub fn toggle(&mut self) {
@@ -239,7 +329,7 @@ impl Menu {
         canvas.overlay();
         if self.editing {
             let w = canvas.layout.width;
-            let label = "Drag cards to move them  ·  Right Shift to finish";
+            let label = "Drag to move  ·  Scroll to resize  ·  Right Shift to finish";
             let tw = canvas.system_width(label, BODY, Weight::Regular);
             let x = ((w - tw) / 2.0).floor();
             let mut pill = Panel::new(x - 10.0, 6.0, x + tw + 10.0, 24.0);
@@ -255,15 +345,29 @@ impl Menu {
             );
             return;
         }
-        if !self.open {
+        if self.shown <= 0.0 {
             return;
         }
-        let g = geometry(canvas.layout);
+        // Opening rises the sheet into place as it fades in; closing reverses.
+        let e = ease(self.shown);
+        let lift = ((1.0 - e) * 12.0).round();
+        let mut g = geometry(canvas.layout);
+        let shift = |r: &mut [f32; 4]| {
+            r[1] += lift;
+            r[3] += lift;
+        };
+        shift(&mut g.sheet);
+        shift(&mut g.edit);
+        shift(&mut g.done);
+        for (_, rect) in &mut g.cards {
+            shift(rect);
+        }
         let [x0, y0, x1, _] = g.sheet;
         let mut sheet = Panel::new(g.sheet[0], g.sheet[1], g.sheet[2], g.sheet[3]);
         sheet.radius = 14.0;
         sheet.shadow = 0.4;
         sheet.tint = [0.05, 0.06, 0.08, 0.46];
+        sheet.opacity = e;
         canvas.glass(sheet);
         let title_y = y0 + 9.0;
         let w = canvas.system_text(
@@ -272,7 +376,7 @@ impl Menu {
             title_y,
             TITLE,
             Weight::Semibold,
-            WHITE,
+            fade(WHITE, e),
         );
         canvas.system_text(
             "Mods",
@@ -280,7 +384,7 @@ impl Menu {
             title_y,
             TITLE,
             Weight::Regular,
-            0xFFC4_CAD4,
+            fade(0xFFC4_CAD4, e),
         );
         let hint = "Right Shift";
         let hw = canvas.system_width(hint, SMALL, Weight::Regular);
@@ -290,18 +394,19 @@ impl Menu {
             title_y + (TITLE - SMALL) / 2.0,
             SMALL,
             Weight::Regular,
-            0xFFE2_E6EC,
+            fade(0xFFE2_E6EC, e),
         );
-        for (entry, rect) in &g.cards {
+        for (index, (entry, rect)) in g.cards.iter().enumerate() {
             let hover = inside(*rect, mouse);
             let mut card = Panel::new(rect[0], rect[1], rect[2], rect[3]);
             card.radius = 8.0;
             card.shadow = 0.12;
-            card.tint = if hover {
+            card.tint = if hover && self.open {
                 [0.26, 0.28, 0.34, 0.50]
             } else {
                 [0.12, 0.13, 0.16, 0.42]
             };
+            card.opacity = e;
             canvas.glass(card);
             let text_y = rect[1] + (CARD_H - BODY) / 2.0;
             canvas.system_text(
@@ -310,10 +415,24 @@ impl Menu {
                 text_y,
                 BODY,
                 Weight::Regular,
-                WHITE,
+                fade(WHITE, e),
             );
             match entry.enabled(settings) {
-                Some(on) => switch(canvas, rect[2] - 27.0, rect[1] + (CARD_H - 11.0) / 2.0, on),
+                Some(on) => {
+                    let knob = self
+                        .knobs
+                        .get(index)
+                        .copied()
+                        .filter(|k| !k.is_nan())
+                        .unwrap_or(f32::from(u8::from(on)));
+                    switch(
+                        canvas,
+                        rect[2] - 27.0,
+                        rect[1] + (CARD_H - 11.0) / 2.0,
+                        ease(knob),
+                        e,
+                    );
+                }
                 None => {
                     let value = entry.value(settings);
                     let vw = canvas.system_width(&value, BODY, Weight::Semibold);
@@ -323,13 +442,14 @@ impl Menu {
                         text_y,
                         BODY,
                         Weight::Semibold,
-                        0xFF6E_B6FF,
+                        fade(0xFF6E_B6FF, e),
                     );
                 }
             }
         }
-        button(canvas, g.edit, "Edit HUD", inside(g.edit, mouse), false);
-        button(canvas, g.done, "Done", inside(g.done, mouse), true);
+        let hover = |rect| self.open && inside(rect, mouse);
+        button(canvas, g.edit, "Edit HUD", hover(g.edit), false, e);
+        button(canvas, g.done, "Done", hover(g.done), true, e);
     }
 }
 
@@ -339,28 +459,35 @@ const BODY: f32 = 7.5;
 const SMALL: f32 = 6.5;
 const WHITE: u32 = 0xFFF7_F8FA;
 
-/// An iOS-style switch: a pill track and a white knob.
-fn switch(canvas: &mut Canvas<'_>, x: f32, y: f32, on: bool) {
+/// An iOS-style switch: a pill track and a white knob; `on` slides from 0
+/// (off) to 1 (on), blending the track from grey to green.
+fn switch(canvas: &mut Canvas<'_>, x: f32, y: f32, on: f32, opacity: f32) {
     let mut track = Panel::new(x, y, x + 18.0, y + 11.0);
     track.radius = 5.5;
     track.shadow = 0.0;
     track.highlight = 0.3;
-    track.tint = if on {
-        [0.20, 0.78, 0.35, 0.92]
-    } else {
-        [0.42, 0.44, 0.50, 0.70]
-    };
+    let (off, lit) = ([0.42, 0.44, 0.50, 0.70], [0.20, 0.78, 0.35, 0.92]);
+    track.tint = std::array::from_fn(|i: usize| off[i] + (lit[i] - off[i]) * on);
+    track.opacity = opacity;
     canvas.glass(track);
-    let kx = if on { x + 8.0 } else { x + 1.0 };
+    let kx = x + 1.0 + 7.0 * on;
     let mut knob = Panel::new(kx, y + 1.0, kx + 9.0, y + 10.0);
     knob.radius = 4.5;
     knob.shadow = 0.2;
     knob.highlight = 0.2;
     knob.tint = [1.0, 1.0, 1.0, 0.96];
+    knob.opacity = opacity;
     canvas.glass(knob);
 }
 
-fn button(canvas: &mut Canvas<'_>, rect: [f32; 4], label: &str, hover: bool, primary: bool) {
+fn button(
+    canvas: &mut Canvas<'_>,
+    rect: [f32; 4],
+    label: &str,
+    hover: bool,
+    primary: bool,
+    opacity: f32,
+) {
     let mut panel = Panel::new(rect[0], rect[1], rect[2], rect[3]);
     panel.radius = 10.0;
     panel.shadow = 0.15;
@@ -370,6 +497,7 @@ fn button(canvas: &mut Canvas<'_>, rect: [f32; 4], label: &str, hover: bool, pri
         (false, false) => [0.20, 0.22, 0.27, 0.45],
         (false, true) => [0.32, 0.35, 0.42, 0.50],
     };
+    panel.opacity = opacity;
     canvas.glass(panel);
     let w = canvas.system_width(label, BODY, Weight::Semibold);
     canvas.system_text(
@@ -378,7 +506,7 @@ fn button(canvas: &mut Canvas<'_>, rect: [f32; 4], label: &str, hover: bool, pri
         rect[1] + (rect[3] - rect[1] - BODY) / 2.0,
         BODY,
         Weight::Semibold,
-        0xFFFF_FFFF,
+        fade(0xFFFF_FFFF, opacity),
     );
 }
 
@@ -448,5 +576,80 @@ mod tests {
         assert!(menu.open && !menu.editing);
         assert_eq!(menu.click(layout, (1.0, 1.0), &mut settings), Click::Close);
         assert!(!menu.active());
+    }
+
+    #[test]
+    fn new_cards_flip_numbers_and_cycle_crosshairs() {
+        let layout = Layout::new((1440, 900), 1.0, 2);
+        let g = geometry(layout);
+        let mut settings = Settings::default();
+        let mut menu = Menu::default();
+        menu.toggle();
+        let centre = |entry| {
+            let (_, r) = g.cards.iter().find(|(e, _)| *e == entry).unwrap();
+            ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0)
+        };
+        menu.click(layout, centre(Entry::ScoreboardNumbers), &mut settings);
+        assert!(!settings.toggles.scoreboard_numbers);
+        let styles: Vec<String> = (0..4)
+            .map(|_| {
+                menu.click(layout, centre(Entry::Crosshair), &mut settings);
+                Entry::Crosshair.value(&settings)
+            })
+            .collect();
+        assert_eq!(styles, ["Cross", "Dot", "Vanilla", "Cross"]);
+    }
+
+    #[test]
+    fn the_sheet_and_switches_animate_and_stay_drawn_while_closing() {
+        let mut settings = Settings::default();
+        let mut menu = Menu::default();
+        assert!(!menu.visible());
+        menu.toggle();
+        menu.step(0.05, &settings);
+        assert!(menu.shown > 0.0 && menu.shown < 1.0);
+        for _ in 0..10 {
+            menu.step(0.05, &settings);
+        }
+        assert_eq!(menu.shown, 1.0);
+        // Switches start where their setting is, then slide.
+        let sprint = entries()
+            .iter()
+            .position(|&e| e == Entry::ToggleSprint)
+            .unwrap();
+        assert_eq!(menu.knobs[sprint], 0.0);
+        settings.toggles.toggle_sprint = true;
+        menu.step(0.04, &settings);
+        assert!(menu.knobs[sprint] > 0.0 && menu.knobs[sprint] < 1.0);
+        menu.step(1.0, &settings);
+        menu.step(1.0, &settings);
+        assert_eq!(menu.knobs[sprint], 1.0);
+        menu.close();
+        menu.step(0.05, &settings);
+        assert!(!menu.active() && menu.visible());
+        for _ in 0..10 {
+            menu.step(0.05, &settings);
+        }
+        assert!(!menu.visible());
+        assert_eq!(ease(0.0), 0.0);
+        assert_eq!(ease(1.0), 1.0);
+        assert_eq!(fade(0xFF12_3456, 0.5), 0x8012_3456);
+    }
+
+    #[test]
+    fn scrolling_over_a_card_in_the_editor_resizes_it() {
+        let mut settings = Settings::default();
+        let mut menu = Menu::default();
+        let cards = [(HudKind::Fps, [10.0, 10.0, 60.0, 26.0])];
+        assert!(!menu.scroll((20.0, 15.0), 1, &cards, &mut settings));
+        menu.editing = true;
+        assert!(menu.scroll((20.0, 15.0), 2, &cards, &mut settings));
+        assert!((settings.hud(HudKind::Fps).scale - 1.2).abs() < 1e-5);
+        assert!(!menu.scroll((200.0, 15.0), 1, &cards, &mut settings));
+        menu.scroll((20.0, 15.0), -40, &cards, &mut settings);
+        assert_eq!(settings.hud(HudKind::Fps).scale, 0.5);
+        assert!(!menu.scroll((20.0, 15.0), -1, &cards, &mut settings));
+        menu.scroll((20.0, 15.0), 99, &cards, &mut settings);
+        assert_eq!(settings.hud(HudKind::Fps).scale, 3.0);
     }
 }
