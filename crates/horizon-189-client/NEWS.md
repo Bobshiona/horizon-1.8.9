@@ -1,9 +1,10 @@
-# What's new in Horizon 1.8.9
+# What's new in Bob Client
 
 Newest first. The launcher's News page shows this file; write for players.
 
-## A launcher of its own
-- Horizon opens to its own launcher now: your account, Play, quick play with live player counts and ping, news, mods and settings.
+## Bob Client, with a launcher of its own
+- Horizon 1.8.9 is now Bob Client. The app renames itself on this update; nothing else to do.
+- Bob Client opens to its own launcher now: your account, Play, quick play with live player counts and ping, news, mods and settings.
 - Updates download and build in the launcher, so the game window just plays.
 - HUD cards are graphite: clearer over a bright sky, and cheaper to draw than glass.
 

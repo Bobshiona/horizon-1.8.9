@@ -692,7 +692,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("Horizon 1.8.9")
+            .with_title("Bob Client")
             .with_inner_size(LogicalSize::new(960.0, 600.0))
             .with_min_inner_size(LogicalSize::new(320.0, 240.0));
         let result = event_loop
@@ -864,7 +864,10 @@ impl ApplicationHandler for App {
                         return;
                     }
                     if self.menu.active() {
-                        if pressed && !event.repeat && key == KeyCode::Escape {
+                        // Typing searches the open menu; Escape clears the
+                        // search first, then closes.
+                        let used = pressed && self.menu.key(key, event.text.as_deref());
+                        if pressed && !used && !event.repeat && key == KeyCode::Escape {
                             self.menu.close();
                             self.save_settings();
                         }
@@ -1058,6 +1061,12 @@ impl ApplicationHandler for App {
                     .scroll(mouse, notches, &self.hud_rects, &mut self.settings)
                 {
                     self.save_settings();
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.menu.open => {
+                let notches = self.notches(delta);
+                if let Some(layout) = self.renderer.as_ref().map(|r| r.layout) {
+                    self.menu.wheel(layout, notches);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if self.captured => {
@@ -2156,8 +2165,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .join("Library/Application Support/minecraft/versions/1.8.9/1.8.9.jar");
         if !jar.is_file() {
             alert(
-                "Horizon needs your copy of Minecraft 1.8.9. Open the Minecraft Launcher, \
-                 play 1.8.9 once so it downloads, then open Horizon again.",
+                "Bob Client needs your copy of Minecraft 1.8.9. Open the Minecraft Launcher, \
+                 play 1.8.9 once so it downloads, then open Bob Client again.",
             );
             return Ok(());
         }
@@ -2300,7 +2309,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {
         if launcher_mode || from_launcher {
-            alert(&format!("Horizon stopped: {error}"));
+            alert(&format!("Bob Client stopped: {error}"));
         }
         return Err(error.into());
     }
@@ -2317,7 +2326,7 @@ fn spawn_game(address: &str, handoff: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(&dir).ok()?;
         std::fs::File::create(dir.join("game.log")).ok()
     });
-    let mut child = Command::new(std::env::current_exe()?)
+    let mut child = Command::new(updater::program()?)
         .arg("--play")
         .arg(address)
         .stdin(Stdio::piped())
@@ -2334,7 +2343,7 @@ fn spawn_game(address: &str, handoff: &str) -> std::io::Result<()> {
 /// update installed meanwhile is the one that opens).
 fn reopen_launcher() {
     use std::process::{Command, Stdio};
-    if let Ok(program) = std::env::current_exe() {
+    if let Ok(program) = updater::program() {
         let _ = Command::new(program)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -2403,7 +2412,7 @@ fn alert(message: &str) {
             "-e",
             "on run argv",
             "-e",
-            "display alert \"Horizon 1.8.9\" message (item 1 of argv)",
+            "display alert \"Bob Client\" message (item 1 of argv)",
             "-e",
             "end run",
             "--",

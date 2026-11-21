@@ -1,4 +1,4 @@
-//! The Horizon look, shared by the launcher, the mod menu and the HUD:
+//! The Bob Client look, shared by the launcher, the mod menu and the HUD:
 //! graphite surfaces with hairline edges and square corners, one ember
 //! accent kept for the single most important thing on a screen, and corner
 //! brackets, like a hitbox's, marking whatever is selected.

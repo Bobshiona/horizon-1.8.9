@@ -1844,3 +1844,29 @@ frame-limit end stop, Restart only when ready), sign-in gating and the scrolling
 News parsing.
 
 Gate: 245 tests.
+
+## 64. Bob Client, and the mod menu rebuilt
+
+Previous commit: 8a49ee57d0.
+
+- **Name.** Everything a player sees says Bob Client: window titles, alerts, the F3 build line,
+  the launcher and News. The app bundle is now `Bob Client.app`. The updater renames an
+  installed `Horizon 1.8.9.app` in place after installing an update (a rename, never a copy, and
+  never over an existing `Bob Client.app`) and rewrites its `Info.plist`; `--install` does the
+  same. A running launcher keeps its launch path, so `updater::program()` finds the program in
+  the renamed bundle for Play, Restart and reopening the launcher. Internal names (crates, the
+  Application Support folder, the bundle identifier) are unchanged.
+- **Mod menu (Right Shift).** A graphite sheet over the dimmed world (no glass blur): a
+  category rail (All, HUD, Gameplay, Visual, General, with counts; the open one has the ember
+  brackets), type-to-search on the open menu (Backspace deletes; Escape clears the search
+  before it closes the menu), a card grid of up to three columns that the scroll wheel scrolls a
+  row per notch with a scroll bar, monochrome square switches that still slide, and Edit HUD,
+  Disconnect and Done in a footer. The HUD editor's hint pill is graphite too. The pause and
+  options glass sheets keep the old shared helpers.
+
+Regressions: renaming an old bundle in place (and not clobbering an existing one, and finding
+the program afterwards); the sheet fitting five screen sizes at every scroll with cards inside
+the content area; rail clicks, search, Escape order and wheel limits; the existing click, drag,
+animation and editor-resize tests.
+
+Gate: 247 tests.

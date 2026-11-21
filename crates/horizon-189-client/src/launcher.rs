@@ -1,4 +1,4 @@
-//! The launcher: a window of its own before the game, in the Horizon look —
+//! The launcher: a window of its own before the game, in the Bob Client look —
 //! graphite surfaces with hairline edges, one ember accent kept for Play and
 //! the selection, and corner brackets (a hitbox's corners) marking what is
 //! selected. A sidebar switches between Home (welcome, Play, quick play with
@@ -922,7 +922,7 @@ impl Launcher {
         if self.page == Page::Home {
             let (line, name) = match &account {
                 Account::SignedIn(session) => ("Welcome back", session.profile.username.clone()),
-                _ => ("Welcome to Horizon", "Sign in to play online".to_owned()),
+                _ => ("Welcome to Bob Client", "Sign in to play online".to_owned()),
             };
             canvas.system_text(line, x0, 11.0, 6.0, Weight::Regular, style::MUTED);
             canvas.system_text(&name, x0, 19.0, TITLE, Weight::Semibold, style::TEXT);
@@ -1010,7 +1010,7 @@ impl Launcher {
             style::MUTED,
         );
         canvas.system_text(
-            "Horizon",
+            "Bob Client",
             left,
             hero[1] + 26.0,
             20.0,
@@ -1612,7 +1612,7 @@ mod tests {
     fn news_reads_titles_and_lines_newest_first() {
         let entries = news(include_str!("../NEWS.md"));
         assert!(entries.len() >= 3);
-        assert_eq!(entries[0].title, "A launcher of its own");
+        assert_eq!(entries[0].title, "Bob Client, with a launcher of its own");
         assert!(
             entries
                 .iter()

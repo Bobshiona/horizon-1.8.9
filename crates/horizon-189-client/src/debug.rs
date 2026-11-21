@@ -244,7 +244,7 @@ pub fn left(info: &Info<'_>) -> Vec<String> {
 /// `avv.c()`, with this client's runtime in place of the JVM's.
 pub fn right(info: &Info<'_>) -> Vec<String> {
     let mut lines = vec![
-        format!("Rust: Horizon {} 64bit", info.build),
+        format!("Rust: Bob Client {} 64bit", info.build),
         String::new(),
         format!("CPU: {}", info.cpu),
         String::new(),

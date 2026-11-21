@@ -15,7 +15,10 @@ use std::{
 pub const BUILD: Option<&str> = option_env!("HORIZON_189_BUILD");
 /// The program's name inside `Contents/MacOS`.
 pub const EXECUTABLE: &str = "horizon-189";
-pub const APP_NAME: &str = "Horizon 1.8.9.app";
+pub const APP_NAME: &str = "Bob Client.app";
+/// Names the app was installed under before; an update renames these in
+/// place rather than leaving a second copy.
+const OLD_APP_NAMES: [&str; 1] = ["Horizon 1.8.9.app"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -157,6 +160,11 @@ impl Updater {
     pub fn restart(&self) -> bool {
         let Some(bundle) = &self.bundle else {
             return false;
+        };
+        let bundle = if bundle.exists() {
+            bundle.clone()
+        } else {
+            bundle.with_file_name(APP_NAME)
         };
         Command::new("/usr/bin/open")
             .arg("-n")
@@ -320,6 +328,7 @@ fn update(support: &Path, bundle: &Path, status: &Mutex<Status>) -> Result<Statu
     }
     let program = target_dir.join("aarch64-apple-darwin/release/horizon-189-client");
     install_program(&program, bundle).map_err(|error| format!("install: {error}"))?;
+    adopt_name(bundle).map_err(|error| format!("rename: {error}"))?;
     std::fs::write(support.join("installed"), &tip).map_err(|error| error.to_string())?;
     log(support, &format!("installed {short}"));
     Ok(Status::Ready(short))
@@ -337,6 +346,45 @@ pub fn install_program(program: &Path, bundle: &Path) -> std::io::Result<()> {
     std::fs::rename(&staged, macos.join(EXECUTABLE))
 }
 
+/// Give an installed bundle the current name and `Info.plist`: one under
+/// an older name is renamed in place (never copied), unless an app with the
+/// new name is already there. Returns where the bundle is now.
+pub fn adopt_name(bundle: &Path) -> std::io::Result<PathBuf> {
+    let contents = bundle.join("Contents");
+    std::fs::create_dir_all(&contents)?;
+    std::fs::write(
+        contents.join("Info.plist"),
+        info_plist(env!("CARGO_PKG_VERSION")),
+    )?;
+    let Some(folder) = bundle.parent() else {
+        return Ok(bundle.to_path_buf());
+    };
+    let named = folder.join(APP_NAME);
+    if bundle == named || named.exists() {
+        return Ok(bundle.to_path_buf());
+    }
+    std::fs::rename(bundle, &named)?;
+    Ok(named)
+}
+
+/// `program`, or the same program in a bundle renamed by [`adopt_name`]
+/// since it started (a running program keeps its launch path).
+pub fn locate(program: &Path) -> PathBuf {
+    if program.exists() {
+        return program.to_path_buf();
+    }
+    bundle_of(program)
+        .and_then(|bundle| Some(bundle.parent()?.join(APP_NAME)))
+        .map(|bundle| bundle.join("Contents/MacOS").join(EXECUTABLE))
+        .filter(|renamed| renamed.exists())
+        .unwrap_or_else(|| program.to_path_buf())
+}
+
+/// This program on disk, following a rename.
+pub fn program() -> std::io::Result<PathBuf> {
+    Ok(locate(&std::env::current_exe()?))
+}
+
 /// `Info.plist` for the bundle.
 pub fn info_plist(version: &str) -> String {
     format!(
@@ -347,7 +395,7 @@ pub fn info_plist(version: &str) -> String {
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Horizon 1.8.9</string>
+	<string>Bob Client</string>
 	<key>CFBundleExecutable</key>
 	<string>{EXECUTABLE}</string>
 	<key>CFBundleIconFile</key>
@@ -357,7 +405,7 @@ pub fn info_plist(version: &str) -> String {
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Horizon 1.8.9</string>
+	<string>Bob Client</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -397,6 +445,12 @@ pub fn install(source: Option<&Source>) -> Result<PathBuf, Box<dyn std::error::E
         user
     };
     let bundle = folder.join(APP_NAME);
+    for old in OLD_APP_NAMES {
+        let old = folder.join(old);
+        if old.exists() && !bundle.exists() {
+            std::fs::rename(&old, &bundle)?;
+        }
+    }
     let resources = bundle.join("Contents/Resources");
     std::fs::create_dir_all(&resources)?;
     let version = env!("CARGO_PKG_VERSION");
@@ -470,6 +524,32 @@ mod tests {
             Status::Ready("abc".into()).label(),
             "Update abc installed · used from the next Play"
         );
+    }
+
+    #[test]
+    fn an_app_under_an_old_name_is_renamed_in_place() {
+        let dir = std::env::temp_dir().join(format!("h189-rename-{}", std::process::id()));
+        let old = dir.join("Horizon 1.8.9.app");
+        std::fs::create_dir_all(old.join("Contents/MacOS")).unwrap();
+        std::fs::write(old.join("Contents/MacOS").join(EXECUTABLE), b"x").unwrap();
+        let program = old.join("Contents/MacOS").join(EXECUTABLE);
+        let named = adopt_name(&old).unwrap();
+        assert_eq!(named, dir.join(APP_NAME));
+        assert!(!old.exists() && named.join("Contents/MacOS").join(EXECUTABLE).is_file());
+        let plist = std::fs::read_to_string(named.join("Contents/Info.plist")).unwrap();
+        assert!(plist.contains("<string>Bob Client</string>"));
+        // The old program path still finds the program after the rename.
+        assert_eq!(
+            locate(&program),
+            named.join("Contents/MacOS").join(EXECUTABLE)
+        );
+        // Already named: stays put. Never clobbers another app of that name.
+        assert_eq!(adopt_name(&named).unwrap(), named);
+        let other = dir.join("Horizon 1.8.9.app");
+        std::fs::create_dir_all(other.join("Contents")).unwrap();
+        assert_eq!(adopt_name(&other).unwrap(), other);
+        assert!(other.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
