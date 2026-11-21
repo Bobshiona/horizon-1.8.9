@@ -19,6 +19,8 @@ pub struct ModFrame<'a> {
     pub buttons: [bool; 2],
     pub cps: [u32; 2],
     pub fps: Option<u32>,
+    /// Smoothed CPU work per frame in milliseconds, without display waits.
+    pub frame_ms: Option<f32>,
     /// Helmet, chestplate, leggings, boots.
     pub armor: &'a [Option<Item>; 4],
     /// Effect, amplifier and remaining ticks.
@@ -62,11 +64,7 @@ const GAP: f32 = 2.0;
 fn text_lines(kind: HudKind, frame: &ModFrame<'_>) -> Vec<String> {
     match kind {
         HudKind::Cps => vec![format!("{} | {} CPS", frame.cps[0], frame.cps[1])],
-        HudKind::Fps => vec![
-            frame
-                .fps
-                .map_or_else(|| "-- FPS".to_owned(), |f| format!("{f} FPS")),
-        ],
+        HudKind::Fps => vec![fps_line(frame.fps, frame.frame_ms)],
         HudKind::Ping => vec![
             frame
                 .ping
@@ -82,6 +80,16 @@ fn text_lines(kind: HudKind, frame: &ModFrame<'_>) -> Vec<String> {
             ]
         }
         _ => Vec::new(),
+    }
+}
+
+/// Shown frames per second, and how long each takes to make: the display
+/// caps the first, the second is the client's own cost.
+fn fps_line(fps: Option<u32>, ms: Option<f32>) -> String {
+    let fps = fps.map_or_else(|| "--".to_owned(), |f| f.to_string());
+    match ms {
+        Some(ms) => format!("{fps} FPS · {ms:.1} ms"),
+        None => format!("{fps} FPS"),
     }
 }
 
@@ -375,6 +383,12 @@ mod tests {
             place(hud(0.0, 0.0, 9.0), (40.0, 10.0), screen),
             [0.0, 0.0, 120.0, 30.0]
         );
+    }
+
+    #[test]
+    fn the_fps_card_shows_frame_cost() {
+        assert_eq!(fps_line(Some(60), Some(1.26)), "60 FPS · 1.3 ms");
+        assert_eq!(fps_line(None, None), "-- FPS");
     }
 
     #[test]

@@ -101,6 +101,8 @@ struct App {
     smoke_menu: bool,
     smoke_pitch: Option<f32>,
     bench: bool,
+    /// Smoothed CPU cost of a frame for the FPS card.
+    frame_time: pvp_metrics::FrameTime,
     bench_gpu: frame_stats::FrameStats,
     bench_cpu: frame_stats::FrameStats,
     bench_wall: frame_stats::FrameStats,
@@ -1329,6 +1331,7 @@ impl ApplicationHandler for App {
                             let (hud, chat) = (&mut self.hud, &mut self.chat);
                             let tab_held = self.tab_held || self.smoke_tab;
                             let sample = self.metrics.sample(self.started.elapsed());
+                            let frame_ms = self.frame_time.millis();
                             let (settings, menu, rects) =
                                 (&self.settings, &self.menu, &mut self.hud_rects);
                             let keys = self.keyboard.keys();
@@ -1367,6 +1370,7 @@ impl ApplicationHandler for App {
                                         buttons,
                                         cps: [sample.left, sample.right],
                                         fps: sample.fps,
+                                        frame_ms,
                                         armor: &snapshot.armor,
                                         potions: &snapshot.potions,
                                         position: snapshot.current,
@@ -1426,6 +1430,11 @@ impl ApplicationHandler for App {
                                 if renderer.offscreen_frames == offscreen {
                                     self.metrics.presented(self.started.elapsed());
                                 }
+                                self.frame_time.record(
+                                    frame_started
+                                        .elapsed()
+                                        .saturating_sub(renderer.acquire_wait + renderer.gpu_time),
+                                );
                                 if self.bench && capture.is_none() {
                                     let now = Instant::now();
                                     let gpu = renderer.gpu_time;
@@ -1716,6 +1725,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_menu: options.smoke_menu,
         smoke_pitch: options.smoke_pitch,
         bench: options.bench,
+        frame_time: Default::default(),
         bench_gpu: Default::default(),
         bench_cpu: Default::default(),
         bench_wall: Default::default(),

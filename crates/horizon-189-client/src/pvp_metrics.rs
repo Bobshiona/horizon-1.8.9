@@ -10,6 +10,27 @@ pub struct Sample {
     pub left: u32,
     pub right: u32,
 }
+/// The CPU work of a frame, excluding the wait for the display, smoothed
+/// over about a quarter second: how much of each refresh the client uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameTime {
+    millis: Option<f32>,
+}
+
+impl FrameTime {
+    pub fn record(&mut self, work: Duration) {
+        let ms = work.as_secs_f32() * 1000.0;
+        if !ms.is_finite() {
+            return;
+        }
+        self.millis = Some(self.millis.map_or(ms, |old| old + (ms - old) * 0.1));
+    }
+
+    pub fn millis(&self) -> Option<f32> {
+        self.millis
+    }
+}
+
 #[derive(Default)]
 pub struct Metrics {
     frames: VecDeque<Duration>,
@@ -82,6 +103,20 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_time_smooths_work_and_starts_empty() {
+        let mut time = FrameTime::default();
+        assert_eq!(time.millis(), None);
+        time.record(Duration::from_micros(2000));
+        assert_eq!(time.millis(), Some(2.0));
+        for _ in 0..200 {
+            time.record(Duration::from_micros(1000));
+        }
+        assert!((time.millis().unwrap() - 1.0).abs() < 1e-3);
+        time.record(Duration::from_micros(11_000));
+        assert!((time.millis().unwrap() - 2.0).abs() < 1e-3);
+    }
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
     }

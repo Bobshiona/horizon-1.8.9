@@ -36,6 +36,9 @@ pub struct Renderer {
     /// `--bench`: wait for each frame's GPU work and keep its duration.
     pub bench: bool,
     pub gpu_time: std::time::Duration,
+    /// Time this frame spent waiting for the display to hand back a
+    /// drawable: pacing, not work.
+    pub acquire_wait: std::time::Duration,
     skin_loader: crate::skins::Loader,
     skins: std::collections::HashMap<u128, crate::skins::Binding>,
     skin_images: std::collections::HashMap<u128, crate::skins::Loaded>,
@@ -98,7 +101,7 @@ impl Renderer {
             config.usage |= wgpu::TextureUsages::COPY_SRC;
         }
         config.present_mode = wgpu::PresentMode::Fifo;
-        config.desired_maximum_frame_latency = 2;
+        config.desired_maximum_frame_latency = 1;
         Self::add_interface_view(&mut config);
         let registry = assets
             .as_ref()
@@ -150,6 +153,7 @@ impl Renderer {
             offscreen_frames: 0,
             bench: false,
             gpu_time: std::time::Duration::ZERO,
+            acquire_wait: std::time::Duration::ZERO,
             skin_loader: crate::skins::Loader::new()?,
             skins: Default::default(),
             skin_images: Default::default(),
@@ -592,11 +596,13 @@ impl Renderer {
         }
         // `--bench` renders offscreen so the compositor's pacing never
         // enters the GPU timing.
+        let waited = std::time::Instant::now();
         let acquired = if self.bench {
             wgpu::CurrentSurfaceTexture::Occluded
         } else {
             self.surface.get_current_texture()
         };
+        self.acquire_wait = waited.elapsed();
         let (frame, reconfigure) = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame) => (Some(frame), false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (Some(frame), true),
@@ -616,7 +622,7 @@ impl Renderer {
                     .get_default_config(&self.adapter, self.config.width, self.config.height)
                     .ok_or("Recreated surface has no supported configuration")?;
                 self.config.present_mode = wgpu::PresentMode::Fifo;
-                self.config.desired_maximum_frame_latency = 2;
+                self.config.desired_maximum_frame_latency = 1;
                 Self::add_interface_view(&mut self.config);
                 if self.config.format != previous_format
                     && let Some(registry) = self.registry.clone()

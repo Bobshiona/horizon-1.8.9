@@ -1283,3 +1283,27 @@ server-list persistence and validation, the Disconnect button, and the new optio
 `--smoke-launcher` capture checked the card over the panorama. Gate: 211 scoped tests, strict
 Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 45. On-screen frame rate, frame cost and latency
+
+Section 44's app and launcher is `898127bfab`.
+
+The owner's first session on a real server (Minemen) found no noticeable performance difference.
+Measured on his Mac (MacBook Air M5, a 60 Hz built-in display): with Frame Limit at Unlimited the
+present mode is Immediate, yet frames still reach the screen every 16.7 ms, because macOS returns a
+windowed layer's drawable only as the compositor consumes one. A windowed app on this display shows
+at most 60 frames a second whatever it renders; Java clients' counters count frames rendered and
+discarded. The renderer itself needs about 1.3 ms of a 16.7 ms refresh.
+
+- The swap chain now queues one frame instead of two (`desired_maximum_frame_latency = 1`), so the
+  frame shown was started from newer input. Pacing on the bench world stayed steady (2,400 frames,
+  interval p50 16.67 ms, p95 17.4 ms, none over twice the median).
+- The FPS card shows the frames actually shown and the smoothed CPU cost of each frame without the
+  display wait, e.g. "60 FPS · 1.2 ms" (`pvp_metrics::FrameTime`).
+- View bobbing was checked rather than changed: on a scripted walk the camera sway reaches vanilla's
+  ~0.1 block, so the report was read as asking for a View Bobbing setting (next section).
+
+Next for latency: start each frame just before the display's refresh instead of just after the
+previous one, so input is sampled as late as possible. Regressions: frame-time smoothing and the
+FPS card text. A capture showed the card. Gate: 213 scoped tests, strict Clippy/fmt, layers,
+public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
