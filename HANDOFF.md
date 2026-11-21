@@ -1385,3 +1385,21 @@ zoom mod multiplies after. Regressions: sprint 1.15, flight 1.1, bow draw 0.85 a
 speed, the halfway easing and interpolation, under-water scaling and the surface check.
 
 Gate: 220 tests.
+
+## 50. F1 hides the GUI
+
+Section 49's dynamic FOV is `5ea3e224af`.
+
+F1 did nothing. From `Minecraft.runTick` (`ave.s`): with no screen open, key 59 toggles
+`GameSettings.hideGUI` (`avh.aA`); an open screen takes the key instead. While hidden,
+`updateCameraAndRender` skips the in-game overlay unless a screen is open (so chat, the inventory,
+the death screen, the pause menu and the mod menu still draw it), and `renderHand`,
+`isDrawBlockOutline` and `Minecraft.isGuiEnabled` skip the first-person hand, the block outline and
+name tags. The HUD mods are part of the overlay. `view::View` holds the toggle (F3 and F5 come
+next, from the same branch: `avh.aC` and `avh.aB`); `Renderer.names` gates name tags.
+`--smoke-hide-gui` starts hidden for captures: on the bench server with a sword and three named
+villagers the normal frame shows the HUD, mods, sword, crosshair and name tags, the F1 frame only
+the world. Regression: the toggle only without a screen, the overlay returning with one, and the
+world GUI staying off.
+
+Gate: 221 tests.

@@ -39,6 +39,8 @@ pub struct Options {
     pub smoke_launcher: bool,
     /// Validation only: open the settings screen once in the world.
     pub smoke_settings: bool,
+    /// Validation only: start with the GUI hidden, as after F1.
+    pub smoke_hide_gui: bool,
     /// With `--install`: the git repository the app updates from.
     pub update_source: Option<String>,
     /// Vanilla `viewBobbing` (on by default).
@@ -213,6 +215,7 @@ impl Options {
                 "--install" => options.install = true,
                 "--smoke-launcher" => options.smoke_launcher = true,
                 "--smoke-settings" => options.smoke_settings = true,
+                "--smoke-hide-gui" => options.smoke_hide_gui = true,
                 "--update-source" => options.update_source = Some(value()?),
                 "--smoke-pitch" => {
                     let pitch: f32 = value()?.parse()?;
@@ -280,7 +283,8 @@ impl Options {
             || options.bench
             || options.smoke_pitch.is_some()
             || options.smoke_launcher
-            || options.smoke_settings)
+            || options.smoke_settings
+            || options.smoke_hide_gui)
             && options.smoke_frames.is_none()
         {
             return Err("Smoke flags and --bench require --smoke-frames".into());

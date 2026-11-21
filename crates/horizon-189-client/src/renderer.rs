@@ -31,6 +31,8 @@ pub struct Renderer {
     pub layout: crate::ui::Layout,
     gui_scale: u32,
     fov: f32,
+    /// Name tags: off while F1 hides the GUI (`Minecraft.isGuiEnabled`).
+    pub names: bool,
     offscreen: Option<wgpu::Texture>,
     pub offscreen_frames: u64,
     /// `--bench`: wait for each frame's GPU work and keep its duration.
@@ -151,6 +153,7 @@ impl Renderer {
             fov,
             offscreen: None,
             offscreen_frames: 0,
+            names: true,
             bench: false,
             gpu_time: std::time::Duration::ZERO,
             acquire_wait: std::time::Duration::ZERO,
@@ -460,7 +463,9 @@ impl Renderer {
         tested.clear();
         lines.clear();
         crate::models::fishing_lines(&mut lines, entities, partial, scene.origin(), angler);
-        if let Some(registry) = &self.registry {
+        if self.names
+            && let Some(registry) = &self.registry
+        {
             crate::models::nametags(
                 &mut through,
                 &mut tested,

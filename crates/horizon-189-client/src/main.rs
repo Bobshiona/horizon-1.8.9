@@ -37,6 +37,7 @@ mod terrain;
 mod tooltip;
 mod ui;
 mod updater;
+mod view;
 
 use horizon_client_platform::is_quit_shortcut_down;
 use horizon_physics_189::player::{EYE_HEIGHT, Keys};
@@ -116,6 +117,8 @@ struct App {
     player_epoch: u64,
     world_epoch: u64,
     view_bobbing: bool,
+    /// F1, F3 and F5.
+    view: view::View,
     fov: f32,
     metrics: pvp_metrics::Metrics,
     settings: settings::Settings,
@@ -839,6 +842,9 @@ impl ApplicationHandler for App {
                         return;
                     }
                     if event.state == ElementState::Pressed && !event.repeat {
+                        if self.network.is_some() {
+                            self.view.key(key, screen);
+                        }
                         if let Some(network) = &self.network
                             && let Ok(mut state) = network.shared.lock()
                         {
@@ -1342,39 +1348,44 @@ impl ApplicationHandler for App {
                             );
                         }
                         let own = snapshot.as_ref().and_then(|s| s.own.as_ref());
-                        let hand_frame = snapshot.as_ref().filter(|s| s.game_mode != 3).map(|s| {
-                            let own_uuid = s.own.as_ref().map(|(uuid, _)| *uuid);
-                            let (skin, slim) = own_uuid
-                                .and_then(|uuid| renderer.skin_of(uuid))
-                                .unwrap_or_else(|| {
-                                    let slim = own_uuid
-                                        .is_some_and(horizon_world_189::entities::slim_skin);
-                                    let default = if slim {
-                                        models::Texture::Alex
-                                    } else {
-                                        models::Texture::Steve
-                                    };
-                                    (default as u32, slim)
-                                });
-                            hand::Frame {
-                                state: &s.hand,
-                                partial,
-                                swing: s
-                                    .swing
-                                    .map_or(0.0, |v| ((f32::from(v) + partial) / 6.0).min(1.0)),
-                                skin,
-                                slim,
-                                sleeve: true,
-                                invisible: s.vitals.effects & (1 << 14) != 0,
-                                bobbing: self.view_bobbing,
-                                look: [pose.pitch, pose.yaw],
-                                millis: models::millis(),
-                                cast: entities.iter().any(|(_, entity)| {
-                                    entity.kind == horizon_world_189::entities::Kind::Object(90)
-                                        && entity.data == s.entity_id
-                                }),
-                            }
-                        });
+                        let world_gui = self.view.world_gui();
+                        renderer.names = world_gui;
+                        let hand_frame = snapshot
+                            .as_ref()
+                            .filter(|s| s.game_mode != 3 && world_gui)
+                            .map(|s| {
+                                let own_uuid = s.own.as_ref().map(|(uuid, _)| *uuid);
+                                let (skin, slim) = own_uuid
+                                    .and_then(|uuid| renderer.skin_of(uuid))
+                                    .unwrap_or_else(|| {
+                                        let slim = own_uuid
+                                            .is_some_and(horizon_world_189::entities::slim_skin);
+                                        let default = if slim {
+                                            models::Texture::Alex
+                                        } else {
+                                            models::Texture::Steve
+                                        };
+                                        (default as u32, slim)
+                                    });
+                                hand::Frame {
+                                    state: &s.hand,
+                                    partial,
+                                    swing: s
+                                        .swing
+                                        .map_or(0.0, |v| ((f32::from(v) + partial) / 6.0).min(1.0)),
+                                    skin,
+                                    slim,
+                                    sleeve: true,
+                                    invisible: s.vitals.effects & (1 << 14) != 0,
+                                    bobbing: self.view_bobbing,
+                                    look: [pose.pitch, pose.yaw],
+                                    millis: models::millis(),
+                                    cast: entities.iter().any(|(_, entity)| {
+                                        entity.kind == horizon_world_189::entities::Kind::Object(90)
+                                            && entity.data == s.entity_id
+                                    }),
+                                }
+                            });
                         if let Err(error) = renderer.set_hand(hand_frame.as_ref()) {
                             self.fail(event_loop, error);
                             return;
@@ -1396,7 +1407,9 @@ impl ApplicationHandler for App {
                         // while aiming at an entity).
                         let outline = crate::outline::style(self.settings.toggles.outline)
                             .zip(snapshot.as_ref())
-                            .filter(|(_, s)| matches!(s.game_mode, 0 | 1) && !s.aiming_entity)
+                            .filter(|(_, s)| {
+                                matches!(s.game_mode, 0 | 1) && !s.aiming_entity && world_gui
+                            })
                             .and_then(|(style, s)| {
                                 let world = self.network.as_ref()?.world.try_read().ok()?;
                                 let hit = self.selector.select(
@@ -1459,6 +1472,13 @@ impl ApplicationHandler for App {
                             let (settings, menu, rects) =
                                 (&self.settings, &self.menu, &mut self.hud_rects);
                             let pause = &self.pause;
+                            let overlay = self.view.overlay(
+                                snapshot.view.open
+                                    || snapshot.vitals.health <= 0.0
+                                    || chat.open
+                                    || menu.visible()
+                                    || pause.active(),
+                            );
                             let keys = self.keyboard.keys();
                             let buttons = self.metrics.held();
                             let ping = snapshot
@@ -1485,9 +1505,12 @@ impl ApplicationHandler for App {
                                     sidebar_numbers: settings.toggles.scoreboard_numbers,
                                     crosshair: settings.toggles.crosshair,
                                 };
-                                hud.draw(canvas, registry, &frame);
-                                if (!snapshot.view.open && snapshot.vitals.health > 0.0)
-                                    || menu.editing
+                                if overlay {
+                                    hud.draw(canvas, registry, &frame);
+                                }
+                                if overlay
+                                    && ((!snapshot.view.open && snapshot.vitals.health > 0.0)
+                                        || menu.editing)
                                 {
                                     let mods = hud_mods::ModFrame {
                                         settings,
@@ -1504,8 +1527,10 @@ impl ApplicationHandler for App {
                                     };
                                     *rects = hud_mods::draw(canvas, registry, &mods, menu.editing);
                                 }
-                                chat.draw(canvas, tick, mouse);
-                                hud.draw_after_chat(canvas, &frame);
+                                if overlay {
+                                    chat.draw(canvas, tick, mouse);
+                                    hud.draw_after_chat(canvas, &frame);
+                                }
                                 if snapshot.view.open && snapshot.vitals.health > 0.0 {
                                     hud::inventory(canvas, registry, &snapshot.view, mouse);
                                 }
@@ -1866,6 +1891,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         player_epoch: 0,
         world_epoch: 0,
         view_bobbing: options.view_bobbing,
+        view: view::View {
+            hide_gui: options.smoke_hide_gui,
+        },
         fov: options.fov,
         metrics: pvp_metrics::Metrics::default(),
         settings: {
