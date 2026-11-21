@@ -26,6 +26,8 @@ pub enum Combo {
     ClearChat,
     /// F3+A: `RenderGlobal.loadRenderers`.
     ReloadChunks,
+    /// F3+H: `advancedItemTooltips`, saved with the options.
+    AdvancedTooltips,
 }
 
 impl View {
@@ -63,6 +65,9 @@ impl View {
             }
             KeyCode::KeyD => Some(Combo::ClearChat),
             KeyCode::KeyA => Some(Combo::ReloadChunks),
+            KeyCode::KeyH => Some(Combo::AdvancedTooltips),
+            // F3+F passes RENDER_DISTANCE to setOptionValue, which has no
+            // case for it: in 1.8.9 it changes nothing.
             _ => None,
         }
     }
@@ -221,6 +226,11 @@ mod tests {
         assert!(view.hitboxes, "a screen takes the key");
         assert_eq!(view.combo(KeyCode::KeyD, false), Some(Combo::ClearChat));
         assert_eq!(view.combo(KeyCode::KeyA, false), Some(Combo::ReloadChunks));
+        assert_eq!(
+            view.combo(KeyCode::KeyH, false),
+            Some(Combo::AdvancedTooltips)
+        );
+        assert_eq!(view.combo(KeyCode::KeyF, false), None);
         assert_eq!(view.combo(KeyCode::KeyQ, false), None);
         assert!(view.key(KeyCode::F1, false));
         assert!(!view.hide_gui);

@@ -1332,6 +1332,19 @@ impl Pass {
     }
 }
 
+/// Six-pixel glyphs and no translations, for tests.
+#[cfg(test)]
+pub(crate) fn test_resources() -> Resources {
+    Resources {
+        language: Arc::default(),
+        widths: [6; 256],
+        by_width: vec![Vec::new(); 17],
+        glyph_sizes: vec![0; 1 << 16],
+        sheets: Vec::new(),
+        pages: vec![None; 256],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1364,14 +1377,7 @@ mod tests {
     }
 
     fn fixed_width() -> Resources {
-        Resources {
-            language: Arc::default(),
-            widths: [6; 256],
-            by_width: vec![Vec::new(); 17],
-            glyph_sizes: vec![0; 1 << 16],
-            sheets: Vec::new(),
-            pages: vec![None; 256],
-        }
+        super::test_resources()
     }
 
     #[test]

@@ -874,6 +874,12 @@ impl ApplicationHandler for App {
                             if key != KeyCode::F3 && self.keyboard.down(KeyCode::F3) {
                                 match self.view.combo(key, screen) {
                                     Some(view::Combo::ClearChat) => self.chat.clear(),
+                                    // F3+H saves the options, as vanilla does.
+                                    Some(view::Combo::AdvancedTooltips) => {
+                                        let t = &mut self.settings.toggles;
+                                        t.advanced_tooltips = !t.advanced_tooltips;
+                                        self.save_settings();
+                                    }
                                     Some(view::Combo::ReloadChunks) => {
                                         if let Some(network) = &self.network
                                             && let Ok(mut shared) = network.shared.lock()
@@ -1714,7 +1720,13 @@ impl ApplicationHandler for App {
                                     hud.draw_after_chat(canvas, &frame);
                                 }
                                 if snapshot.view.open && snapshot.vitals.health > 0.0 {
-                                    hud::inventory(canvas, registry, &snapshot.view, mouse);
+                                    hud::inventory(
+                                        canvas,
+                                        registry,
+                                        &snapshot.view,
+                                        mouse,
+                                        settings.toggles.advanced_tooltips,
+                                    );
                                 }
                                 if menu.visible() {
                                     menu.draw(canvas, settings, mouse);

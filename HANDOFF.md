@@ -1571,3 +1571,31 @@ Regressions: eye heights for zombie, baby zombie, enderman, spider, wither skele
 baby villager, cow and armour stand; marker and small armour-stand sizes; the baby pigman.
 
 Gate: 232 tests.
+
+## 56. F3+H advanced tooltips (and why F3+F does nothing)
+
+Section 55's eye heights are `728a6610cd`.
+
+**F3+H** toggles `advancedItemTooltips` and saves the options, as vanilla does. It's
+`toggles.advanced_tooltips` in settings.json. `ItemStack.getTooltip` (`zx`) then:
+- appends ` (#%04d/%d)` to the name for items with subtypes, or ` (#%04d)` for the rest;
+- shows dyed leather as `Color: #<toHexString, upper case>` instead of "Dyed";
+- ends with `Durability: left / max` when damaged, the registry name in dark grey, and
+  `NBT: N tag(s)` (top-level keys) when the stack has a tag.
+
+Without F3+H, a filled map's name now ends in ` #<map number>`, which was missing.
+
+`items::REGISTRY` holds all 337 items' ids, `getHasSubtypes` and registry names. It was booted from
+the owned jar with `Bootstrap.register` by a private dumper (not committed, like the earlier tables).
+
+**F3+F** passes `RENDER_DISTANCE` to `GameSettings.setOptionValue(Options, int)`, which has no case
+for it. In 1.8.9 the combination only re-saves the options, so it stays a no-op here.
+
+Regressions:
+- the sword's `(#0276)`, durability 1500 / 1561, registry name and `NBT: 1 tag(s)`;
+- wool's `(#0035/14)` with no durability line;
+- the map's ` #7` and `(#0358/7)`;
+- leather's `Color: #A06540`;
+- the H and F combos.
+
+Gate: 233 tests.

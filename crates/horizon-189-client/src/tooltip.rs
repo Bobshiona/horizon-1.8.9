@@ -342,13 +342,27 @@ fn fill(template: &str, args: &[&str]) -> String {
 
 /// `GuiContainer.renderToolTip`'s lines: `getTooltip`, then the rarity
 /// colour on the name and grey on every other line.
-pub fn lines(item: &Item, res: &Resources) -> Vec<String> {
+/// `advanced` is F3+H (`advancedItemTooltips`): the id after the name, and
+/// durability, registry name and NBT size at the end.
+pub fn lines(item: &Item, res: &Resources, advanced: bool) -> Vec<String> {
     let hide = hide_flags(item);
     let mut name = display_name(item, res);
     if custom_name(item).is_some() {
         name = format!("§o{name}");
     }
-    let mut out = vec![format!("{name}§r")];
+    let mut first = format!("{name}§r");
+    let id = item.id;
+    if advanced {
+        first = if crate::items::registry(id).is_some_and(|(subtypes, _)| subtypes) {
+            format!("{first} (#{id:04}/{})", item.damage)
+        } else {
+            format!("{first} (#{id:04})")
+        };
+    } else if custom_name(item).is_none() && id == 358 {
+        // A filled map shows its number.
+        first = format!("{first} #{}", item.damage);
+    }
+    let mut out = vec![first];
     if hide & 32 == 0 {
         if item.id == 403 {
             enchantment_lines(enchantments(item, "StoredEnchantments"), res, &mut out);
@@ -379,8 +393,12 @@ pub fn lines(item: &Item, res: &Resources) -> Vec<String> {
         enchantment_lines(enchantments(item, "ench"), res, &mut out);
     }
     if let Some(display) = display(item) {
-        if display.get("color").is_some() {
-            out.push(format!("§o{}", res.translate("item.dyed")));
+        if let Some(color) = display.get("color").and_then(Tag::as_int) {
+            out.push(if advanced {
+                format!("Color: #{color:X}")
+            } else {
+                format!("§o{}", res.translate("item.dyed"))
+            });
         }
         for lore in display.get("Lore").map(Tag::as_list).unwrap_or_default() {
             if let Some(line) = lore.as_str() {
@@ -429,6 +447,21 @@ pub fn lines(item: &Item, res: &Resources) -> Vec<String> {
     if unbreakable(item) && hide & 4 == 0 {
         out.push(format!("§9{}", res.translate("item.unbreakable")));
     }
+    if advanced {
+        let max = max_damage(item);
+        if max > 0 && item.damage > 0 {
+            out.push(format!(
+                "Durability: {} / {max}",
+                i32::from(max) - i32::from(item.damage)
+            ));
+        }
+        if let Some((_, name)) = crate::items::registry(id) {
+            out.push(format!("§8minecraft:{name}"));
+        }
+        if let Some(Tag::Compound(entries)) = &item.nbt {
+            out.push(format!("§8NBT: {} tag(s)", entries.len()));
+        }
+    }
     let rarity = rarity(item);
     out.into_iter()
         .enumerate()
@@ -445,6 +478,57 @@ pub fn lines(item: &Item, res: &Resources) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advanced_tooltips_add_the_id_durability_registry_name_and_nbt() {
+        let res = crate::ui::test_resources();
+        let sword = Item {
+            id: 276,
+            count: 1,
+            damage: 61,
+            nbt: Some(Tag::Compound(vec![("ench".into(), Tag::List(vec![]))])),
+        };
+        let plain = lines(&sword, &res, false);
+        let advanced = lines(&sword, &res, true);
+        assert!(advanced[0].ends_with("§r (#0276)"), "{}", advanced[0]);
+        assert_eq!(
+            &advanced[advanced.len() - 3..],
+            [
+                "§7Durability: 1500 / 1561",
+                "§7§8minecraft:diamond_sword",
+                "§7§8NBT: 1 tag(s)"
+            ]
+        );
+        assert_eq!(advanced.len(), plain.len() + 3);
+        // Items with subtypes show their damage value; unharmed items no
+        // durability; a filled map shows its number without F3+H.
+        let wool = Item {
+            id: 35,
+            count: 1,
+            damage: 14,
+            nbt: None,
+        };
+        assert!(lines(&wool, &res, true)[0].ends_with("§r (#0035/14)"));
+        assert_eq!(lines(&wool, &res, true).len(), 2);
+        let map = Item {
+            id: 358,
+            count: 1,
+            damage: 7,
+            nbt: None,
+        };
+        assert!(lines(&map, &res, false)[0].ends_with("§r #7"));
+        assert!(lines(&map, &res, true)[0].ends_with("§r (#0358/7)"));
+        let dyed = Item {
+            id: 298,
+            count: 1,
+            damage: 0,
+            nbt: Some(Tag::Compound(vec![(
+                "display".into(),
+                Tag::Compound(vec![("color".into(), Tag::Int(0x00A0_6540))]),
+            )])),
+        };
+        assert!(lines(&dyed, &res, true).contains(&"§7Color: #A06540".to_string()));
+    }
 
     #[test]
     fn registry_rows_agree_with_the_inventory_stack_limits() {

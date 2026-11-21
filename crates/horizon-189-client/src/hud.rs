@@ -837,7 +837,13 @@ pub fn inventory_model_point(view: &View, layout: Layout) -> (f32, f32) {
     (left + 51.0, top + 75.0)
 }
 
-pub fn inventory(canvas: &mut Canvas<'_>, registry: &Registry, view: &View, mouse: (f32, f32)) {
+pub fn inventory(
+    canvas: &mut Canvas<'_>,
+    registry: &Registry,
+    view: &View,
+    mouse: (f32, f32),
+    advanced_tooltips: bool,
+) {
     let (w, h) = (canvas.layout.width, canvas.layout.height);
     canvas.gradient(0.0, 0.0, w, h, 0xC010_1010, 0xD010_1010);
     let (left, top, screen) = origin(view, canvas.layout);
@@ -919,7 +925,7 @@ pub fn inventory(canvas: &mut Canvas<'_>, registry: &Registry, view: &View, mous
                 .and_then(|slot| view.slots.get(slot as usize))
                 .and_then(Option::as_ref)
             {
-                let lines = crate::tooltip::lines(item, res);
+                let lines = crate::tooltip::lines(item, res, advanced_tooltips);
                 canvas.tooltip(&lines, mouse);
             }
         }

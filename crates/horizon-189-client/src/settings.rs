@@ -98,6 +98,8 @@ pub struct Toggles {
     pub fps_limit: u32,
     /// The sidebar's red score numbers (vanilla shows them).
     pub scoreboard_numbers: bool,
+    /// F3+H (`GameSettings.advancedItemTooltips`).
+    pub advanced_tooltips: bool,
     /// Crosshair style: 0 vanilla, 1 gapped cross, 2 dot.
     pub crosshair: u8,
     /// Block outline style (`outline::STYLES`); 0 is vanilla's.
@@ -145,6 +147,7 @@ impl Default for Toggles {
             fullbright: false,
             fps_limit: 0,
             scoreboard_numbers: true,
+            advanced_tooltips: false,
             crosshair: 0,
             outline: 0,
         }
@@ -286,6 +289,7 @@ impl Settings {
                     .and_then(Value::as_u64)
                     .map_or(d.fps_limit, |v| u32::try_from(v).unwrap_or(u32::MAX)),
                 scoreboard_numbers: flag("scoreboard_numbers", d.scoreboard_numbers),
+                advanced_tooltips: flag("advanced_tooltips", d.advanced_tooltips),
                 crosshair: t
                     .get("crosshair")
                     .and_then(Value::as_u64)
@@ -336,6 +340,7 @@ impl Settings {
                 "fullbright": t.fullbright,
                 "fps_limit": t.fps_limit,
                 "scoreboard_numbers": t.scoreboard_numbers,
+                "advanced_tooltips": t.advanced_tooltips,
                 "crosshair": t.crosshair,
                 "outline": t.outline,
             },
