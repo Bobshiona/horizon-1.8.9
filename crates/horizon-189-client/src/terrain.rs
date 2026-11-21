@@ -41,13 +41,178 @@ struct Model {
     total: i32,
 }
 
-/// Per-column vertices; translucent geometry draws after everything else.
-/// Block entities use the entity texture array.
+/// Packed terrain corner, 16 bytes: column-local position in 1/128 blocks
+/// (biased by `BIAS` blocks) with the sprite layer, normalized UV, and the
+/// gamma-space colour (tint x face shade x light) as vanilla's 8-bit vertex
+/// colour. Quads are four corners drawn through the shared quad index list.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+pub struct TerrainVertex {
+    pub position: [u16; 4],
+    pub uv: [u16; 2],
+    pub color: [u8; 4],
+}
+
+impl TerrainVertex {
+    pub const SCALE: f32 = 128.0;
+    pub const BIAS: f32 = 8.0;
+
+    pub fn new(local: [f32; 3], uv: [f32; 2], layer: u32, color: [f32; 3]) -> Self {
+        let axis = |value: f32| {
+            ((value + Self::BIAS) * Self::SCALE)
+                .round()
+                .clamp(0.0, 65535.0) as u16
+        };
+        let unit = |value: f32| (value.clamp(0.0, 1.0) * 65535.0).round() as u16;
+        let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Self {
+            position: [
+                axis(local[0]),
+                axis(local[1]),
+                axis(local[2]),
+                u16::try_from(layer).unwrap_or(0),
+            ],
+            uv: uv.map(unit),
+            color: [byte(color[0]), byte(color[1]), byte(color[2]), 255],
+        }
+    }
+
+    #[cfg(test)]
+    fn local(&self) -> [f32; 3] {
+        std::array::from_fn(|axis| f32::from(self.position[axis]) / Self::SCALE - Self::BIAS)
+    }
+}
+
+/// One render pass of a column: four corners per quad, ordered by
+/// 16-block section so each section is a contiguous quad range.
+#[derive(Default)]
+pub struct TerrainPass {
+    pub vertices: Vec<TerrainVertex>,
+    /// Quad index where each section starts; `sections[16]` is the total.
+    pub sections: [u32; 17],
+}
+
+impl TerrainPass {
+    pub fn quads(&self) -> u32 {
+        (self.vertices.len() / 4) as u32
+    }
+
+    fn close_section(&mut self, section: usize) {
+        let quads = self.quads();
+        for start in &mut self.sections[section + 1..] {
+            *start = quads;
+        }
+    }
+}
+
+/// Per-column geometry in column-local coordinates. Solid quads draw first
+/// without alpha testing so the GPU can reject hidden surfaces early, cutout
+/// quads (sprites with transparent texels) next, translucent last. Block
+/// entities use the entity texture array, relative to the mesh origin.
 #[derive(Default)]
 pub struct ColumnMesh {
-    pub opaque: Vec<Vertex>,
-    pub translucent: Vec<Vertex>,
+    pub solid: TerrainPass,
+    pub cutout: TerrainPass,
+    pub translucent: TerrainPass,
     pub entity: Vec<Vertex>,
+    /// `VisGraph` face connectivity per section (see `visibility`).
+    pub visibility: [u64; 16],
+}
+
+/// Section faces in `EnumFacing` order: down, up, north, south, west, east.
+pub const FACES: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [1, 0, 0],
+];
+/// Every face sees every other: `SetVisibility.setAllVisible(true)`.
+pub const ALL_VISIBLE: u64 = (1 << 36) - 1;
+
+/// Bit for "entering through `from`, leaving through `to`".
+pub const fn sees(from: usize, to: usize) -> u64 {
+    1 << (from * 6 + to)
+}
+
+/// `VisGraph.computeVisibility`: which section faces connect through
+/// cells that are not opaque cubes. Fewer than 256 opaque cubes sees all;
+/// a fully opaque section sees nothing; otherwise each flood-filled region
+/// joins every face it touches.
+pub fn visibility(opaque: impl Fn(usize) -> bool) -> u64 {
+    let mut solid = [false; 4096];
+    let mut count = 0;
+    for (index, cell) in solid.iter_mut().enumerate() {
+        *cell = opaque(index);
+        count += usize::from(*cell);
+    }
+    if count < 256 {
+        return ALL_VISIBLE;
+    }
+    if count == 4096 {
+        return 0;
+    }
+    let mut seen = solid;
+    let mut result = 0;
+    let mut stack = Vec::new();
+    for first in 0..4096 {
+        if seen[first] {
+            continue;
+        }
+        seen[first] = true;
+        stack.push(first);
+        let mut touched = 0u8;
+        while let Some(index) = stack.pop() {
+            let (x, y, z) = (index & 15, index >> 8, (index >> 4) & 15);
+            touched |= u8::from(y == 0)
+                | u8::from(y == 15) << 1
+                | u8::from(z == 0) << 2
+                | u8::from(z == 15) << 3
+                | u8::from(x == 0) << 4
+                | u8::from(x == 15) << 5;
+            let mut visit = |next: usize| {
+                if !seen[next] {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            };
+            if y > 0 {
+                visit(index - 256);
+            }
+            if y < 15 {
+                visit(index + 256);
+            }
+            if z > 0 {
+                visit(index - 16);
+            }
+            if z < 15 {
+                visit(index + 16);
+            }
+            if x > 0 {
+                visit(index - 1);
+            }
+            if x < 15 {
+                visit(index + 1);
+            }
+        }
+        for from in 0..6 {
+            for to in 0..6 {
+                if touched & (1 << from) != 0 && touched & (1 << to) != 0 {
+                    result |= sees(from, to);
+                }
+            }
+        }
+    }
+    result
+}
+
+impl ColumnMesh {
+    fn close_section(&mut self, section: usize) {
+        self.solid.close_section(section);
+        self.cutout.close_section(section);
+        self.translucent.close_section(section);
+    }
 }
 
 pub struct Registry {
@@ -61,6 +226,8 @@ pub struct Registry {
     water: u32,
     lava: u32,
     pub textures: Vec<Texture>,
+    /// Layers with any texel the terrain alpha test (0.1) discards.
+    cutout: Vec<bool>,
     /// Variant models that failed to bake, and metadata states whose exact
     /// variant key is absent from the owned blockstates.
     pub model_failures: usize,
@@ -260,6 +427,14 @@ fn hex(color: u32) -> [f32; 3] {
 
 fn split(color: u32) -> [u8; 3] {
     [(color >> 16) as u8, (color >> 8) as u8, color as u8]
+}
+
+/// Whether the fragment alpha test (`a < 0.1`) can discard any texel.
+fn has_cutout(rgba: &[u8]) -> bool {
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
+        .any(|texel| f32::from(texel[3]) / 255.0 < 0.1)
 }
 
 fn first_frame(image: &Texture) -> Option<Vec<u8>> {
@@ -577,6 +752,10 @@ impl Registry {
             foliage,
             water,
             lava,
+            cutout: textures
+                .iter()
+                .map(|texture| has_cutout(&texture.rgba))
+                .collect(),
             textures,
             model_failures: failures,
             inexact: Vec::new(),
@@ -836,14 +1015,15 @@ impl Registry {
             .copied()
             .unwrap_or(self.missing);
         for face in &self.models[model as usize].alternatives[0].0 {
-            append(
-                &mut vertices,
-                face.positions,
-                face.uv,
-                face.layer,
-                [face.shade; 3],
-                [0.0; 3],
-            );
+            for index in [0, 1, 2, 0, 2, 3] {
+                vertices.push(Vertex {
+                    position: face.positions[index],
+                    uv: face.uv[index],
+                    layer: face.layer,
+                    color: [face.shade; 3],
+                    hurt: 0.0,
+                });
+            }
         }
         vertices
     }
@@ -947,14 +1127,21 @@ impl Registry {
     }
 
     pub fn mesh_column(&self, world: &World, chunk: (i32, i32), origin: [i64; 3]) -> ColumnMesh {
-        let mut mesh = ColumnMesh::default();
+        let mut mesh = ColumnMesh {
+            visibility: [ALL_VISIBLE; 16],
+            ..ColumnMesh::default()
+        };
         let Some(column) = world.column(chunk.0, chunk.1) else {
             return mesh;
         };
         for section_y in 0..16 {
             let Some(section) = column.section(section_y) else {
+                mesh.close_section(section_y);
                 continue;
             };
+            mesh.visibility[section_y] = visibility(|index| {
+                block(BlockState(section.states[index]).block_id()).opaque_cube()
+            });
             for (index, &raw) in section.states.iter().enumerate() {
                 if raw == 0 {
                     continue;
@@ -972,9 +1159,10 @@ impl Registry {
                     (i64::from(y) - origin[1]) as f32,
                     (i64::from(z) - origin[2]) as f32,
                 ];
+                let local = [(index & 15) as f32, y as f32, ((index >> 4) & 15) as f32];
                 let info = block(state.block_id());
                 if info.layer == Layer::Liquid {
-                    self.liquid(world, pos, state, offset, &mut mesh);
+                    self.liquid(world, pos, state, local, &mut mesh);
                     continue;
                 }
                 if self.block_entity(world, pos, state, offset, &mut mesh.entity) {
@@ -999,11 +1187,7 @@ impl Registry {
                     }
                     chosen
                 };
-                let target = if info.layer == Layer::Translucent {
-                    &mut mesh.translucent
-                } else {
-                    &mut mesh.opaque
-                };
+                let translucent = info.layer == Layer::Translucent;
                 let mut tint = None;
                 for face in faces {
                     let light_pos = match face.cull {
@@ -1023,16 +1207,29 @@ impl Registry {
                     } else {
                         [1.0; 3]
                     };
+                    let target = if translucent {
+                        &mut mesh.translucent
+                    } else if self
+                        .cutout
+                        .get(face.layer as usize)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        &mut mesh.cutout
+                    } else {
+                        &mut mesh.solid
+                    };
                     append(
-                        target,
+                        &mut target.vertices,
                         face.positions,
                         face.uv,
                         face.layer,
                         color.map(|channel| channel * face.shade * light),
-                        offset,
+                        local,
                     );
                 }
             }
+            mesh.close_section(section_y);
         }
         mesh
     }
@@ -1130,8 +1327,15 @@ impl Registry {
         };
         let (layer, target) = if water {
             (self.water, &mut mesh.translucent)
+        } else if self
+            .cutout
+            .get(self.lava as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            (self.lava, &mut mesh.cutout)
         } else {
-            (self.lava, &mut mesh.opaque)
+            (self.lava, &mut mesh.solid)
         };
         let light = if water {
             brightness(light_level(world, [x, y + 1, z]))
@@ -1203,7 +1407,14 @@ impl Registry {
                     && neighbour(dx, dy, dz)
                         .is_none_or(|other| block(other.block_id()).opaque_cube()));
             if !skip {
-                append(target, positions, uv, layer, [shade * light; 3], offset);
+                append(
+                    &mut target.vertices,
+                    positions,
+                    uv,
+                    layer,
+                    [shade * light; 3],
+                    offset,
+                );
             }
         }
     }
@@ -1234,23 +1445,31 @@ fn light_level(world: &World, [x, y, z]: [i32; 3]) -> u8 {
     }
 }
 
+/// One quad's four corners; the shared index list makes its two triangles
+/// (0, 1, 2) and (0, 2, 3).
 fn append(
-    vertices: &mut Vec<Vertex>,
+    vertices: &mut Vec<TerrainVertex>,
     positions: [[f32; 3]; 4],
     uv: [[f32; 2]; 4],
     layer: u32,
     color: [f32; 3],
     offset: [f32; 3],
 ) {
-    for index in [0, 1, 2, 0, 2, 3] {
-        vertices.push(Vertex {
-            position: std::array::from_fn(|axis| positions[index][axis] + offset[axis]),
-            uv: uv[index],
+    for index in 0..4 {
+        vertices.push(TerrainVertex::new(
+            std::array::from_fn(|axis| positions[index][axis] + offset[axis]),
+            uv[index],
             layer,
             color,
-            hurt: 0.0,
-        });
+        ));
     }
+}
+
+/// Index list for `quads` quads drawn from four-corner runs.
+pub fn quad_indices(quads: u32) -> Vec<u32> {
+    (0..quads)
+        .flat_map(|quad| [0, 1, 2, 0, 2, 3].map(|corner| quad * 4 + corner))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1290,6 +1509,163 @@ mod tests {
         // variant; every value vanilla writes must match exactly.
         eprintln!("inexact={:?}", registry.inexact);
         assert!(registry.inexact.len() < 64, "{:?}", registry.inexact);
+        Ok(())
+    }
+
+    #[test]
+    fn packed_terrain_corners_keep_model_precision_and_ranges() {
+        // Model coordinates are sixteenths; liquids use ninths.
+        for local in [[0.0, 0.0, 0.0], [16.0, 256.0, 16.0], [-0.5, 255.9375, 16.5]] {
+            let vertex = TerrainVertex::new(local, [0.0, 1.0], 360, [1.0, 0.5, 0.0]);
+            assert_eq!(vertex.local(), local);
+            assert_eq!(vertex.position[3], 360);
+            assert_eq!(vertex.uv, [0, 65535]);
+            assert_eq!(vertex.color, [255, 128, 0, 255]);
+        }
+        let liquid = TerrainVertex::new([0.0, 63.0 + 8.0 / 9.0, 0.0], [0.5; 2], 1, [0.8; 3]);
+        assert!((liquid.local()[1] - (63.0 + 8.0 / 9.0)).abs() <= 0.5 / TerrainVertex::SCALE);
+        assert_eq!(std::mem::size_of::<TerrainVertex>(), 16);
+    }
+
+    #[test]
+    fn quads_index_two_triangles_from_four_corners() {
+        assert_eq!(quad_indices(2), [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+        let mut corners = Vec::new();
+        append(
+            &mut corners,
+            [[0.0; 3], [0.0, 1.0, 0.0], [1.0; 3], [1.0, 0.0, 0.0]],
+            [[0.0; 2]; 4],
+            3,
+            [1.0; 3],
+            [2.0, 0.0, 0.0],
+        );
+        assert_eq!(corners.len(), 4);
+        assert_eq!(corners[2].local(), [3.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn sections_record_contiguous_quad_ranges() {
+        let mut pass = TerrainPass::default();
+        pass.close_section(0);
+        append(
+            &mut pass.vertices,
+            [[0.0; 3]; 4],
+            [[0.0; 2]; 4],
+            1,
+            [1.0; 3],
+            [0.0; 3],
+        );
+        append(
+            &mut pass.vertices,
+            [[0.0; 3]; 4],
+            [[0.0; 2]; 4],
+            1,
+            [1.0; 3],
+            [0.0; 3],
+        );
+        pass.close_section(1);
+        pass.close_section(2);
+        append(
+            &mut pass.vertices,
+            [[0.0; 3]; 4],
+            [[0.0; 2]; 4],
+            1,
+            [1.0; 3],
+            [0.0; 3],
+        );
+        for section in 3..16 {
+            pass.close_section(section);
+        }
+        assert_eq!(&pass.sections[..4], &[0, 0, 2, 2]);
+        assert!(pass.sections[4..].iter().all(|&start| start == 3));
+        assert_eq!(pass.quads(), 3);
+    }
+
+    #[test]
+    fn section_visibility_follows_vis_graph() {
+        assert_eq!(visibility(|_| false), ALL_VISIBLE);
+        assert_eq!(visibility(|_| true), 0);
+        // Under 256 opaque cubes everything is visible, however placed.
+        assert_eq!(visibility(|index| index < 255), ALL_VISIBLE);
+        // A full floor at y = 8 splits the bottom from the top.
+        let floor = visibility(|index| index >> 8 == 8);
+        assert_eq!(floor & sees(0, 1), 0);
+        assert_ne!(floor & sees(0, 2), 0);
+        assert_ne!(floor & sees(1, 5), 0);
+        assert_ne!(floor & sees(3, 4), 0);
+        // A sealed pocket touching no face adds nothing; open air above it
+        // still joins the other faces.
+        let pocket = visibility(|index| {
+            let (x, y, z) = (index & 15, index >> 8, (index >> 4) & 15);
+            !(y < 2 || (x == 5 && y == 5 && z == 5))
+        });
+        assert_eq!(pocket & (sees(1, 0) | sees(1, 1)), 0);
+        assert_ne!(pocket & sees(0, 2), 0);
+        assert_eq!(pocket, pocket_expected());
+    }
+
+    fn pocket_expected() -> u64 {
+        // The air layer y < 2 touches down and all four sides, not up.
+        let faces = [0, 2, 3, 4, 5];
+        let mut bits = 0;
+        for from in faces {
+            for to in faces {
+                bits |= sees(from, to);
+            }
+        }
+        bits
+    }
+
+    #[test]
+    fn alpha_tested_sprites_are_cutout() {
+        let mut rgba = vec![255u8; 16 * 16 * 4];
+        assert!(!has_cutout(&rgba));
+        rgba[7] = 26; // 26/255 passes the 0.1 test.
+        assert!(!has_cutout(&rgba));
+        rgba[7] = 25;
+        assert!(has_cutout(&rgba));
+    }
+
+    #[test]
+    #[ignore = "Requires HORIZON_189_TEST_JAR pointing at an owned 1.8.9 jar"]
+    fn baked_faces_fit_the_packed_format_and_split_by_alpha() -> Result<(), Box<dyn Error>> {
+        let jar = std::env::var_os("HORIZON_189_TEST_JAR").ok_or("Set HORIZON_189_TEST_JAR")?;
+        let registry = Registry::open(Path::new(&jar))?;
+        for model in &registry.models {
+            for (faces, _) in &model.alternatives {
+                for face in faces {
+                    assert!(
+                        // Rotations leave float error the packer's clamp absorbs.
+                        face.uv
+                            .iter()
+                            .flatten()
+                            .all(|v| (-1e-4..=1.0 + 1e-4).contains(v)),
+                        "{:?}",
+                        face.uv
+                    );
+                    assert!(
+                        face.positions
+                            .iter()
+                            .flatten()
+                            .all(|v| (-1.0..=2.0).contains(v))
+                    );
+                    assert!(face.layer < 65536);
+                }
+            }
+        }
+        let cutout = |file: &str| -> Vec<bool> {
+            let model = registry.by_file[file] as usize;
+            registry.models[model].alternatives[0]
+                .0
+                .iter()
+                .map(|face| registry.cutout[face.layer as usize])
+                .collect()
+        };
+        assert!(cutout("stone").iter().all(|&cut| !cut));
+        assert!(cutout("oak_leaves").iter().all(|&cut| cut));
+        // Grass sides draw the tinted overlay over the solid dirt side.
+        let grass = cutout("grass");
+        assert!(grass.contains(&true) && grass.contains(&false));
         Ok(())
     }
 

@@ -1,10 +1,12 @@
 //! Persistent Metal resources for the baked-model fixture and live terrain.
-//! Terrain lives in one vertex buffer per column, frustum-culled per frame;
-//! opaque columns draw near to far, translucent columns far to near. Depth is
+//! Terrain lives in packed column-local buffers per column and pass, drawn
+//! through one shared quad index list with the column's offset as instance
+//! data. Each 16-block section is frustum-culled per frame; solid then cutout
+//! columns draw near to far, translucent columns far to near. Depth is
 //! reversed-Z with an infinite far plane, as upstream Horizon's terrain.
 use crate::{
     network::MeshUpdate,
-    terrain::{Registry, Vertex},
+    terrain::{FACES, Registry, TerrainPass, TerrainVertex, Vertex, quad_indices, sees},
 };
 use glam::{Mat4, Vec3, Vec4};
 use horizon_protocol_47::play::PositionLook;
@@ -29,15 +31,100 @@ struct GpuMesh {
     count: u32,
 }
 
+struct GpuPass {
+    buffer: wgpu::Buffer,
+    sections: [u32; 17],
+}
+
+/// Solid, cutout and translucent terrain, then block entities.
 struct GpuColumn {
-    opaque: Option<GpuMesh>,
-    translucent: Option<GpuMesh>,
+    passes: [Option<GpuPass>; 3],
     entity: Option<GpuMesh>,
+    visibility: [u64; 16],
+}
+
+/// `RenderGlobal.setupTerrain`'s occlusion walk: breadth-first from the
+/// camera's section, never stepping back toward the camera, and leaving a
+/// section only through a face its `VisGraph` joins to the face it was
+/// entered by. Returns the reached sections of each loaded column. Frustum
+/// culling is applied afterwards, so the walk only reruns when the camera
+/// changes section or columns change.
+pub fn reachable(
+    start: [i32; 3],
+    visibility: impl Fn((i32, i32)) -> Option<[u64; 16]>,
+) -> HashMap<(i32, i32), u16> {
+    let mut reached: HashMap<(i32, i32), u16> = HashMap::new();
+    if visibility((start[0], start[2])).is_none() || !(0..16).contains(&start[1]) {
+        return reached;
+    }
+    reached.insert((start[0], start[2]), 1 << start[1]);
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((start, None::<usize>, 0u8));
+    while let Some((at, entered, directions)) = queue.pop_front() {
+        let Some(sections) = visibility((at[0], at[2])) else {
+            continue;
+        };
+        let here = sections[at[1] as usize];
+        for (face, step) in FACES.iter().enumerate() {
+            if directions & (1 << (face ^ 1)) != 0 {
+                continue;
+            }
+            if let Some(entered) = entered
+                && here & sees(entered ^ 1, face) == 0
+            {
+                continue;
+            }
+            let next = [at[0] + step[0], at[1] + step[1], at[2] + step[2]];
+            if !(0..16).contains(&next[1]) || visibility((next[0], next[2])).is_none() {
+                continue;
+            }
+            let mask = reached.entry((next[0], next[2])).or_default();
+            if *mask & (1 << next[1]) != 0 {
+                continue;
+            }
+            *mask |= 1 << next[1];
+            queue.push_back((next, Some(face), directions | 1 << face));
+        }
+    }
+    reached
+}
+
+/// Contiguous quad ranges of the sections in `mask`, merged where adjacent.
+pub fn section_runs(mask: u16, sections: &[u32; 17]) -> impl Iterator<Item = (u32, u32)> + '_ {
+    let mut section = 0;
+    std::iter::from_fn(move || {
+        while section < 16 {
+            let (start, mut end) = (sections[section], sections[section + 1]);
+            section += 1;
+            if mask & (1 << (section - 1)) == 0 || start == end {
+                continue;
+            }
+            while section < 16 && mask & (1 << section) != 0 {
+                end = sections[section + 1];
+                section += 1;
+            }
+            return Some((start, end));
+        }
+        None
+    })
 }
 
 pub struct Scene {
+    /// The fixture and entities, in the full vertex format.
     pipeline: wgpu::RenderPipeline,
-    translucent_pipeline: wgpu::RenderPipeline,
+    /// Packed terrain: solid (no alpha test), cutout, translucent.
+    terrain_pipelines: [wgpu::RenderPipeline; 3],
+    /// `quad_indices` for `quad_capacity` quads.
+    quads: wgpu::Buffer,
+    quad_capacity: u32,
+    /// Per-frame column offsets, one instance per visible column.
+    bases: wgpu::Buffer,
+    base_capacity: u64,
+    /// Visible columns near to far with their visible-section masks.
+    frame: Vec<((i32, i32), u16)>,
+    /// The occlusion walk's result and the camera section it started from;
+    /// `None` reruns it.
+    reached: Option<([i32; 3], HashMap<(i32, i32), u16>)>,
     /// In gamma space after the world: block cracks, the enchantment glint over entity
     /// geometry it matches in depth, `renderLivingLabel` without and with a
     /// depth test, and `RenderFish` lines.
@@ -294,7 +381,58 @@ impl Scene {
             })
         };
         let pipeline = make_pipeline(false);
-        let translucent_pipeline = make_pipeline(true);
+        let make_terrain = |label: &str, entry: &str, translucent: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("terrain_vertex"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0=>Uint16x4, 1=>Unorm16x2, 2=>Unorm8x4],
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 12,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array![3=>Float32x3],
+                        }),
+                    ],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: (!translucent).then_some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(!translucent),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: translucent.then_some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let terrain_pipelines = [
+            make_terrain("Solid terrain", "terrain_solid", false),
+            make_terrain("Cutout terrain", "terrain_cutout", false),
+            make_terrain("Translucent terrain", "terrain_cutout", true),
+        ];
         // Overlays drawn after the world: labels, lines and the glint.
         let additive = wgpu::BlendState {
             // `glBlendFunc(GL_SRC_COLOR, GL_ONE)`.
@@ -575,9 +713,24 @@ impl Scene {
             mapped_at_creation: false,
         });
         let eye = Vec3::new(2.5, 1.8, 2.5);
+        let quad_capacity = 1 << 14;
+        let quads = Self::quad_buffer(device, queue, quad_capacity);
+        let base_capacity = 1024;
+        let bases = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Column offsets"),
+            size: base_capacity * 12,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let mut scene = Self {
             pipeline,
-            translucent_pipeline,
+            terrain_pipelines,
+            quads,
+            quad_capacity,
+            bases,
+            base_capacity,
+            frame: Vec::new(),
+            reached: None,
             label_pipelines,
             labels,
             labels_capacity,
@@ -646,6 +799,49 @@ impl Scene {
         }))
     }
 
+    fn quad_buffer(device: &wgpu::Device, queue: &wgpu::Queue, quads: u32) -> wgpu::Buffer {
+        let indices = quad_indices(quads);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shared quad indices"),
+            size: (indices.len() * 4) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&indices));
+        buffer
+    }
+
+    fn pass_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &TerrainPass,
+        label: &str,
+    ) -> Result<Option<GpuPass>, Box<dyn Error>> {
+        if pass.vertices.is_empty() {
+            return Ok(None);
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(&pass.vertices);
+        if bytes.len() as u64 > device.limits().max_buffer_size {
+            return Err("Column mesh exceeds device buffer limit".into());
+        }
+        if pass.quads() > self.quad_capacity {
+            self.quad_capacity = pass.quads().next_power_of_two();
+            self.quads = Self::quad_buffer(device, queue, self.quad_capacity);
+        }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytes);
+        Ok(Some(GpuPass {
+            buffer,
+            sections: pass.sections,
+        }))
+    }
+
     /// Replace or remove one column's buffers. Columns meshed against an
     /// older origin are dropped once the origin moves.
     pub fn apply(
@@ -657,20 +853,31 @@ impl Scene {
         if update.origin != self.origin {
             self.columns.clear();
             self.origin = update.origin;
+            self.reached = None;
         }
         match update.mesh {
             None => {
-                self.columns.remove(&update.key);
+                if self.columns.remove(&update.key).is_some() {
+                    self.reached = None;
+                }
             }
             Some(mesh) => {
+                // Block edits that keep every section's face connectivity
+                // leave the occlusion walk as it was.
+                if self
+                    .columns
+                    .get(&update.key)
+                    .is_none_or(|old| old.visibility != mesh.visibility)
+                {
+                    self.reached = None;
+                }
                 let column = GpuColumn {
-                    opaque: Self::mesh_buffer(device, queue, &mesh.opaque, "Column opaque")?,
-                    translucent: Self::mesh_buffer(
-                        device,
-                        queue,
-                        &mesh.translucent,
-                        "Column translucent",
-                    )?,
+                    visibility: mesh.visibility,
+                    passes: [
+                        self.pass_buffer(device, queue, &mesh.solid, "Column solid")?,
+                        self.pass_buffer(device, queue, &mesh.cutout, "Column cutout")?,
+                        self.pass_buffer(device, queue, &mesh.translucent, "Column translucent")?,
+                    ],
                     entity: Self::mesh_buffer(
                         device,
                         queue,
@@ -895,6 +1102,9 @@ impl Scene {
     /// Keep another scene's geometry after a surface format change.
     pub fn adopt(&mut self, old: Scene) {
         self.columns = old.columns;
+        self.reached = None;
+        self.quads = old.quads;
+        self.quad_capacity = old.quad_capacity;
         self.origin = old.origin;
         self.fixture = old.fixture.or(self.fixture.take());
     }
@@ -902,6 +1112,8 @@ impl Scene {
     /// Drop all geometry from a finished connection while retaining GPU resources.
     pub fn clear_world(&mut self) {
         self.columns.clear();
+        self.frame.clear();
+        self.reached = None;
         self.fixture = None;
         self.origin = [0; 3];
         self.entity_count = 0;
@@ -916,9 +1128,9 @@ impl Scene {
     }
 
     pub fn has_geometry(&self) -> bool {
-        self.columns.values().any(|column| {
-            column.opaque.is_some() || column.translucent.is_some() || column.entity.is_some()
-        })
+        self.columns
+            .values()
+            .any(|column| column.passes.iter().any(Option::is_some) || column.entity.is_some())
     }
 
     fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -1008,42 +1220,118 @@ impl Scene {
         })
     }
 
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, config: &wgpu::SurfaceConfiguration) {
+    /// Cull columns and their sections for this frame, nearest first, and
+    /// upload the visible columns' offsets.
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+    ) {
+        let planes = self.planes(config);
+        let camera = [
+            ((f64::from(self.eye.x) + self.origin[0] as f64) / 16.0).floor() as i32,
+            ((f64::from(self.eye.y) + self.origin[1] as f64) / 16.0).floor() as i32,
+            ((f64::from(self.eye.z) + self.origin[2] as f64) / 16.0).floor() as i32,
+        ];
+        if self
+            .reached
+            .as_ref()
+            .is_none_or(|(from, _)| *from != camera)
+        {
+            let columns = &self.columns;
+            let walk = reachable(camera, |key| columns.get(&key).map(|c| c.visibility));
+            self.reached = Some((camera, walk));
+        }
+        // Outside the loaded world (or above or below it) nothing occludes.
+        let occlusion = self
+            .reached
+            .as_ref()
+            .filter(|(_, walk)| !walk.is_empty())
+            .map(|(_, walk)| walk);
+        let mut visible: Vec<(f32, (i32, i32), u16, Vec3)> = Vec::new();
+        for (&(x, z), column) in &self.columns {
+            let min = Vec3::new(
+                (i64::from(x) * 16 - self.origin[0]) as f32,
+                -self.origin[1] as f32,
+                (i64::from(z) * 16 - self.origin[2]) as f32,
+            );
+            if !Self::visible(&planes, min, min + Vec3::new(16.0, 256.0, 16.0)) {
+                continue;
+            }
+            let reach = occlusion.map_or(u16::MAX, |walk| walk.get(&(x, z)).copied().unwrap_or(0));
+            let mut mask = 0u16;
+            for section in (0..16).filter(|section| reach & (1 << section) != 0) {
+                let low = min + Vec3::new(0.0, section as f32 * 16.0, 0.0);
+                if Self::visible(&planes, low, low + Vec3::splat(16.0)) {
+                    mask |= 1 << section;
+                }
+            }
+            // Block entities are culled with the column, not by section.
+            if mask == 0 && column.entity.is_none() {
+                continue;
+            }
+            let centre = min + Vec3::new(8.0, 128.0, 8.0);
+            let distance =
+                Vec3::new(centre.x - self.eye.x, 0.0, centre.z - self.eye.z).length_squared();
+            visible.push((distance, (x, z), mask, min));
+        }
+        visible.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if visible.len() as u64 > self.base_capacity {
+            self.base_capacity = (visible.len() as u64).next_power_of_two();
+            self.bases = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Column offsets"),
+                size: self.base_capacity * 12,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        let bases: Vec<[f32; 3]> = visible.iter().map(|entry| entry.3.to_array()).collect();
+        if !bases.is_empty() {
+            queue.write_buffer(&self.bases, 0, bytemuck::cast_slice(&bases));
+        }
+        self.frame.clear();
+        self.frame
+            .extend(visible.iter().map(|&(_, key, mask, _)| (key, mask)));
+    }
+
+    fn draw_terrain(&self, pass: &mut wgpu::RenderPass<'_>, which: usize, order: &[usize]) {
+        pass.set_pipeline(&self.terrain_pipelines[which]);
+        for &instance in order {
+            let (key, mask) = self.frame[instance];
+            let Some(gpu) = self
+                .columns
+                .get(&key)
+                .and_then(|c| c.passes[which].as_ref())
+            else {
+                continue;
+            };
+            pass.set_vertex_buffer(0, gpu.buffer.slice(..));
+            let instance = instance as u32;
+            for (start, end) in section_runs(mask, &gpu.sections) {
+                pass.draw_indexed(start * 6..end * 6, 0, instance..instance + 1);
+            }
+        }
+    }
+
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bindings, &[]);
         if let Some(fixture) = &self.fixture {
             pass.set_vertex_buffer(0, fixture.buffer.slice(..));
             pass.draw(0..fixture.count, 0..1);
         }
-        let planes = self.planes(config);
-        let mut visible: Vec<(f32, &GpuColumn)> = self
-            .columns
-            .iter()
-            .filter_map(|(&(x, z), column)| {
-                let min = Vec3::new(
-                    (i64::from(x) * 16 - self.origin[0]) as f32,
-                    -self.origin[1] as f32,
-                    (i64::from(z) * 16 - self.origin[2]) as f32,
-                );
-                let max = min + Vec3::new(16.0, 256.0, 16.0);
-                Self::visible(&planes, min, max).then(|| {
-                    let centre = (min + max) * 0.5;
-                    let distance = Vec3::new(centre.x - self.eye.x, 0.0, centre.z - self.eye.z)
-                        .length_squared();
-                    (distance, column)
-                })
-            })
-            .collect();
-        visible.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for (_, column) in &visible {
-            if let Some(mesh) = &column.opaque {
-                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
-                pass.draw(0..mesh.count, 0..1);
-            }
+        let near_to_far: Vec<usize> = (0..self.frame.len()).collect();
+        if !near_to_far.is_empty() {
+            pass.set_index_buffer(self.quads.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(1, self.bases.slice(..));
+            self.draw_terrain(pass, 0, &near_to_far);
+            self.draw_terrain(pass, 1, &near_to_far);
         }
+        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.entity_bindings, &[]);
-        for (_, column) in &visible {
-            if let Some(mesh) = &column.entity {
+        for (key, _) in &self.frame {
+            if let Some(mesh) = self.columns.get(key).and_then(|c| c.entity.as_ref()) {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -1053,12 +1341,10 @@ impl Scene {
             pass.draw(0..self.entity_count, 0..1);
         }
         pass.set_bind_group(0, &self.bindings, &[]);
-        pass.set_pipeline(&self.translucent_pipeline);
-        for (_, column) in visible.iter().rev() {
-            if let Some(mesh) = &column.translucent {
-                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
-                pass.draw(0..mesh.count, 0..1);
-            }
+        if !near_to_far.is_empty() {
+            pass.set_vertex_buffer(1, self.bases.slice(..));
+            let far_to_near: Vec<usize> = near_to_far.into_iter().rev().collect();
+            self.draw_terrain(pass, 2, &far_to_near);
         }
     }
 }
@@ -1089,6 +1375,74 @@ mod tests {
             assert!((near - Vec3::new(0.0, 0.0, -0.05)).length() < 1e-6);
             assert!((near.normalize() - Vec3::NEG_Z).length() < 1e-6);
         }
+    }
+
+    #[test]
+    fn section_runs_merge_adjacent_visible_sections() {
+        let mut sections = [0u32; 17];
+        // Sections 0..4 hold 1, 2, 0, 3 quads; the rest are empty.
+        for (index, start) in [0, 1, 3, 3, 6].into_iter().enumerate() {
+            sections[index] = start;
+        }
+        for start in &mut sections[5..] {
+            *start = 6;
+        }
+        let runs = |mask| section_runs(mask, &sections).collect::<Vec<_>>();
+        assert_eq!(runs(u16::MAX), [(0, 6)]);
+        assert_eq!(runs(0b1011), [(0, 3), (3, 6)]);
+        assert_eq!(runs(0b0101), [(0, 1)]);
+        assert_eq!(runs(0b1100), [(3, 6)]);
+        assert_eq!(runs(0), []);
+    }
+
+    #[test]
+    fn occlusion_walk_stops_at_sealed_sections_and_never_turns_back() {
+        use crate::terrain::{ALL_VISIBLE, sees};
+        let open = [ALL_VISIBLE; 16];
+        // Column (1, 0) is solid rock below y = 64: nothing joins there.
+        let mut rock = [ALL_VISIBLE; 16];
+        for section in &mut rock[..4] {
+            *section = 0;
+        }
+        let world = |key: (i32, i32)| match key {
+            (1, 0) => Some(rock),
+            (x, 0) if (-1..=3).contains(&x) => Some(open),
+            _ => None,
+        };
+        let reached = reachable([0, 4, 0], world);
+        assert_eq!(reached[&(0, 0)], u16::MAX);
+        // Sealed sections are entered but not passed through.
+        assert_eq!(reached[&(1, 0)], u16::MAX);
+        // Below the rock at x = 2 is reached only by going down there,
+        // never by turning back up through another column.
+        assert_eq!(reached[&(2, 0)], u16::MAX);
+        assert!(!reached.contains_key(&(4, 0)));
+        // A section seeing only up and down passes a vertical walk but
+        // blocks a sideways one.
+        let shaft = sees(0, 1) | sees(1, 0);
+        let mut tube = [ALL_VISIBLE; 16];
+        tube[4] = shaft;
+        let column = |key: (i32, i32)| match key {
+            (0, 0) => Some(tube),
+            (x, 0) if (0..=2).contains(&x) => Some(open),
+            _ => None,
+        };
+        let from_above = reachable([0, 6, 0], column);
+        assert_ne!(from_above[&(0, 0)] & (1 << 3), 0);
+        // Entered sideways, the shaft leads nowhere; the sections below it
+        // are only reachable by turning back, which the walk never does.
+        let mut ledge = [ALL_VISIBLE; 16];
+        for section in &mut ledge[..4] {
+            *section = 0;
+        }
+        let beside = reachable([1, 4, 0], |key| match key {
+            (1, 0) => Some(ledge),
+            _ => column(key),
+        });
+        assert_ne!(beside[&(0, 0)] & (1 << 4), 0);
+        assert_eq!(beside[&(0, 0)] & 0b1111, 0);
+        assert!(reachable([0, 16, 0], world).is_empty());
+        assert!(reachable([9, 4, 0], world).is_empty());
     }
 
     #[test]

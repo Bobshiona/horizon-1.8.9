@@ -30,6 +30,52 @@ fn vertex_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @lo
     return out;
 }
 
+struct TerrainOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) layer: u32,
+    // Linear-light multiplier: the gamma vertex colour decoded once here.
+    @location(2) color: vec3<f32>,
+    @location(3) relative: vec3<f32>,
+}
+
+// Packed terrain: column-local position in 1/128 blocks biased by 8 blocks,
+// the sprite layer, and the column's offset from the mesh origin.
+@vertex
+fn terrain_vertex(@location(0) packed: vec4<u32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) base: vec3<f32>) -> TerrainOut {
+    var out: TerrainOut;
+    let position = vec3<f32>(packed.xyz) / 128.0 - 8.0 + base;
+    out.position = camera.view_projection * vec4<f32>(position, 1.0);
+    out.uv = uv;
+    out.layer = packed.w;
+    out.color = srgb_to_linear(color.rgb);
+    out.relative = position - camera.eye.xyz;
+    return out;
+}
+
+// Terrain has no hurt overlay, so vanilla's gamma-space product reduces to
+// the linear texel times the decoded vertex colour.
+fn terrain_shade(in: TerrainOut, texel: vec4<f32>) -> vec4<f32> {
+    let lit = texel.rgb * in.color;
+    let distance = length(in.relative);
+    let fog = clamp((distance - camera.fog.w) / max(camera.eye.w - camera.fog.w, 1.0), 0.0, 1.0);
+    return vec4<f32>(mix(lit, camera.fog.rgb, fog), texel.a);
+}
+
+// Sprites with no texel under the 0.1 alpha test: no discard, so the GPU can
+// reject hidden fragments before shading.
+@fragment
+fn terrain_solid(in: TerrainOut) -> @location(0) vec4<f32> {
+    return terrain_shade(in, textureSample(block_texture, block_sampler, in.uv, in.layer));
+}
+
+@fragment
+fn terrain_cutout(in: TerrainOut) -> @location(0) vec4<f32> {
+    let texel = textureSample(block_texture, block_sampler, in.uv, in.layer);
+    if texel.a < 0.1 { discard; }
+    return terrain_shade(in, texel);
+}
+
 // Vanilla multiplies tint, face shade and light in gamma space. The sRGB
 // texture view decodes texels to linear, so the multiplier is decoded too.
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {

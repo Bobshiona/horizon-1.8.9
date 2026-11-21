@@ -53,6 +53,54 @@ enum MeshCommand {
     Dirty(Vec<(i32, i32)>),
     Origin([i64; 3]),
     Focus([f64; 3]),
+    /// A worker's finished column.
+    Done(MeshUpdate),
+}
+
+/// Which dirty columns to mesh next: nearest first, never a column that is
+/// already being meshed (a newer edit waits for the older mesh to land, so
+/// meshes can't arrive out of order), and only results built against the
+/// current origin are kept.
+#[derive(Default)]
+struct Dispatch {
+    dirty: HashSet<(i32, i32)>,
+    busy: HashSet<(i32, i32)>,
+    origin: Option<[i64; 3]>,
+}
+
+impl Dispatch {
+    fn next(&mut self, center: (i64, i64)) -> Option<((i32, i32), [i64; 3])> {
+        let origin = self.origin?;
+        let busy = &self.busy;
+        let &key = self
+            .dirty
+            .iter()
+            .filter(|key| !busy.contains(key))
+            .min_by_key(|&&(x, z)| {
+                let dx = i64::from(x) - center.0;
+                let dz = i64::from(z) - center.1;
+                dx * dx + dz * dz
+            })?;
+        self.dirty.remove(&key);
+        self.busy.insert(key);
+        Some((key, origin))
+    }
+
+    /// A finished mesh to forward, or `None` if it was built for an older
+    /// origin (its column is meshed again).
+    fn finish(&mut self, update: MeshUpdate) -> Option<MeshUpdate> {
+        self.busy.remove(&update.key);
+        if Some(update.origin) == self.origin {
+            Some(update)
+        } else {
+            self.dirty.insert(update.key);
+            None
+        }
+    }
+
+    fn idle(&self) -> bool {
+        self.dirty.is_empty() && self.busy.is_empty()
+    }
 }
 
 /// State the window thread and the simulation exchange every frame/tick.
@@ -148,6 +196,7 @@ impl Network {
     pub fn start(config: Config, registry: Arc<Registry>) -> io::Result<Self> {
         let (send, meshes) = mpsc::channel();
         let (commands, inbox) = mpsc::channel();
+        let finished = commands.clone();
         let (failed, errors) = mpsc::sync_channel(1);
         let world = Arc::new(RwLock::new(World::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -162,7 +211,7 @@ impl Network {
             let (world, stop) = (world.clone(), stop.clone());
             thread::Builder::new()
                 .name("Legacy mesher".into())
-                .spawn(move || mesh_columns(&registry, &world, &inbox, &send, &stop))?
+                .spawn(move || mesh_columns(&registry, &world, &inbox, &finished, &send, &stop))?
         };
         let worker = thread::Builder::new()
             .name("Protocol 47".into())
@@ -205,77 +254,125 @@ impl Drop for Network {
     }
 }
 
-/// The mesher thread: nearest dirty column first, one column per world read
-/// lock, so neither the simulation nor the window thread waits on meshing.
+/// Meshing workers: every core but the window, protocol and coordinator
+/// threads, at least one.
+fn mesher_count() -> usize {
+    thread::available_parallelism().map_or(1, |cores| cores.get().saturating_sub(3).clamp(1, 8))
+}
+
+/// The mesher coordinator: hands the nearest dirty columns to worker
+/// threads, one column per world read lock each, so neither the simulation
+/// nor the window thread waits on meshing.
 fn mesh_columns(
-    registry: &Registry,
-    world: &RwLock<World>,
+    registry: &Arc<Registry>,
+    world: &Arc<RwLock<World>>,
     inbox: &Receiver<MeshCommand>,
+    finished: &mpsc::Sender<MeshCommand>,
     send: &Sender<MeshUpdate>,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
 ) {
-    let mut dirty: HashSet<(i32, i32)> = HashSet::new();
-    let mut origin = None;
+    let (jobs, queue) = mpsc::channel::<((i32, i32), [i64; 3])>();
+    let queue = Arc::new(Mutex::new(queue));
+    let workers = mesher_count();
+    let mut handles = Vec::new();
+    for index in 0..workers {
+        let (registry, world, queue, finished, stop) = (
+            registry.clone(),
+            world.clone(),
+            queue.clone(),
+            finished.clone(),
+            stop.clone(),
+        );
+        let spawned = thread::Builder::new()
+            .name(format!("Legacy mesher {index}"))
+            .spawn(move || {
+                loop {
+                    let job = match queue.lock() {
+                        Ok(queue) => queue.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok((key, origin)) = job else {
+                        return;
+                    };
+                    if stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let mesh = match world.read() {
+                        Ok(world) => world
+                            .column(key.0, key.1)
+                            .is_some()
+                            .then(|| registry.mesh_column(&world, key, origin)),
+                        Err(_) => return,
+                    };
+                    if finished
+                        .send(MeshCommand::Done(MeshUpdate { key, origin, mesh }))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        match spawned {
+            Ok(handle) => handles.push(handle),
+            Err(error) => eprintln!("MESHER_SPAWN_FAILED {error}"),
+        }
+    }
+    eprintln!("MESHER_THREADS count={}", handles.len());
+    let mut dispatch = Dispatch::default();
     let mut focus = [0.0f64; 3];
-    let (mut meshed, mut busy) = (0u64, Duration::ZERO);
-    while !stop.load(Ordering::Acquire) {
-        let idle = dirty.is_empty() || origin.is_none();
-        let first = if idle {
-            match inbox.recv_timeout(Duration::from_millis(100)) {
-                Ok(command) => Some(command),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
-        } else {
-            None
+    let mut meshed = 0u64;
+    let mut started: Option<Instant> = None;
+    'run: while !stop.load(Ordering::Acquire) && !handles.is_empty() {
+        let first = match inbox.recv_timeout(Duration::from_millis(100)) {
+            Ok(command) => Some(command),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         for command in first.into_iter().chain(inbox.try_iter()) {
             match command {
-                MeshCommand::Dirty(keys) => dirty.extend(keys),
+                MeshCommand::Dirty(keys) => dispatch.dirty.extend(keys),
                 MeshCommand::Focus(position) => focus = position,
                 MeshCommand::Origin(new) => {
-                    origin = Some(new);
+                    dispatch.origin = Some(new);
                     if let Ok(world) = world.read() {
-                        dirty.extend(world.columns().map(|(key, _)| key));
+                        dispatch.dirty.extend(world.columns().map(|(key, _)| key));
+                    }
+                }
+                MeshCommand::Done(update) => {
+                    meshed += 1;
+                    if let Some(update) = dispatch.finish(update)
+                        && send.send(update).is_err()
+                    {
+                        break 'run;
                     }
                 }
             }
         }
-        let Some(origin) = origin else {
-            continue;
-        };
         let center = (
             (focus[0] / 16.0).floor() as i64,
             (focus[2] / 16.0).floor() as i64,
         );
-        let Some(&key) = dirty.iter().min_by_key(|&&(x, z)| {
-            let dx = i64::from(x) - center.0;
-            let dz = i64::from(z) - center.1;
-            dx * dx + dz * dz
-        }) else {
-            continue;
-        };
-        dirty.remove(&key);
-        let started = Instant::now();
-        let mesh = match world.read() {
-            Ok(world) => world
-                .column(key.0, key.1)
-                .is_some()
-                .then(|| registry.mesh_column(&world, key, origin)),
-            Err(_) => return,
-        };
-        meshed += 1;
-        busy += started.elapsed();
-        if meshed.is_multiple_of(256) {
+        while dispatch.busy.len() < handles.len() {
+            let Some(job) = dispatch.next(center) else {
+                break;
+            };
+            started.get_or_insert_with(Instant::now);
+            if jobs.send(job).is_err() {
+                break 'run;
+            }
+        }
+        if dispatch.idle()
+            && let Some(since) = started.take()
+        {
             eprintln!(
-                "MESHER_STATS columns={meshed} mean_ms={:.2} pending={}",
-                busy.as_secs_f64() * 1000.0 / meshed as f64,
-                dirty.len()
+                "MESHER_IDLE meshed={meshed} elapsed_ms={}",
+                since.elapsed().as_millis()
             );
         }
-        if send.send(MeshUpdate { key, origin, mesh }).is_err() {
-            return;
-        }
+    }
+    drop(jobs);
+    for handle in handles {
+        let _ = handle.join();
     }
 }
 
@@ -1432,3 +1529,48 @@ fn run_actor(
 #[cfg(test)]
 #[path = "network_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::{Dispatch, MeshUpdate};
+
+    fn done(key: (i32, i32), origin: [i64; 3]) -> MeshUpdate {
+        MeshUpdate {
+            key,
+            origin,
+            mesh: None,
+        }
+    }
+
+    #[test]
+    fn columns_mesh_nearest_first_and_never_twice_at_once() {
+        let mut dispatch = Dispatch::default();
+        dispatch.dirty.extend([(5, 0), (1, 0), (2, 2)]);
+        assert_eq!(dispatch.next((0, 0)), None, "no origin yet");
+        dispatch.origin = Some([0; 3]);
+        assert_eq!(dispatch.next((0, 0)), Some(((1, 0), [0; 3])));
+        // Edited again while meshing: it waits for the first mesh.
+        dispatch.dirty.insert((1, 0));
+        assert_eq!(dispatch.next((0, 0)), Some(((2, 2), [0; 3])));
+        assert_eq!(dispatch.next((0, 0)), Some(((5, 0), [0; 3])));
+        assert_eq!(dispatch.next((0, 0)), None);
+        assert!(dispatch.finish(done((1, 0), [0; 3])).is_some());
+        assert_eq!(dispatch.next((0, 0)), Some(((1, 0), [0; 3])));
+        assert!(!dispatch.idle());
+    }
+
+    #[test]
+    fn meshes_for_an_old_origin_are_rebuilt_not_shown() {
+        let mut dispatch = Dispatch {
+            origin: Some([0; 3]),
+            ..Dispatch::default()
+        };
+        dispatch.dirty.insert((3, 3));
+        let (key, origin) = dispatch.next((0, 0)).expect("job");
+        dispatch.origin = Some([1024, 0, 0]);
+        assert!(dispatch.finish(done(key, origin)).is_none());
+        assert_eq!(dispatch.next((0, 0)), Some(((3, 3), [1024, 0, 0])));
+        assert!(dispatch.finish(done((3, 3), [1024, 0, 0])).is_some());
+        assert!(dispatch.idle());
+    }
+}

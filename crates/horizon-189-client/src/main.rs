@@ -96,6 +96,11 @@ struct App {
     smoke_tab: bool,
     smoke_inventory: bool,
     smoke_menu: bool,
+    bench: bool,
+    bench_gpu: frame_stats::FrameStats,
+    bench_cpu: frame_stats::FrameStats,
+    bench_wall: frame_stats::FrameStats,
+    bench_last: Option<Instant>,
     container_pointer: container_input::Pointer,
     particles: particles::Particles,
     /// The last client tick particles advanced to.
@@ -232,7 +237,9 @@ impl App {
             self.zoom = target;
         }
         if let Some(renderer) = &mut self.renderer {
-            renderer.set_vsync(toggles.fps_limit == 0 || self.smoke_frames.is_some());
+            renderer.bench = self.bench;
+            renderer
+                .set_vsync((toggles.fps_limit == 0 || self.smoke_frames.is_some()) && !self.bench);
         }
         if toggles.fullbright != self.fullbright {
             self.fullbright = toggles.fullbright;
@@ -248,6 +255,7 @@ impl App {
     /// The wait between redraws for the frame cap.
     fn redraw_period(&self) -> Duration {
         match self.settings.toggles.fps_limit {
+            _ if self.bench => Duration::ZERO,
             _ if self.smoke_frames.is_some() => self.frame_period,
             0 => self.frame_period,
             u32::MAX => Duration::ZERO,
@@ -1234,6 +1242,16 @@ impl ApplicationHandler for App {
                                 if renderer.offscreen_frames == offscreen {
                                     self.metrics.presented(self.started.elapsed());
                                 }
+                                if self.bench && capture.is_none() {
+                                    let now = Instant::now();
+                                    let gpu = renderer.gpu_time;
+                                    self.bench_gpu.record(gpu);
+                                    self.bench_cpu
+                                        .record(frame_started.elapsed().saturating_sub(gpu));
+                                    if let Some(last) = self.bench_last.replace(now) {
+                                        self.bench_wall.record(now - last);
+                                    }
+                                }
                                 if self.smoke_frames.is_some() && capture.is_none() {
                                     self.frame_stats.record(frame_started.elapsed());
                                     // Pacing counts only frames the display took:
@@ -1265,6 +1283,12 @@ impl ApplicationHandler for App {
                     };
                     self.frame_stats.report("FRAME_SUBMIT_US");
                     self.frame_intervals.report("FRAME_INTERVAL_US");
+                    if self.bench {
+                        self.bench_cpu.report("BENCH_CPU_US");
+                        self.bench_gpu.report("BENCH_GPU_US");
+                        self.bench_wall.report("BENCH_FRAME_US");
+                        eprintln!("BENCH_FPS mean={:.0}", self.bench_wall.mean_rate());
+                    }
                     eprintln!(
                         "{mode}_SMOKE_PASS frames={} elapsed_ms={} columns={} offscreen_frames={}",
                         self.frames,
@@ -1468,6 +1492,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_tab: options.smoke_tab,
         smoke_inventory: options.smoke_inventory,
         smoke_menu: options.smoke_menu,
+        bench: options.bench,
+        bench_gpu: Default::default(),
+        bench_cpu: Default::default(),
+        bench_wall: Default::default(),
+        bench_last: None,
         container_pointer: container_input::Pointer::default(),
         particles: particles::Particles::default(),
         particle_tick: 0,

@@ -33,6 +33,9 @@ pub struct Renderer {
     fov: f32,
     offscreen: Option<wgpu::Texture>,
     pub offscreen_frames: u64,
+    /// `--bench`: wait for each frame's GPU work and keep its duration.
+    pub bench: bool,
+    pub gpu_time: std::time::Duration,
     skin_loader: crate::skins::Loader,
     skins: std::collections::HashMap<u128, crate::skins::Binding>,
     skin_images: std::collections::HashMap<u128, crate::skins::Loaded>,
@@ -145,6 +148,8 @@ impl Renderer {
             fov,
             offscreen: None,
             offscreen_frames: 0,
+            bench: false,
+            gpu_time: std::time::Duration::ZERO,
             skin_loader: crate::skins::Loader::new()?,
             skins: Default::default(),
             skin_images: Default::default(),
@@ -564,7 +569,14 @@ impl Renderer {
         if !self.drawable {
             return Ok(false);
         }
-        let (frame, reconfigure) = match self.surface.get_current_texture() {
+        // `--bench` renders offscreen so the compositor's pacing never
+        // enters the GPU timing.
+        let acquired = if self.bench {
+            wgpu::CurrentSurfaceTexture::Occluded
+        } else {
+            self.surface.get_current_texture()
+        };
+        let (frame, reconfigure) = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame) => (Some(frame), false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (Some(frame), true),
             wgpu::CurrentSurfaceTexture::Occluded if smoke => (None, false),
@@ -628,7 +640,7 @@ impl Renderer {
             &frame.texture
         } else {
             if self.offscreen_frames == 0 {
-                eprintln!("SMOKE_OFFSCREEN_ACTIVE surface_occluded=true");
+                eprintln!("SMOKE_OFFSCREEN_ACTIVE surface_occluded={}", !self.bench);
             }
             self.offscreen_frames += 1;
             self.offscreen.get_or_insert_with(|| {
@@ -651,6 +663,9 @@ impl Renderer {
                 .as_ref()
                 .expect("smoke target was initialized")
         };
+        if let Some(scene) = &mut self.scene {
+            scene.prepare(&self.device, &self.queue, &self.config);
+        }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
@@ -688,7 +703,7 @@ impl Renderer {
                 ..Default::default()
             });
             if let Some(scene) = &self.scene {
-                scene.draw(&mut pass, &self.config);
+                scene.draw(&mut pass);
             }
         }
         let plain = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -768,6 +783,12 @@ impl Renderer {
             }
         }
         self.queue.submit([encoder.finish()]);
+        if self.bench {
+            // Submit-to-completion: an upper bound on this frame's GPU time.
+            let waited = std::time::Instant::now();
+            self.device.poll(wgpu::PollType::wait_indefinitely())?;
+            self.gpu_time = waited.elapsed();
+        }
         if let Some(path) = capture {
             self.capture(texture, path)?;
         }

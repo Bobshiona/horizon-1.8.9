@@ -19,6 +19,15 @@ impl FrameStats {
             time.as_micros().min(u128::from(u64::MAX)) as u64;
         self.count += 1;
     }
+    /// Frames per second from the mean of the kept samples.
+    pub fn mean_rate(&self) -> f64 {
+        let count = self.count.min(self.samples.len());
+        let total: u64 = self.samples[..count].iter().sum();
+        if total == 0 {
+            return 0.0;
+        }
+        count as f64 * 1e6 / total as f64
+    }
     /// Print `label` with percentiles in microseconds and how many samples
     /// took over twice the median (hitches, for frame intervals).
     pub fn report(&self, label: &str) {

@@ -1103,3 +1103,59 @@ the font file they fall back to the Minecraft font. Vanilla HUD, chat and screen
 font. Regressions: glyph rasterising/caching/metrics and the atlas packer. A capture checked the
 menu and cards. Gate: 184 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks,
 ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 40. Measured terrain and meshing performance
+
+Section 39's system-font milestone is `228d5bf6d5`.
+
+**Benchmark.** `--bench` (with `--smoke-frames`) renders uncapped to an offscreen target, waits for
+each frame's GPU work and prints `BENCH_CPU_US`, `BENCH_GPU_US`, `BENCH_FRAME_US` (p50/p95/p99) and
+`BENCH_FPS` over the last 1,024 frames. Offscreen matters: with a visible but covered window, macOS
+paced frames to 16/33 ms and the first reading (40 FPS) was the compositor, not the renderer. Setup
+used for the numbers below: Apple M5, 1920x1200, render distance 12, a private local vanilla 1.8.9
+server on default terrain (seed 8675309, view distance 12, spawn facing forest and a lake), 6,000
+frames per run, three alternating runs per build. Baseline = `228d5bf6d5` with only the bench patch.
+
+| | Baseline | This change |
+| --- | --- | --- |
+| GPU per frame (p50) | 1.86 ms | 1.05 ms |
+| CPU per frame (p50) | 0.20 ms | 0.24 ms |
+| Frame, serialized (p50) | 2.08 ms | 1.30 ms |
+| FPS (serialized mean) | 465 | 748 |
+| Mesh one chunk batch (~31 columns) | 24.7 ms | 6.7 ms |
+
+Breakdown before the change: terrain was ~1.4 ms of the 1.86 ms (no-terrain frame 0.46 ms, empty
+frame 0.20 ms), with 2.6M visible terrain vertices and 8.7M resident (350 MB at 40 bytes each).
+
+- **Packed terrain vertices** (`terrain.rs` `TerrainVertex`, 16 bytes): column-local position in
+  1/128 blocks biased by 8 plus the sprite layer (`Uint16x4`), UV (`Unorm16x2`), and vanilla's 8-bit
+  gamma vertex colour (`Unorm8x4`). Quads are four corners through one shared `quad_indices` buffer
+  instead of six expanded vertices, so a quad is 64 bytes instead of 240. Each draw takes its
+  column's offset from the mesh origin as per-instance data written once per frame.
+- **Solid/cutout split**: sprites with any texel under the 0.1 alpha test are cutout; everything else
+  draws first with a fragment shader that has no `discard`, so Apple's hidden-surface removal works.
+  The terrain shader decodes the vertex colour once per vertex; without the hurt overlay vanilla's
+  gamma-space product is exactly texel x decoded colour, so captures are unchanged.
+- **Per-section frustum culling**: meshes are ordered by 16-block section with quad offsets, so each
+  column draws only its visible sections, adjacent ones merged into one indexed draw.
+- **Occlusion culling** (`VisGraph`): the mesher computes each section's face connectivity (fewer than
+  256 opaque cubes sees everything, fully opaque sees nothing, otherwise flood-filled regions join
+  the faces they touch). `scene::reachable` walks breadth-first from the camera's section as
+  `RenderGlobal.setupTerrain` does: never back toward the camera, and out of a section only through a
+  face joined to the one it entered by. The walk ignores the frustum so its result is cached until
+  the camera changes section or a column's connectivity changes; above, below or outside the loaded
+  world nothing is occluded.
+- **Parallel meshing**: a coordinator hands the nearest dirty columns to `cores - 3` workers (7 on
+  the M5). A column is never meshed twice at once, and meshes built for an old origin are rebuilt
+  instead of shown, so out-of-order results cannot replace newer geometry. `MESHER_IDLE` reports when
+  a burst is done.
+
+Not yet measured: crowded lobbies (entity and nametag vertices are rebuilt on the CPU every frame),
+and a side-by-side with Lunar or OptiFine on the same machine and world, which needs the owner's
+launcher. On-screen FPS with Frame Limit at Unlimited also depends on how fast macOS hands back
+drawables. Regressions: packed-vertex precision and ranges, quad indices, section ranges and run
+merging, alpha classification (owned jar: stone solid, oak leaves cutout, grass mixed; every baked UV
+and position fits the packed format), `VisGraph` connectivity, the occlusion walk, mesher dispatch
+ordering and stale-origin handling, and `--bench` option validation. Captures before and after
+matched. Gate: 195 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks,
+ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

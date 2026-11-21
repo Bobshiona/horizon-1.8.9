@@ -29,6 +29,8 @@ pub struct Options {
     pub smoke_inventory: bool,
     /// Validation only: open the mod menu once in the world.
     pub smoke_menu: bool,
+    /// Validation only: uncapped presentation with per-frame GPU timing.
+    pub bench: bool,
     /// Vanilla `viewBobbing` (on by default).
     pub view_bobbing: bool,
     pub help: bool,
@@ -70,6 +72,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-tab                   With --smoke-frames, hold the player-list key\n\
     --smoke-inventory             With --smoke-frames, open the inventory over a slot\n\
     --smoke-menu                  With --smoke-frames, open the mod menu\n\
+    --bench                       With --smoke-frames, time uncapped CPU and GPU frames\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
@@ -191,6 +194,7 @@ impl Options {
                 "--smoke-tab" => options.smoke_tab = true,
                 "--smoke-inventory" => options.smoke_inventory = true,
                 "--smoke-menu" => options.smoke_menu = true,
+                "--bench" => options.bench = true,
                 "--no-view-bobbing" => options.view_bobbing = false,
                 "--gui-scale" => {
                     let scale: u32 = value()?.parse()?;
@@ -232,11 +236,12 @@ impl Options {
         {
             return Err("--smoke-chat requires --smoke-frames and --server".into());
         }
-        if (options.smoke_tab || options.smoke_inventory || options.smoke_menu)
+        if (options.smoke_tab || options.smoke_inventory || options.smoke_menu || options.bench)
             && options.smoke_frames.is_none()
         {
             return Err(
-                "--smoke-tab, --smoke-inventory and --smoke-menu require --smoke-frames".into(),
+                "--smoke-tab, --smoke-inventory, --smoke-menu and --bench require --smoke-frames"
+                    .into(),
             );
         }
         if options.capture.is_some() && options.smoke_frames.is_none() {
@@ -400,6 +405,13 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Options, Box<dyn Error>> {
         Options::parse(args.iter().map(|value| (*value).to_owned()))
+    }
+
+    #[test]
+    fn bench_runs_only_inside_a_bounded_smoke() {
+        assert!(parse(&["--bench"]).is_err());
+        let options = parse(&["--smoke-frames", "10", "--bench"]).expect("bench smoke");
+        assert!(options.bench);
     }
 
     #[test]

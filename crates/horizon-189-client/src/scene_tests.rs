@@ -52,6 +52,7 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    scene.prepare(&device, &queue, &config);
     let mut encoder = device.create_command_encoder(&Default::default());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -75,7 +76,7 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
             }),
             ..Default::default()
         });
-        scene.draw(&mut pass, &config);
+        scene.draw(&mut pass);
     }
     encoder.copy_texture_to_buffer(
         target.as_image_copy(),
@@ -131,6 +132,7 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
     scene.clear_world();
     assert_eq!(scene.column_count(), 0);
     assert!(!scene.has_geometry());
+    scene.prepare(&device, &queue, &config);
     let mut encoder = device.create_command_encoder(&Default::default());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -154,7 +156,7 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
             }),
             ..Default::default()
         });
-        scene.draw(&mut pass, &config);
+        scene.draw(&mut pass);
     }
     encoder.copy_texture_to_buffer(
         target.as_image_copy(),
