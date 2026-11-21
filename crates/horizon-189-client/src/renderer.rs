@@ -901,7 +901,8 @@ impl Renderer {
             });
             scene.draw_labels(&mut pass);
         }
-        if let Some(scene) = &self.scene {
+        // Each pass loads and stores the whole frame: skip empty ones.
+        if let Some(scene) = self.scene.as_ref().filter(|s| s.has_hand()) {
             // renderHand: depth cleared so the hand never enters walls.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("First-person hand"),
@@ -959,7 +960,7 @@ impl Renderer {
             }
             self.glass
                 .encode(&mut encoder, part, texture, copyable, &view);
-            if let Some(ui) = &self.ui {
+            if let Some(ui) = self.ui.as_ref().filter(|ui| ui.has_part(part)) {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Legacy interface"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {

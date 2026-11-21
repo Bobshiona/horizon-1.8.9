@@ -4,6 +4,8 @@ struct Params {
     // Blur passes: xy is one source texel in uv. Panels: xy is the target
     // in physical pixels and z physical pixels per GUI pixel.
     value: vec4<f32>,
+    // Panels: the blurred region's origin and size in physical pixels.
+    region: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var source: texture_2d<f32>;
@@ -100,7 +102,7 @@ fn fragment_panel(in: PanelOut) -> @location(0) vec4<f32> {
     let edge = clamp(1.0 + d / max(in.params.x * 1.5, 1.0), 0.0, 1.0);
     let normal = normalize(in.local / max(in.half_size, vec2<f32>(1.0)) + vec2<f32>(1e-4));
     let bend = normal * edge * edge * 6.0 * params.value.z;
-    let uv = (in.position.xy - bend) / params.value.xy;
+    let uv = (in.position.xy - bend - params.region.xy) / params.region.zw;
     var glass = textureSampleLevel(source, linear, uv, 0.0).rgb;
     // Vibrancy: lift saturation and keep the frost bright.
     let luma = dot(glass, vec3<f32>(0.2126, 0.7152, 0.0722));

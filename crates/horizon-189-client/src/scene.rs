@@ -1200,6 +1200,10 @@ impl Scene {
         }
     }
 
+    pub fn has_hand(&self) -> bool {
+        self.hand_count > 0
+    }
+
     pub fn draw_hand(&self, pass: &mut wgpu::RenderPass<'_>) {
         if self.hand_count > 0 {
             pass.set_pipeline(&self.pipeline);

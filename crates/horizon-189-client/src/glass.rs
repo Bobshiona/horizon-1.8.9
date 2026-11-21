@@ -6,6 +6,12 @@
 //! Panels come in two layers: layer 0 sits under the whole interface (HUD
 //! cards), layer 1 under the interface drawn after `Canvas::overlay` (menus),
 //! so menu glass frosts the HUD as well as the world.
+//!
+//! Only the part of the frame around a layer's panels is copied and blurred:
+//! the panels padded by more than the blur reaches, on a 64-pixel grid so the
+//! half, quarter and eighth texels line up with a whole-frame blur, and
+//! stopping exactly at the frame's edge where it reaches it (so edges clamp
+//! as before). Panels sample identical values for a fraction of the work.
 use std::error::Error;
 
 /// One glass rectangle in GUI pixels.
@@ -38,6 +44,50 @@ impl Panel {
 
 /// Shadow margin around each panel, in GUI pixels.
 const MARGIN: f32 = 10.0;
+/// How far the rim refraction reaches inside a panel, in GUI pixels.
+const BEND: f32 = 6.0;
+/// Physical pixels kept around the panels: more than the blur chain reaches
+/// (about 40), so region edges never show in a panel.
+const REACH: u32 = 64;
+/// Region grid in physical pixels: a multiple of the eighth level's texel.
+const GRID: u32 = 64;
+
+/// The physical-pixel rectangle `[x0, y0, x1, y1]` a layer's blur needs: its
+/// panels with their shadow and refraction, padded by `REACH`, on the
+/// `GRID`, inside the frame.
+fn region(panels: &[Panel], factor: f64, frame: (u32, u32)) -> Option<[u32; 4]> {
+    let mut bounds: Option<[f64; 4]> = None;
+    for panel in panels {
+        let [x0, y0, x1, y1] = panel.rect;
+        if !(x1 > x0 && y1 > y0) || !panel.rect.iter().all(|v| v.is_finite()) {
+            continue;
+        }
+        let pad = f64::from(MARGIN.max(BEND));
+        let rect = [
+            (f64::from(x0) - pad) * factor,
+            (f64::from(y0) - pad) * factor,
+            (f64::from(x1) + pad) * factor,
+            (f64::from(y1) + pad) * factor,
+        ];
+        bounds = Some(bounds.map_or(rect, |b| {
+            [
+                b[0].min(rect[0]),
+                b[1].min(rect[1]),
+                b[2].max(rect[2]),
+                b[3].max(rect[3]),
+            ]
+        }));
+    }
+    let [x0, y0, x1, y1] = bounds?;
+    let reach = f64::from(REACH);
+    let low = |v: f64| ((v - reach).max(0.0) as u32) / GRID * GRID;
+    let high = |v: f64, limit: u32| {
+        let v = (v + reach).max(0.0).ceil() as u32;
+        v.div_ceil(GRID).saturating_mul(GRID).min(limit)
+    };
+    let region = [low(x0), low(y0), high(x1, frame.0), high(y1, frame.1)];
+    (region[2] > region[0] && region[3] > region[1]).then_some(region)
+}
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 #[repr(C)]
@@ -78,14 +128,16 @@ fn vertices(panels: &[Panel], out: &mut Vec<PanelVertex>) {
     }
 }
 
+/// One layer's blur textures, sized to its region.
 struct Targets {
     size: (u32, u32),
     backdrop: wgpu::Texture,
-    /// Half, quarter and eighth resolution.
-    chain: [wgpu::Texture; 3],
+    /// Views of the half, quarter and eighth resolution textures (which
+    /// they keep alive).
+    views: [wgpu::TextureView; 3],
     /// Down 0..3 then up 3..5, then the panel group last.
     groups: Vec<wgpu::BindGroup>,
-    /// The panel pass's screen uniform.
+    /// The panel pass's frame and region uniform.
     screen: wgpu::Buffer,
 }
 
@@ -96,7 +148,10 @@ pub struct GlassPass {
     panel: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     frame_format: wgpu::TextureFormat,
-    targets: Option<Targets>,
+    /// Per layer: its blur textures, and this frame's region and frame size.
+    targets: [Option<Targets>; 2],
+    regions: [Option<[u32; 4]>; 2],
+    frame: (u32, u32),
     vertices: wgpu::Buffer,
     capacity: u64,
     ranges: [std::ops::Range<u32>; 2],
@@ -225,7 +280,9 @@ impl GlassPass {
             panel,
             sampler,
             frame_format,
-            targets: None,
+            targets: [None, None],
+            regions: [None, None],
+            frame: (0, 0),
             vertices,
             capacity,
             ranges: [0..0, 0..0],
@@ -233,7 +290,7 @@ impl GlassPass {
         }
     }
 
-    fn uniform(device: &wgpu::Device, value: [f32; 4]) -> wgpu::Buffer {
+    fn uniform(device: &wgpu::Device, value: [f32; 8]) -> wgpu::Buffer {
         use wgpu::util::DeviceExt;
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Glass parameters"),
@@ -242,8 +299,8 @@ impl GlassPass {
         })
     }
 
-    fn targets(&mut self, device: &wgpu::Device, size: (u32, u32)) -> &Targets {
-        if self.targets.as_ref().is_none_or(|t| t.size != size) {
+    fn targets(&mut self, device: &wgpu::Device, layer: usize, size: (u32, u32)) -> &Targets {
+        if self.targets[layer].as_ref().is_none_or(|t| t.size != size) {
             let texture = |label, width: u32, height: u32, format, usage| {
                 device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
@@ -296,24 +353,36 @@ impl GlassPass {
             let texel = |t: &wgpu::Texture| {
                 Self::uniform(
                     device,
-                    [1.0 / t.width() as f32, 1.0 / t.height() as f32, 0.0, 0.0],
+                    [
+                        1.0 / t.width() as f32,
+                        1.0 / t.height() as f32,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
                 )
             };
             // Down: backdrop -> half -> quarter -> eighth; up: eighth ->
             // quarter -> half. Each samples its source texel size.
             let sources = [&backdrop, &chain[0], &chain[1], &chain[2], &chain[1]];
             let mut groups: Vec<_> = sources.iter().map(|s| group(s, &texel(s))).collect();
-            let screen = Self::uniform(device, [size.0 as f32, size.1 as f32, 1.0, 0.0]);
+            let screen = Self::uniform(device, [0.0; 8]);
             groups.push(group(&chain[0], &screen));
-            self.targets = Some(Targets {
+            let views = [0, 1, 2].map(|i| chain[i].create_view(&Default::default()));
+            self.targets[layer] = Some(Targets {
                 size,
                 backdrop,
-                chain,
+                views,
                 groups,
                 screen,
             });
         }
-        self.targets.as_ref().expect("targets were just created")
+        self.targets[layer]
+            .as_ref()
+            .expect("targets were just created")
     }
 
     /// Replace this frame's panels for both layers.
@@ -343,8 +412,24 @@ impl GlassPass {
                 });
             }
             queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&staging));
-            let screen = [size.0 as f32, size.1 as f32, factor as f32, 0.0];
-            let targets = self.targets(device, size);
+        }
+        self.frame = size;
+        for (layer, panels) in layers.into_iter().enumerate() {
+            self.regions[layer] = region(panels, factor, size);
+            let Some([x0, y0, x1, y1]) = self.regions[layer] else {
+                continue;
+            };
+            let screen = [
+                size.0 as f32,
+                size.1 as f32,
+                factor as f32,
+                0.0,
+                x0 as f32,
+                y0 as f32,
+                (x1 - x0) as f32,
+                (y1 - y0) as f32,
+            ];
+            let targets = self.targets(device, layer, (x1 - x0, y1 - y0));
             queue.write_buffer(&targets.screen, 0, bytemuck::cast_slice(&screen));
         }
         self.staging = staging;
@@ -365,32 +450,44 @@ impl GlassPass {
         copyable: bool,
         target: &wgpu::TextureView,
     ) {
-        let (Some(targets), true) = (&self.targets, self.has_layer(layer)) else {
+        let (Some(targets), Some([x0, y0, x1, y1]), true) = (
+            &self.targets[layer],
+            self.regions[layer],
+            self.has_layer(layer),
+        ) else {
             return;
         };
-        if (frame.width(), frame.height()) != targets.size {
+        if (frame.width(), frame.height()) != self.frame || targets.size != (x1 - x0, y1 - y0) {
             return;
         }
         if copyable {
             encoder.copy_texture_to_texture(
-                frame.as_image_copy(),
+                wgpu::TexelCopyTextureInfo {
+                    texture: frame,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
                 targets.backdrop.as_image_copy(),
-                frame.size(),
+                wgpu::Extent3d {
+                    width: x1 - x0,
+                    height: y1 - y0,
+                    depth_or_array_layers: 1,
+                },
             );
         }
         let passes = [
-            (&self.down, &targets.chain[0], 0),
-            (&self.down, &targets.chain[1], 1),
-            (&self.down, &targets.chain[2], 2),
-            (&self.up, &targets.chain[1], 3),
-            (&self.up, &targets.chain[0], 4),
+            (&self.down, &targets.views[0], 0),
+            (&self.down, &targets.views[1], 1),
+            (&self.down, &targets.views[2], 2),
+            (&self.up, &targets.views[1], 3),
+            (&self.up, &targets.views[0], 4),
         ];
-        for (pipeline, output, group) in passes {
-            let view = output.create_view(&Default::default());
+        for (pipeline, view, group) in passes {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Glass blur"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -427,6 +524,34 @@ impl GlassPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blur_regions_pad_past_the_blur_on_the_grid_and_stop_at_the_frame() {
+        // A HUD card at (2, 2)-(60, 14) in GUI pixels at 2x: 4..120 x
+        // 4..28 physical, padded by 10 GUI pixels and 64 more (to 204 x
+        // 112), on the grid.
+        let card = Panel::new(2.0, 2.0, 60.0, 14.0);
+        assert_eq!(region(&[card], 2.0, (1920, 1200)), Some([0, 0, 256, 128]));
+        // Inside the frame the edges land on the grid and keep the reach.
+        let middle = Panel::new(400.0, 300.0, 500.0, 340.0);
+        let [x0, y0, x1, y1] = region(&[middle], 2.0, (1920, 1200)).unwrap();
+        assert!([x0, y0, x1, y1].iter().all(|v| v % GRID == 0));
+        assert!(x0 + REACH <= 780 && y0 + REACH <= 580 && x1 >= 1020 + REACH && y1 >= 700 + REACH);
+        // At the frame's far edge the region stops exactly there.
+        let corner = Panel::new(900.0, 560.0, 958.0, 598.0);
+        assert_eq!(
+            region(&[corner], 2.0, (1917, 1199)).map(|r| [r[2], r[3]]),
+            Some([1917, 1199])
+        );
+        // Two panels share one region; none means no blur at all.
+        let both = region(&[card, middle], 2.0, (1920, 1200)).unwrap();
+        assert_eq!([both[0], both[1]], [0, 0]);
+        assert_eq!(region(&[], 2.0, (1920, 1200)), None);
+        assert_eq!(
+            region(&[Panel::new(5.0, 5.0, 5.0, 9.0)], 2.0, (1920, 1200)),
+            None
+        );
+    }
 
     #[test]
     fn panels_expand_for_their_shadow_and_skip_degenerate_rects() {

@@ -1310,13 +1310,22 @@ impl Pass {
 
     /// Part 0 is the interface (inverted crosshair first), part 1 the
     /// overlay after `Canvas::overlay`.
-    pub fn draw_part(&self, pass: &mut wgpu::RenderPass<'_>, part: usize) {
-        let range = if part == 0 {
+    fn part_range(&self, part: usize) -> std::ops::Range<u32> {
+        if part == 0 {
             self.inverted..self.inverted + self.split
         } else {
             self.inverted + self.split..self.inverted + self.count
-        };
-        if range.is_empty() && (part == 1 || self.inverted == 0) {
+        }
+    }
+
+    /// Whether `draw_part` draws anything, so an empty part costs no pass.
+    pub fn has_part(&self, part: usize) -> bool {
+        !self.part_range(part).is_empty() || (part == 0 && self.inverted > 0)
+    }
+
+    pub fn draw_part(&self, pass: &mut wgpu::RenderPass<'_>, part: usize) {
+        let range = self.part_range(part);
+        if !self.has_part(part) {
             return;
         }
         pass.set_bind_group(0, &self.bindings, &[]);

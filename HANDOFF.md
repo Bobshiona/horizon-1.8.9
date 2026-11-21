@@ -1647,3 +1647,43 @@ it to the floor, sync frames every 120, wake-lateness compensation, and a heavy 
 floor.
 
 Gate: 236 tests.
+
+## 58. Blur only around the glass, skip empty passes
+
+Section 57's pacing is `7704c85944`.
+
+Hiding the GUI (F1) doubled bench FPS, and the glass alone cost GPU 0.57 → 0.37 ms and CPU
+0.19 → 0.11 ms (measured with a temporary switch, not committed). Every frame it copied the whole
+frame and ran a five-pass blur chain over it, for a few small HUD cards.
+
+`glass::region` now gives each layer the physical rectangle its blur needs:
+- its panels plus their shadow and rim refraction, padded by 64 px (the chain reaches about 40);
+- snapped outward to a 64 px grid, so the half, quarter and eighth texels line up with a
+  whole-frame blur;
+- stopping exactly at the frame's edge where it reaches it, so edges clamp as before.
+
+Each layer keeps textures sized to its region. The HUD region is small and its 64 px grid rarely
+changes size; the menu region only exists while a menu is open. The frame is copied from the
+region's origin, and panels sample through its offset (`Params.region`). The blur views are
+created once instead of every pass. The hand pass is skipped when there's no first-person hand
+(F1, F5, spectator), and the interface overlay pass when it's empty: each pass loads and stores
+the whole frame on Apple's tile GPUs.
+
+Equality: the previous commit and this one, built side by side, captured the same flat-world
+frame with the HUD and with the settings menu. Every pixel more than 2/255 apart is inside the FPS
+card's digits, which change between runs, and the slight shift beside it follows that card's
+width. The menu frame differs only in 10 pixels by at most 2/255.
+
+Bench terrain, HUD on, alternating builds with cool-downs (a fanless Air throttles):
+
+| | FPS | GPU p50 | CPU p50 |
+| --- | --- | --- | --- |
+| Before | 1,170–1,187 | 0.558–0.573 ms | 0.189–0.193 ms |
+| After | 1,375–1,379 | 0.474–0.476 ms | 0.174 ms |
+
+One "after" run (1,030 FPS, CPU p50 0.232 ms) was disturbed by other load on the machine.
+
+Regressions: region padding, the grid, the frame edge, two panels sharing one region, and no
+panels (or only degenerate ones) meaning no blur.
+
+Gate: 237 tests.
