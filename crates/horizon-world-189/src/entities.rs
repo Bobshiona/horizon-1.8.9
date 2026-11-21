@@ -354,6 +354,23 @@ impl Entity {
         }
     }
 
+    /// The local player drawn as a model (third person): one client tick
+    /// straight to its own position and look, through the same body-yaw and
+    /// limb-swing update as other players. `flags` is watcher index 0.
+    pub fn tick_local(&mut self, position: [f64; 3], yaw: f32, pitch: f32, flags: u8) {
+        self.flags = flags;
+        self.target = position;
+        self.target_yaw = yaw;
+        self.target_pitch = pitch;
+        self.steps = 1;
+        let previous_head = self.head_yaw;
+        self.head_yaw = yaw;
+        self.tick();
+        // Exactly the player's position, not the one-step lerp's rounding.
+        self.position = position;
+        self.previous_head_yaw = previous_head;
+    }
+
     fn tick(&mut self) {
         self.hurt_time = self.hurt_time.saturating_sub(1);
         if self.living() && self.health <= 0.0 {
@@ -755,6 +772,34 @@ mod tests {
             entities.get(2).unwrap().dimensions(),
             Some((0.51000005 * 4.0, 0.51000005 * 4.0))
         );
+    }
+
+    #[test]
+    fn the_local_player_model_follows_its_own_position_and_turns_its_body() {
+        let mut entities = Entities::default();
+        spawn(&mut entities);
+        let mut own = entities.get(5).unwrap().clone();
+        own.tick_local([0.0, 64.0, 0.0], 0.0, 0.0, 0);
+        // Walking +x at sprint speed: the body turns toward the motion, the
+        // head keeps the look, and the limbs start swinging.
+        for step in 1..=10 {
+            own.tick_local([f64::from(step) * 0.28, 64.0, 0.0], 30.0, 10.0, 0x08);
+        }
+        assert_eq!(own.position, [10.0 * 0.28, 64.0, 0.0]);
+        assert_eq!(own.previous, [9.0 * 0.28, 64.0, 0.0]);
+        assert_eq!(
+            (own.head_yaw, own.previous_head_yaw, own.pitch),
+            (30.0, 30.0, 10.0)
+        );
+        assert!(
+            own.body_yaw < 0.0 && own.body_yaw > -75.0,
+            "{}",
+            own.body_yaw
+        );
+        assert!(own.limb_amount > 0.9 && own.limb_swing > 5.0);
+        assert_eq!(own.flags & 0x08, 0x08);
+        own.tick_local([10.0 * 0.28, 64.0, 0.0], 50.0, 10.0, 0);
+        assert_eq!((own.previous_head_yaw, own.head_yaw), (30.0, 50.0));
     }
 
     #[test]

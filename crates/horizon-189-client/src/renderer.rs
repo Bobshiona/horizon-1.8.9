@@ -33,6 +33,8 @@ pub struct Renderer {
     fov: f32,
     /// Name tags: off while F1 hides the GUI (`Minecraft.isGuiEnabled`).
     pub names: bool,
+    /// F5: the local player's model, drawn with the others.
+    pub own_body: Option<(i32, horizon_world_189::entities::Entity)>,
     /// F2: read this frame back into `shot`.
     pub screenshot: bool,
     pub shot: Option<Result<crate::screenshot::Pixels, String>>,
@@ -157,6 +159,7 @@ impl Renderer {
             offscreen: None,
             offscreen_frames: 0,
             names: true,
+            own_body: None,
             screenshot: false,
             shot: None,
             bench: false,
@@ -450,9 +453,22 @@ impl Renderer {
         let in_view = |entity: &horizon_world_189::entities::Entity| {
             crate::scene::entity_in_view(&planes, entity, partial, origin)
         };
+        // F5's own model draws with the others but never gets a name tag.
+        let with_own;
+        let drawn = match &self.own_body {
+            Some(own) => {
+                with_own = entities
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(own.clone()))
+                    .collect::<Vec<_>>();
+                &with_own[..]
+            }
+            None => entities,
+        };
         crate::models::entities(
             &mut vertices,
-            entities,
+            drawn,
             partial,
             scene.origin(),
             self.registry.as_deref(),
@@ -467,7 +483,7 @@ impl Renderer {
         through.clear();
         tested.clear();
         lines.clear();
-        crate::models::fishing_lines(&mut lines, entities, partial, scene.origin(), angler);
+        crate::models::fishing_lines(&mut lines, drawn, partial, scene.origin(), angler);
         if self.names
             && let Some(registry) = &self.registry
         {

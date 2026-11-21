@@ -114,6 +114,8 @@ pub struct Shared {
     pub game_mode: u8,
     /// The local player aims at an entity, so no block outline is drawn.
     pub aiming_entity: bool,
+    /// The local player as a model for third person, stepped each tick.
+    pub own_body: Option<horizon_world_189::entities::Entity>,
     /// A new render distance for the server (C15), sent on the next tick.
     pub view_distance: Option<u8>,
     pub vitals: crate::gameplay::Vitals,
@@ -639,6 +641,7 @@ fn run_actor(
     let mut vitals = crate::gameplay::Vitals::default();
     let mut potions: Vec<(u8, i8, i32)> = Vec::new();
     let mut hand = crate::hand::Tracked::default();
+    let mut own_body: Option<horizon_world_189::entities::Entity> = None;
     let mut capabilities = entity_packets::Abilities {
         invulnerable: false,
         flying: false,
@@ -893,6 +896,8 @@ fn run_actor(
                         state.inventory = Arc::new(inventory.view.clone());
                         state.vitals = vitals;
                         state.hand = hand.clone();
+                        own_body = None;
+                        state.own_body = None;
                         state.swing = None;
                         state.using_item = false;
                         state.game_mode = game_mode;
@@ -1467,6 +1472,17 @@ fn run_actor(
                     capabilities.walk_speed,
                 );
                 state.hand = hand.clone();
+                // Watcher flags: sneaking 0x02, sprinting 0x08, using 0x10.
+                let flags = u8::from(player.sneaking) << 1
+                    | u8::from(player.sprinting) << 3
+                    | u8::from(controller.using) << 4;
+                if own_body.is_none() {
+                    own_body = local_body();
+                }
+                if let Some(body) = &mut own_body {
+                    body.tick_local(player.position, player.yaw, player.pitch, flags);
+                    state.own_body = Some(body.clone());
+                }
                 // `RenderGlobal.drawBlockDamageTexture`'s list, own dig last.
                 let own = controller.dig_progress().and_then(|(at, damage)| {
                     let stage = (damage * 10.0) as i32 - 1;
@@ -1538,6 +1554,22 @@ fn run_actor(
 #[cfg(test)]
 #[path = "network_tests.rs"]
 mod tests;
+
+/// A player model for the local player, whose position and look the tick
+/// sets; skin, equipment and swing are filled in each frame.
+fn local_body() -> Option<horizon_world_189::entities::Entity> {
+    let mut tracked = horizon_world_189::entities::Entities::default();
+    tracked.apply(horizon_protocol_47::entities::EntityPacket::SpawnPlayer {
+        id: 0,
+        uuid: 0,
+        position: [0; 3],
+        yaw: 0,
+        pitch: 0,
+        held_item: 0,
+        metadata: vec![],
+    });
+    tracked.get(0).cloned()
+}
 
 #[cfg(test)]
 mod dispatch_tests {

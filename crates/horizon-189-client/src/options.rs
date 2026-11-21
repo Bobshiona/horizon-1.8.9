@@ -41,6 +41,8 @@ pub struct Options {
     pub smoke_settings: bool,
     /// Validation only: start with the GUI hidden, as after F1.
     pub smoke_hide_gui: bool,
+    /// Validation only: start in this F5 perspective (0 to 2).
+    pub smoke_perspective: u8,
     /// Validation only: take an F2 screenshot into this folder near the end.
     pub smoke_screenshot: Option<std::path::PathBuf>,
     /// With `--install`: the git repository the app updates from.
@@ -218,6 +220,13 @@ impl Options {
                 "--smoke-launcher" => options.smoke_launcher = true,
                 "--smoke-settings" => options.smoke_settings = true,
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
+                "--smoke-perspective" => {
+                    let mode: u8 = value()?.parse()?;
+                    if mode > 2 {
+                        return Err("--smoke-perspective must be 0, 1 or 2".into());
+                    }
+                    options.smoke_perspective = mode;
+                }
                 "--smoke-screenshot" => options.smoke_screenshot = Some(value()?.into()),
                 "--update-source" => options.update_source = Some(value()?),
                 "--smoke-pitch" => {
@@ -288,6 +297,7 @@ impl Options {
             || options.smoke_launcher
             || options.smoke_settings
             || options.smoke_hide_gui
+            || options.smoke_perspective != 0
             || options.smoke_screenshot.is_some())
             && options.smoke_frames.is_none()
         {

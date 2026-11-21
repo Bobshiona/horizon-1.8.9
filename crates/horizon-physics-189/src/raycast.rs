@@ -110,6 +110,47 @@ pub struct Raycaster {
 }
 
 impl Raycaster {
+    /// `World.rayTraceBlocks(start, end)` as the third-person camera uses it:
+    /// air and liquids pass, other blocks stop the segment at their target
+    /// boxes. The nearest point touched, if any.
+    pub fn trace_blocks(
+        &mut self,
+        world: &World,
+        start: [f64; 3],
+        end: [f64; 3],
+    ) -> Option<[f64; 3]> {
+        if !start.iter().chain(&end).all(|v| v.is_finite()) {
+            return None;
+        }
+        let delta: [f64; 3] = std::array::from_fn(|a| end[a] - start[a]);
+        let area = expand(bb(start, end), 1.0, 1.0, 1.0);
+        let min = lo(area).map(|v| v.floor() as i32);
+        let max = hi(area).map(|v| v.floor() as i32);
+        let mut nearest: Option<f64> = None;
+        for x in min[0]..=max[0] {
+            for y in min[1]..=max[1] {
+                for z in min[2]..=max[2] {
+                    let Some(state) = world.block(x, y, z) else {
+                        continue;
+                    };
+                    let id = state.block_id();
+                    if id == 0 || matches!(id, 8..=11) {
+                        continue;
+                    }
+                    target_boxes(world, [x, y, z], state, area, &mut self.boxes);
+                    for &bounds in &self.boxes {
+                        if let Some((t, _)) = intercept(bounds, start, delta)
+                            && nearest.is_none_or(|n| t < n)
+                        {
+                            nearest = Some(t);
+                        }
+                    }
+                }
+            }
+        }
+        nearest.map(|t| std::array::from_fn(|a| start[a] + delta[a] * t))
+    }
+
     pub fn select(
         &mut self,
         world: &World,
@@ -222,6 +263,29 @@ mod tests {
     use super::*;
     use horizon_protocol_47::entities::EntityPacket;
     use horizon_world_189::{BlockState, ColumnData, ColumnUpdate};
+    #[test]
+    fn block_traces_stop_at_the_nearest_solid_and_pass_air_and_water() {
+        let mut world = World::default();
+        world.apply(ColumnUpdate::Data {
+            x: 0,
+            z: 0,
+            full: true,
+            data: Box::new(ColumnData {
+                sections: Default::default(),
+                biomes: None,
+            }),
+        });
+        let mut rays = Raycaster::default();
+        let (start, end) = ([0.5, 1.5, 0.5], [0.5, 1.5, 6.5]);
+        assert_eq!(rays.trace_blocks(&world, start, end), None);
+        world.set_block(0, 1, 2, BlockState(9 << 4));
+        assert_eq!(rays.trace_blocks(&world, start, end), None, "water passes");
+        world.set_block(0, 1, 4, BlockState(1 << 4));
+        world.set_block(0, 1, 3, BlockState(1 << 4));
+        assert_eq!(rays.trace_blocks(&world, start, end), Some([0.5, 1.5, 3.0]));
+        assert_eq!(rays.trace_blocks(&world, end, start), Some([0.5, 1.5, 5.0]));
+    }
+
     #[test]
     fn selection_boxes_follow_block_bounds() {
         let mut world = World::default();

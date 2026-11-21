@@ -1422,3 +1422,34 @@ Regressions: the stamp (epoch, a leap day, a Pacific offset), the free-name suff
 and an opaque RGB write.
 
 Gate: 223 tests.
+
+## 52. F5 third person
+
+Section 51's F2 is `a5a4832870`.
+
+F5 did nothing. From the same `ave.s` branch: with no screen open the perspective key steps
+`thirdPersonView` (`avh.aB`) 0, 1, 2, 0. `EntityRenderer.orientCamera` (`bfk.f`) backs the camera 4
+blocks from the eye along the look, or for 2 along the look turned round (the camera then faces the
+player: yaw + 180, pitch negated). Eight rays from the eye, offset 0.1 on each axis, pull it in to
+the nearest block (`rayTraceBlocks`, air and liquids pass); each ray's end adds the z offset to x
+too, as vanilla's does. `renderHand` draws the first-person hand only in mode 0; the crosshair
+stays (`GuiIngame` reads the mode only for the pumpkin blur, which this client doesn't draw).
+Block picking, the outline target and reach still use the player's eye; the frustum, name-tag
+facing, outline width and the under-water FOV use the camera.
+
+The local player's model: `Entity::tick_local` (world crate) steps a player entity to the player's
+own position and look each client tick, through the same body-yaw and limb-swing update other
+players get, with sneak, sprint and use flags; the network thread keeps it in `Shared.own_body` and
+drops it on respawn. Each frame `own_body` adds the skin, armour, held item, swing, hurt flash,
+death tilt and invisibility, and the head follows the live look. The renderer draws it with the
+other entities (and from its hand for the fishing line) but never gives it a name tag
+(`canRenderName` skips the view entity). Spectators get the camera but no model.
+`Raycaster::trace_blocks` (physics crate) is the segment trace. `--smoke-perspective N` starts in a
+perspective: on the flat reference server mode 1 shows Steve from behind four blocks back with the
+crosshair on his head; on the bench server mode 2 shows him facing the camera with the sword in his
+right hand. Not matched yet: vanilla turns name tags for mode 2 by yaw only, here they face the
+camera. Regressions: the F5 cycle and hidden hand, open-air camera distance and front-view look,
+the pull-in at a wall, the segment trace (stops at stone, passes water) and the local model's
+position, head and body turn and limb swing.
+
+Gate: 227 tests.

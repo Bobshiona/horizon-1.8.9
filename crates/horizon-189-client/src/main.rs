@@ -127,6 +127,8 @@ struct App {
         std::sync::mpsc::Receiver<Result<String, String>>,
     ),
     smoke_screenshot: bool,
+    /// `orientCamera`'s block traces.
+    camera_rays: horizon_physics_189::raycast::Raycaster,
     fov: f32,
     metrics: pvp_metrics::Metrics,
     settings: settings::Settings,
@@ -178,6 +180,7 @@ struct Snapshot {
     potions: Vec<(u8, i8, i32)>,
     current: [f64; 3],
     aiming_entity: bool,
+    own_body: Option<horizon_world_189::entities::Entity>,
 }
 
 impl App {
@@ -1266,6 +1269,7 @@ impl ApplicationHandler for App {
                         potions: s.potions.clone(),
                         current: s.current,
                         aiming_entity: s.aiming_entity,
+                        own_body: s.own_body.clone(),
                     })
                 });
                 if let Some(s) = &snapshot {
@@ -1348,16 +1352,34 @@ impl ApplicationHandler for App {
                                 hand::camera_effects(&snapshot.hand, partial, self.view_bobbing);
                             renderer.set_camera_effects(effects);
                         }
-                        let in_water = self
-                            .network
+                        // F5: `orientCamera` moves the view; the player's own
+                        // eye still picks blocks and casts the fishing line.
+                        let world = self.network.as_ref().and_then(|n| n.world.try_read().ok());
+                        let (position, yaw, pitch) = match &world {
+                            Some(world) => view::camera(
+                                world,
+                                &mut self.camera_rays,
+                                pose.position,
+                                pose.yaw,
+                                pose.pitch,
+                                self.view.perspective,
+                            ),
+                            None => (pose.position, pose.yaw, pose.pitch),
+                        };
+                        let camera = PositionLook {
+                            position,
+                            yaw,
+                            pitch,
+                        };
+                        let in_water = world
                             .as_ref()
-                            .and_then(|n| n.world.try_read().ok())
-                            .is_some_and(|world| hand::eye_in_water(&world, pose.position));
+                            .is_some_and(|world| hand::eye_in_water(world, camera.position));
+                        drop(world);
                         let fov = snapshot.as_ref().map_or(self.fov, |s| {
                             hand::world_fov(self.fov, &s.hand, partial, in_water)
                         });
                         renderer.set_fov(fov * self.zoom);
-                        renderer.set_pose(pose);
+                        renderer.set_pose(camera);
                         let empty = scoreboard::Scoreboard::default();
                         let (board, own_name) = snapshot
                             .as_ref()
@@ -1374,10 +1396,16 @@ impl ApplicationHandler for App {
                         }
                         let own = snapshot.as_ref().and_then(|s| s.own.as_ref());
                         let world_gui = self.view.world_gui();
+                        let first_person = self.view.perspective == 0;
                         renderer.names = world_gui;
+                        renderer.own_body = snapshot
+                            .as_ref()
+                            .filter(|s| !first_person && s.game_mode != 3)
+                            .and_then(|s| own_body(s, pose));
+                        let hand_shown = self.view.hand();
                         let hand_frame = snapshot
                             .as_ref()
-                            .filter(|s| s.game_mode != 3 && world_gui)
+                            .filter(|s| s.game_mode != 3 && hand_shown)
                             .map(|s| {
                                 let own_uuid = s.own.as_ref().map(|(uuid, _)| *uuid);
                                 let (skin, slim) = own_uuid
@@ -1416,8 +1444,11 @@ impl ApplicationHandler for App {
                             return;
                         }
                         // `RenderFish` draws the local player's line from the camera.
-                        let angler = snapshot.as_ref().filter(|s| s.game_mode != 3).map(|s| {
-                            models::Angler {
+                        // Third person draws it from the model's hand instead.
+                        let angler = snapshot
+                            .as_ref()
+                            .filter(|s| s.game_mode != 3 && first_person)
+                            .map(|s| models::Angler {
                                 id: s.entity_id,
                                 eye: pose.position,
                                 yaw: pose.yaw,
@@ -1425,8 +1456,7 @@ impl ApplicationHandler for App {
                                 swing: s
                                     .swing
                                     .map_or(0.0, |v| ((f32::from(v) + partial) / 6.0).min(1.0)),
-                            }
-                        });
+                            });
                         // EntityRenderer.getMouseOver for the outline, each frame:
                         // only where vanilla draws it (players who may edit, not
                         // while aiming at an entity).
@@ -1940,6 +1970,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         view_bobbing: options.view_bobbing,
         view: view::View {
             hide_gui: options.smoke_hide_gui,
+            perspective: options.smoke_perspective,
         },
         screenshot_dir: options
             .smoke_screenshot
@@ -1947,6 +1978,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .or_else(screenshot::directory),
         screenshots: std::sync::mpsc::channel(),
         smoke_screenshot: options.smoke_screenshot.is_some(),
+        camera_rays: Default::default(),
         fov: options.fov,
         metrics: pvp_metrics::Metrics::default(),
         settings: {
@@ -2006,6 +2038,35 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// The local player as an entity for the inventory model: its skin,
 /// armour and held item, standing at the origin.
+/// The local player in the world for third person: the ticked body with
+/// this frame's skin, equipment, swing and look.
+fn own_body(
+    snapshot: &Snapshot,
+    pose: PositionLook,
+) -> Option<(i32, horizon_world_189::entities::Entity)> {
+    let mut body = snapshot.own_body.clone()?;
+    if let Some((uuid, profile)) = &snapshot.own {
+        body.uuid = *uuid;
+        body.profile = Some(profile.clone());
+    }
+    body.skin_parts = 0x7f;
+    let [helmet, chest, legs, boots] = snapshot.armor.clone();
+    body.equipment = [snapshot.hand.item.clone(), boots, legs, chest, helmet];
+    body.swing = snapshot.swing;
+    body.hurt_time = snapshot.hand.hurt;
+    body.health = snapshot.vitals.health;
+    body.death_time = snapshot.hand.dead.map_or(0, |ticks| ticks.min(20) as u8);
+    if snapshot.vitals.effects & (1 << 14) != 0 {
+        body.flags |= 0x20;
+    }
+    // The head follows the live look, as the camera does.
+    body.head_yaw = pose.yaw;
+    body.previous_head_yaw = pose.yaw;
+    body.pitch = pose.pitch;
+    body.previous_pitch = pose.pitch;
+    Some((snapshot.entity_id, body))
+}
+
 fn own_model(snapshot: &Snapshot) -> Option<horizon_world_189::entities::Entity> {
     let uuid = snapshot.own.as_ref().map_or(0, |(uuid, _)| *uuid);
     let mut tracked = horizon_world_189::entities::Entities::default();
