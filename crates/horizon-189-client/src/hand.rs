@@ -283,21 +283,33 @@ fn held_item(
         registry.held_block(out, item, m);
         return;
     }
-    // Generated item models: rotation [0, -135, 25] ([0, 45, 25] for the
-    // fishing rod and carrot on a stick), translation [0, 4, 2] / 16,
-    // scale 1.7; then `RenderItem.renderItem`'s half scale and -0.5 offset.
-    let yaw = if matches!(item.id, 346 | 398) {
+    generated_item(
+        out,
+        m * first_person_generated(item.id),
+        item,
+        registry,
+        used,
+        cast,
+    );
+}
+
+/// A generated (flat) item in first person, from its model's origin:
+/// `RenderItem.preTransform` doubles models that are not 3D, then the
+/// display transform (rotation [0, -135, 25], or [0, 45, 25] for the
+/// fishing rod and carrot on a stick; translation [0, 4, 2] / 16; scale
+/// 1.7), then `RenderItem.renderItem`'s half scale and -0.5 offset.
+fn first_person_generated(id: i16) -> Mat4 {
+    let yaw = if matches!(id, 346 | 398) {
         45.0
     } else {
         -135.0
     };
-    let m = m
+    Mat4::from_scale(Vec3::splat(2.0))
         * Mat4::from_translation(Vec3::new(0.0, 0.25, 0.125))
         * rotate(yaw, Y)
         * rotate(25.0, Z)
         * Mat4::from_scale(Vec3::splat(1.7 * 0.5))
-        * Mat4::from_translation(Vec3::splat(-0.5));
-    generated_item(out, m, item, registry, used, cast);
+        * Mat4::from_translation(Vec3::splat(-0.5))
 }
 
 /// A generated item model's layers (bow pulling, the cast fishing rod,
@@ -443,9 +455,9 @@ pub(crate) fn third_person(
     if sneaking {
         m *= Mat4::from_translation(Vec3::new(0.0, 0.203125, 0.0));
     }
-    if block {
-        m *= Mat4::from_scale(Vec3::splat(2.0));
-    }
+    // Every held item is doubled once: 3D (block) models by
+    // `ItemRenderer.renderItem`, flat ones by `RenderItem.preTransform`.
+    m *= Mat4::from_scale(Vec3::splat(2.0));
     m = m * third_person_display(item) * Mat4::from_scale(Vec3::splat(0.5));
     if block {
         registry.held_block(out, item, m);
@@ -598,6 +610,22 @@ mod tests {
         state.tick(Some(&sword), &player, Some(1), true);
         assert_eq!(state.hurt, 9);
         assert_eq!(use_action(&sword), Some(UseAction::Block));
+    }
+
+    #[test]
+    fn flat_items_in_first_person_are_doubled_like_pre_transform() {
+        let m = first_person_generated(276);
+        // The model's centre lands at twice the display translation.
+        let centre = m.transform_point3(Vec3::splat(0.5));
+        assert!(
+            centre.abs_diff_eq(Vec3::new(0.0, 0.5, 0.25), 1e-6),
+            "{centre}"
+        );
+        // Its 1x1 sprite spans 2 x 1.7 x 0.5 = 1.7 units on a side.
+        let side = m.transform_vector3(Vec3::X).length();
+        assert!((side - 1.7).abs() < 1e-5, "{side}");
+        let rod = first_person_generated(346);
+        assert!((rod.transform_vector3(Vec3::Y).length() - 1.7).abs() < 1e-5);
     }
 
     #[test]

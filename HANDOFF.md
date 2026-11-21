@@ -1307,3 +1307,21 @@ Next for latency: start each frame just before the display's refresh instead of 
 previous one, so input is sampled as late as possible. Regressions: frame-time smoothing and the
 FPS card text. A capture showed the card. Gate: 213 scoped tests, strict Clippy/fmt, layers,
 public-tree and diff privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 46. Held items at vanilla size
+
+Section 45's frame-rate change is `77084669cb`.
+
+The owner saw his sword sit away from the hand on Minemen. `RenderItem.renderItemModelTransform`
+(`bjh.a(zx, boq, bgr$b)`) calls `preTransform` (`bjh.b(zx)`), which scales by 2 every model that is
+not 3D, before the model's display transform; `ItemRenderer.renderItem` doubles the 3D (block)
+models instead, so every held item is doubled exactly once. The block paths had the doubling; the
+generated (flat) item paths, first and third person, did not, so swords, tools, rods, bows and food
+were drawn at half size with their display translation halved: smaller, lower and further left
+than vanilla. Worked by hand through `transformFirstPersonItem` and the sword's firstperson display
+(rotation [0, -135, 25], translation [0, 4, 2], scale 1.7), the fixed sword's tip lands just past
+the right edge a third above centre and its hilt below the bottom edge, as a capture now shows.
+Third-person held items (other players) use the same rule. Regression: the first-person generated
+transform puts the model centre at twice the display translation and spans 1.7 units. Gate: 214
+scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build
+and `VANILLA_189_REFERENCE_GATE_PASS`.
