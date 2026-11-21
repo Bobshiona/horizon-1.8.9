@@ -35,6 +35,7 @@ mod scoreboard;
 mod screenshot;
 mod settings;
 mod skins;
+mod style;
 mod sysfont;
 mod terrain;
 mod tooltip;
@@ -111,6 +112,7 @@ struct App {
     smoke_tab: bool,
     smoke_inventory: bool,
     smoke_menu: bool,
+    smoke_hud_editor: bool,
     smoke_settings: bool,
     smoke_pause: bool,
     smoke_pitch: Option<f32>,
@@ -1725,7 +1727,13 @@ impl ApplicationHandler for App {
                                         yaw,
                                         ping,
                                     };
-                                    *rects = hud_mods::draw(canvas, registry, &mods, menu.editing);
+                                    *rects = hud_mods::draw(
+                                        canvas,
+                                        registry,
+                                        &mods,
+                                        menu.editing,
+                                        menu.dragging(),
+                                    );
                                 }
                                 if overlay {
                                     chat.draw(canvas, tick, mouse);
@@ -1974,6 +1982,9 @@ impl ApplicationHandler for App {
         if positioned && std::mem::take(&mut self.smoke_menu) {
             self.menu.toggle();
         }
+        if positioned && std::mem::take(&mut self.smoke_hud_editor) {
+            self.menu.editing = true;
+        }
         if positioned && std::mem::take(&mut self.smoke_inventory) {
             if let Some(network) = &self.network
                 && let Ok(mut state) = network.shared.lock()
@@ -2163,6 +2174,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_tab: options.smoke_tab,
         smoke_inventory: options.smoke_inventory,
         smoke_menu: options.smoke_menu,
+        smoke_hud_editor: options.smoke_hud_editor,
         smoke_settings: options.smoke_settings,
         smoke_pause: options.smoke_pause,
         smoke_pitch: options.smoke_pitch,

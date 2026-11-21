@@ -1776,3 +1776,27 @@ opening the page, the options grid and Done, the vanilla slider's 4-pixel inset 
 Menu Style switching to glass and back.
 
 Gate: 238 tests.
+
+## 62. Graphite style and HUD cards
+
+Previous commit: 433d6e18a5. First stage of the launcher and menu redesign (Graphite + one
+accent). A shared `style` module now holds the look: graphite surfaces with hairline edges and
+square corners, one ember accent (#FF5A1F) for the single most important thing on a screen, and
+corner brackets (like a hitbox's corners) marking whatever is selected.
+
+- **HUD cards.** Keystrokes, CPS, FPS, armour, potions, coordinates and ping are drawn as
+  graphite at 66% with a hairline edge instead of blue liquid glass. They stay legible over a
+  bright sky, and the HUD no longer uses the glass blur at all, so normal play skips that pass.
+  A pressed key fills near-white with dark text; the space bar is a drawn bar instead of dashes.
+- **HUD editor.** Every card gets muted corner brackets; the card being dragged gets ember ones.
+  Disabled mods draw at 75% fill with muted text. The old editor tinted every card blue.
+- **Default layout.** CPS sat exactly under FPS and Coordinates under Ping, so the editor showed
+  overlapping cards. CPS now defaults below Ping and Coordinates to the top right. Saved
+  layouts are unchanged.
+- **Potion placeholder.** With no effects active, the editor's "Potion Effects" text ran past
+  its card; the card is now sized to the text.
+- `--smoke-hud-editor` opens the HUD editor for captures.
+
+Regressions: the default cards never overlap at 480x270, and `fade` scales only alpha.
+
+Gate: 240 tests.

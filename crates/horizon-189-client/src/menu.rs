@@ -245,6 +245,11 @@ impl Menu {
     }
 
     /// Still drawn: open, editing, or animating closed.
+    /// The HUD card being dragged in the editor.
+    pub fn dragging(&self) -> Option<HudKind> {
+        self.drag.filter(|_| self.editing).map(|(kind, _)| kind)
+    }
+
     pub fn visible(&self) -> bool {
         self.active() || self.shown > 0.0
     }

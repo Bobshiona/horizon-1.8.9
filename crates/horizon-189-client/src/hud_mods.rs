@@ -1,9 +1,11 @@
-//! HUD mods drawn as liquid-glass cards: keystrokes, CPS, FPS, armour,
-//! potion effects, coordinates and ping. Each card's placement comes from
+//! HUD mods drawn as translucent graphite cards (no blur, so the world
+//! reads through and they cost nothing extra): keystrokes, CPS, FPS,
+//! armour, potion effects, coordinates and ping. The HUD editor marks each
+//! card with the ember corner brackets. Each card's placement comes from
 //! `Settings`; drawing returns the card rectangles for the HUD editor.
 use crate::{
-    glass::Panel,
     settings::{Hud, HudKind, Settings},
+    style,
     sysfont::Weight,
     terrain::Registry,
     ui::Canvas,
@@ -33,8 +35,8 @@ pub struct ModFrame<'a> {
 const PAD: f32 = 4.0;
 /// System-font line box, in GUI pixels.
 const LINE: f32 = 8.0;
-const TEXT: u32 = 0xFFF5_F7FA;
-const DIM: u32 = 0xFFB8_BEC8;
+const TEXT: u32 = style::TEXT;
+const DIM: u32 = style::MUTED;
 
 /// A card's content size for `kind`, in GUI pixels at scale 1.
 fn content(kind: HudKind, frame: &ModFrame<'_>, canvas: &Canvas<'_>) -> (f32, f32) {
@@ -44,11 +46,15 @@ fn content(kind: HudKind, frame: &ModFrame<'_>, canvas: &Canvas<'_>) -> (f32, f3
         HudKind::Armor => (18.0, 4.0 * 17.0),
         HudKind::Potions => {
             let lines = potion_lines(frame, canvas);
+            if lines.is_empty() {
+                // The editor's placeholder.
+                return (width(PLACEHOLDER).ceil(), LINE);
+            }
             let w = lines
                 .iter()
                 .map(|(a, b)| width(a).max(width(b)))
                 .fold(0.0f32, f32::max);
-            (w.ceil() + 22.0, lines.len().max(1) as f32 * 22.0 - 2.0)
+            (w.ceil() + 22.0, lines.len() as f32 * 22.0 - 2.0)
         }
         _ => {
             let lines = text_lines(kind, frame);
@@ -59,6 +65,8 @@ fn content(kind: HudKind, frame: &ModFrame<'_>, canvas: &Canvas<'_>) -> (f32, f3
 }
 
 const KEY: f32 = 20.0;
+/// What the potion card says in the editor with no effects active.
+const PLACEHOLDER: &str = "Potion Effects";
 const GAP: f32 = 2.0;
 
 fn text_lines(kind: HudKind, frame: &ModFrame<'_>) -> Vec<String> {
@@ -164,13 +172,37 @@ fn potion_lines(frame: &ModFrame<'_>, canvas: &Canvas<'_>) -> Vec<(String, Strin
         .collect()
 }
 
-fn card(canvas: &mut Canvas<'_>, rect: [f32; 4], editing: bool) {
-    let mut panel = Panel::new(rect[0], rect[1], rect[2], rect[3]);
-    panel.radius = 5.0;
-    if editing {
-        panel.tint = [0.35, 0.55, 1.0, 0.45];
+/// How a card is marked in the HUD editor.
+#[derive(Clone, Copy, PartialEq)]
+enum Mark {
+    /// Playing: no marks.
+    None,
+    /// Editing: muted brackets; dimmed when the mod is off.
+    Idle { off: bool },
+    /// The card being dragged: ember brackets.
+    Active,
+}
+
+impl Mark {
+    fn fill(self) -> u32 {
+        match self {
+            Mark::Idle { off: true } => style::fade(style::HUD, 0.75),
+            _ => style::HUD,
+        }
     }
-    canvas.glass(panel);
+
+    fn brackets(self, canvas: &mut Canvas<'_>, rect: [f32; 4]) {
+        match self {
+            Mark::None => {}
+            Mark::Idle { .. } => style::brackets(canvas, rect, style::MUTED),
+            Mark::Active => style::brackets(canvas, rect, style::ACCENT),
+        }
+    }
+}
+
+fn card(canvas: &mut Canvas<'_>, rect: [f32; 4], mark: Mark) {
+    style::panel(canvas, rect, mark.fill(), style::fade(style::EDGE, 0.7));
+    mark.brackets(canvas, rect);
 }
 
 /// Where a card of unscaled `size` sits on a `screen`-sized interface:
@@ -194,6 +226,7 @@ pub fn draw(
     registry: &Registry,
     frame: &ModFrame<'_>,
     editing: bool,
+    dragging: Option<HudKind>,
 ) -> Vec<(HudKind, [f32; 4])> {
     let mut rects = Vec::new();
     let (screen_w, screen_h) = (canvas.layout.width, canvas.layout.height);
@@ -223,10 +256,17 @@ pub fn draw(
         let (x, y) = (placed[0] / scale, placed[1] / scale);
         let rect = [x, y, x + cw, y + ch];
         let disabled = editing && !hud.enabled;
+        let mark = if dragging == Some(kind) {
+            Mark::Active
+        } else if editing {
+            Mark::Idle { off: disabled }
+        } else {
+            Mark::None
+        };
         match kind {
-            HudKind::Keystrokes => keystrokes(canvas, frame, x, y, editing),
+            HudKind::Keystrokes => keystrokes(canvas, frame, x, y, mark),
             HudKind::Armor => {
-                card(canvas, rect, editing);
+                card(canvas, rect, mark);
                 for (i, item) in frame.armor.iter().enumerate() {
                     if let Some(item) = item {
                         crate::hud::item_slot(
@@ -240,17 +280,10 @@ pub fn draw(
                 }
             }
             HudKind::Potions => {
-                card(canvas, rect, editing);
+                card(canvas, rect, mark);
                 let lines = potion_lines(frame, canvas);
                 if lines.is_empty() {
-                    canvas.system_text(
-                        "Potion Effects",
-                        x + PAD,
-                        y + PAD,
-                        LINE,
-                        Weight::Regular,
-                        DIM,
-                    );
+                    canvas.system_text(PLACEHOLDER, x + PAD, y + PAD, LINE, Weight::Regular, DIM);
                 }
                 for (i, (name, time)) in lines.iter().enumerate() {
                     let ly = y + PAD + i as f32 * 22.0;
@@ -278,7 +311,7 @@ pub fn draw(
                 }
             }
             _ => {
-                card(canvas, rect, editing);
+                card(canvas, rect, mark);
                 for (i, line) in text_lines(kind, frame).iter().enumerate() {
                     let color = if disabled { DIM } else { TEXT };
                     let ly = y + PAD + i as f32 * (LINE + 1.0);
@@ -291,19 +324,23 @@ pub fn draw(
     rects
 }
 
-fn keystrokes(canvas: &mut Canvas<'_>, frame: &ModFrame<'_>, x: f32, y: f32, editing: bool) {
+fn keystrokes(canvas: &mut Canvas<'_>, frame: &ModFrame<'_>, x: f32, y: f32, mark: Mark) {
     let key =
         |canvas: &mut Canvas<'_>, kx: f32, ky: f32, w: f32, h: f32, label: &str, down: bool| {
-            let mut panel = Panel::new(kx, ky, kx + w, ky + h);
-            panel.radius = 4.0;
-            panel.shadow = 0.18;
+            let rect = [kx, ky, kx + w, ky + h];
             if down {
-                panel.tint = [0.96, 0.97, 1.0, 0.82];
-            } else if editing {
-                panel.tint = [0.35, 0.55, 1.0, 0.45];
+                canvas.rect(kx, ky, kx + w, ky + h, style::HUD_DOWN);
+            } else {
+                style::panel(canvas, rect, mark.fill(), style::fade(style::EDGE, 0.7));
             }
-            canvas.glass(panel);
-            let color = if down { 0xFF1A_1C22 } else { TEXT };
+            let color = if down { style::BASE } else { TEXT };
+            if label.is_empty() {
+                // The space bar: a short drawn bar rather than dashes.
+                let (bw, bh) = (w * 0.3, 1.0);
+                let (bx, by) = (kx + (w - bw) / 2.0, ky + (h - bh) / 2.0);
+                canvas.rect(bx, by, bx + bw, by + bh, color);
+                return;
+            }
             let size = if label.len() > 2 { 6.5 } else { LINE };
             let tw = canvas.system_width(label, size, Weight::Semibold);
             canvas.system_text(
@@ -348,9 +385,11 @@ fn keystrokes(canvas: &mut Canvas<'_>, frame: &ModFrame<'_>, x: f32, y: f32, edi
         y + 3.0 * step,
         3.0 * KEY + 2.0 * GAP,
         KEY - 8.0,
-        "———",
+        "",
         k.jump,
     );
+    let size = (3.0 * KEY + 2.0 * GAP, 4.0 * step - 8.0 - GAP);
+    mark.brackets(canvas, [x, y, x + size.0, y + size.1]);
 }
 
 #[cfg(test)]
@@ -383,6 +422,31 @@ mod tests {
             place(hud(0.0, 0.0, 9.0), (40.0, 10.0), screen),
             [0.0, 0.0, 120.0, 30.0]
         );
+    }
+
+    #[test]
+    fn default_cards_do_not_overlap_in_the_editor() {
+        // Generous card sizes; a 1080p window at GUI scale 4 is 480x270.
+        let size = |kind| match kind {
+            HudKind::Keystrokes => (66.0, 78.0),
+            HudKind::Cps => (70.0, 16.0),
+            HudKind::Fps => (80.0, 16.0),
+            HudKind::Armor => (26.0, 76.0),
+            HudKind::Potions => (110.0, 42.0),
+            HudKind::Coordinates => (80.0, 43.0),
+            HudKind::Ping => (40.0, 16.0),
+        };
+        let settings = Settings::default();
+        let rects: Vec<_> = HudKind::ALL
+            .iter()
+            .map(|&kind| (kind, place(settings.hud(kind), size(kind), (480.0, 270.0))))
+            .collect();
+        for (i, (a, ra)) in rects.iter().enumerate() {
+            for (b, rb) in &rects[i + 1..] {
+                let apart = ra[2] <= rb[0] || rb[2] <= ra[0] || ra[3] <= rb[1] || rb[3] <= ra[1];
+                assert!(apart, "{a:?} {ra:?} overlaps {b:?} {rb:?}");
+            }
+        }
     }
 
     #[test]

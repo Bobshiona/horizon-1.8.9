@@ -59,11 +59,11 @@ impl HudKind {
     fn default_hud(self) -> Hud {
         let (enabled, x, y) = match self {
             HudKind::Keystrokes => (true, 0.01, 0.30),
-            HudKind::Cps => (false, 0.01, 0.02),
+            HudKind::Cps => (false, 0.01, 0.15),
             HudKind::Fps => (true, 0.01, 0.02),
             HudKind::Armor => (true, 0.86, 0.70),
             HudKind::Potions => (true, 0.01, 0.62),
-            HudKind::Coordinates => (false, 0.01, 0.10),
+            HudKind::Coordinates => (false, 1.0, 0.02),
             HudKind::Ping => (true, 0.01, 0.085),
         };
         Hud {

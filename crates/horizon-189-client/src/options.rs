@@ -51,6 +51,8 @@ pub struct Options {
     pub smoke_pause: bool,
     /// Validation only: use the vanilla-style menus.
     pub smoke_vanilla_menu: bool,
+    /// Validation only: open the HUD editor once in the world.
+    pub smoke_hud_editor: bool,
     /// Validation only: redraw on the old timer instead of just in time.
     pub no_jit_pacing: bool,
     /// Validation only: take an F2 screenshot into this folder near the end.
@@ -234,6 +236,7 @@ impl Options {
                 "--smoke-hitboxes" => options.smoke_hitboxes = true,
                 "--smoke-pause" => options.smoke_pause = true,
                 "--smoke-vanilla-menu" => options.smoke_vanilla_menu = true,
+                "--smoke-hud-editor" => options.smoke_hud_editor = true,
                 "--no-jit-pacing" => options.no_jit_pacing = true,
                 "--smoke-perspective" => {
                     let mode: u8 = value()?.parse()?;
@@ -317,6 +320,7 @@ impl Options {
             || options.smoke_hitboxes
             || options.smoke_pause
             || options.smoke_vanilla_menu
+            || options.smoke_hud_editor
             || options.smoke_screenshot.is_some())
             && options.smoke_frames.is_none()
         {
