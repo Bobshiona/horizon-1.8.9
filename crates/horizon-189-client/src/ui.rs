@@ -16,7 +16,9 @@ pub const HOPPER: u32 = 5;
 pub const DISPENSER: u32 = 6;
 pub const CRAFTING: u32 = 7;
 pub const FURNACE: u32 = 8;
-const SHEETS: [(&str, u32); 9] = [
+/// The title screen's four side panorama faces, in layers 9 to 12.
+pub const PANORAMA: u32 = 9;
+const SHEETS: [(&str, u32); 13] = [
     ("minecraft:font/ascii", ASCII),
     ("minecraft:gui/icons", ICONS),
     ("minecraft:gui/widgets", WIDGETS),
@@ -26,6 +28,10 @@ const SHEETS: [(&str, u32); 9] = [
     ("minecraft:gui/container/dispenser", DISPENSER),
     ("minecraft:gui/container/crafting_table", CRAFTING),
     ("minecraft:gui/container/furnace", FURNACE),
+    ("minecraft:gui/title/background/panorama_0", PANORAMA),
+    ("minecraft:gui/title/background/panorama_1", PANORAMA + 1),
+    ("minecraft:gui/title/background/panorama_2", PANORAMA + 2),
+    ("minecraft:gui/title/background/panorama_3", PANORAMA + 3),
 ];
 const FIXED_LAYERS: u32 = 16;
 /// A fixed layer nothing writes: glyphs of absent pages sample transparency.

@@ -16,6 +16,7 @@ mod inventory;
 mod item_data;
 mod items;
 mod keyboard;
+mod launcher;
 mod menu;
 mod models;
 mod network;
@@ -34,6 +35,7 @@ mod sysfont;
 mod terrain;
 mod tooltip;
 mod ui;
+mod updater;
 
 use horizon_client_platform::is_quit_shortcut_down;
 use horizon_physics_189::player::{EYE_HEIGHT, Keys};
@@ -122,6 +124,9 @@ struct App {
     /// The fullbright state the terrain was last meshed with.
     fullbright: bool,
     menu: menu::Menu,
+    /// The installed app's launcher screen, shown while not in a world.
+    launcher: Option<launcher::Launcher>,
+    updater: Option<updater::Updater>,
     /// Per-frame block targeting for the outline (no entities: the tick's
     /// own ray says when an entity is aimed at).
     selector: horizon_physics_189::raycast::Raycaster,
@@ -196,6 +201,79 @@ impl App {
                 Err(error) => self.disconnected(event_loop, error.to_string()),
             }
         }
+    }
+
+    /// The launcher is on screen: no world and no connection screen.
+    fn launcher_shown(&self) -> bool {
+        self.launcher.is_some() && self.network.is_none() && !self.connection.active()
+    }
+
+    fn launcher_action(&mut self, event_loop: &ActiveEventLoop, action: Option<launcher::Action>) {
+        match action {
+            Some(launcher::Action::Play(host, port)) => self.play(event_loop, host, port),
+            Some(launcher::Action::Restart) => {
+                if self.updater.as_ref().is_some_and(updater::Updater::restart) {
+                    event_loop.exit();
+                }
+            }
+            Some(launcher::Action::Quit) => event_loop.exit(),
+            None => {}
+        }
+    }
+
+    /// Join from the launcher: the signed-in account, or an offline
+    /// "Player" on a server on this Mac.
+    fn play(&mut self, event_loop: &ActiveEventLoop, host: String, port: u16) {
+        let signed_in = self.launcher.as_ref().and_then(launcher::Launcher::session);
+        let offline = signed_in.is_none();
+        let session = match signed_in {
+            Some(session) => session,
+            None => match horizon_auth::Session::offline("Player", None) {
+                Ok(session) => Arc::new(session),
+                Err(error) => {
+                    self.connection.lost(error.to_string());
+                    return;
+                }
+            },
+        };
+        let config = network::Config {
+            host,
+            port,
+            session,
+            offline,
+            autopilot: false,
+            autopilot_fly: false,
+            view_distance: self.view_distance,
+        };
+        self.server = Some(config.clone());
+        let Some(registry) = self.renderer.as_ref().and_then(|r| r.registry.clone()) else {
+            return;
+        };
+        self.connection.connecting();
+        eprintln!("LAUNCHER_PLAY");
+        match network::Network::start(config, registry) {
+            Ok(network) => self.network = Some(network),
+            Err(error) => self.disconnected(event_loop, error.to_string()),
+        }
+    }
+
+    /// The connection screen's second button: back to the launcher when it
+    /// started this session, otherwise quit.
+    fn quit_or_back(&mut self, event_loop: &ActiveEventLoop) {
+        if self.connection.back {
+            self.back_to_launcher(event_loop);
+        } else {
+            event_loop.exit();
+        }
+    }
+
+    fn back_to_launcher(&mut self, event_loop: &ActiveEventLoop) {
+        if self.network.is_some() {
+            self.disconnected(event_loop, String::new());
+        }
+        self.connection.close();
+        self.server = None;
+        self.release_cursor();
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
@@ -508,7 +586,7 @@ impl ApplicationHandler for App {
                 pollster::block_on(Renderer::new(
                     Arc::new(window),
                     self.assets.clone(),
-                    self.server.is_some(),
+                    self.server.is_some() || self.launcher.is_some(),
                     self.view_distance,
                     self.gui_scale,
                     self.fov,
@@ -582,11 +660,28 @@ impl ApplicationHandler for App {
                 }
                 if let PhysicalKey::Code(key) = event.physical_key {
                     let pressed = event.state == ElementState::Pressed;
+                    if self.launcher_shown() {
+                        if pressed {
+                            if key == KeyCode::KeyQ && self.modifiers.super_key() {
+                                event_loop.exit();
+                                return;
+                            }
+                            let before = self.settings.servers.clone();
+                            let action = self.launcher.as_mut().and_then(|launcher| {
+                                launcher.key(key, event.text.as_deref(), &mut self.settings)
+                            });
+                            if self.settings.servers != before {
+                                self.save_settings();
+                            }
+                            self.launcher_action(event_loop, action);
+                        }
+                        return;
+                    }
                     if self.connection.active() {
                         if pressed && !event.repeat {
                             match self.connection.key_action(key, self.modifiers.super_key()) {
                                 Some(connection::Action::Reconnect) => self.reconnect(event_loop),
-                                Some(connection::Action::Quit) => event_loop.exit(),
+                                Some(connection::Action::Quit) => self.quit_or_back(event_loop),
                                 None => {}
                             }
                         }
@@ -819,6 +914,27 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let pressed = button_state == ElementState::Pressed;
+                if self.launcher_shown() {
+                    if pressed
+                        && button == MouseButton::Left
+                        && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+                    {
+                        let mouse = self.mouse_gui();
+                        let status = self
+                            .updater
+                            .as_ref()
+                            .map_or(updater::Status::Off, updater::Updater::status);
+                        let before = self.settings.servers.clone();
+                        let action = self.launcher.as_mut().and_then(|launcher| {
+                            launcher.click(layout, mouse, &mut self.settings, &status)
+                        });
+                        if self.settings.servers != before {
+                            self.save_settings();
+                        }
+                        self.launcher_action(event_loop, action);
+                    }
+                    return;
+                }
                 if self.connection.active() {
                     if pressed
                         && button == MouseButton::Left
@@ -826,7 +942,7 @@ impl ApplicationHandler for App {
                     {
                         match self.connection.action_at(renderer.layout, self.mouse_gui()) {
                             Some(connection::Action::Reconnect) => self.reconnect(event_loop),
-                            Some(connection::Action::Quit) => event_loop.exit(),
+                            Some(connection::Action::Quit) => self.quit_or_back(event_loop),
                             None => {}
                         }
                     }
@@ -843,10 +959,14 @@ impl ApplicationHandler for App {
                             }
                         } else if self.menu.editing {
                             self.menu.press(mouse, &self.hud_rects);
-                        } else if self.menu.click(layout, mouse, &mut self.settings)
-                            != menu::Click::Nothing
-                        {
-                            self.save_settings();
+                        } else {
+                            let click = self.menu.click(layout, mouse, &mut self.settings);
+                            if click != menu::Click::Nothing {
+                                self.save_settings();
+                            }
+                            if click == menu::Click::Disconnect {
+                                self.back_to_launcher(event_loop);
+                            }
                         }
                     }
                     return;
@@ -1278,6 +1398,20 @@ impl ApplicationHandler for App {
                             self.fail(event_loop, error);
                             return;
                         }
+                    } else if self.network.is_none()
+                        && let Some(launcher) = &self.launcher
+                    {
+                        let status = self
+                            .updater
+                            .as_ref()
+                            .map_or(updater::Status::Off, updater::Updater::status);
+                        let settings = &self.settings;
+                        if let Err(error) = renderer.draw_ui(tick, |canvas, _, _| {
+                            launcher.draw(canvas, settings, &status, mouse);
+                        }) {
+                            self.fail(event_loop, error);
+                            return;
+                        }
                     }
                     let last = self
                         .smoke_frames
@@ -1507,6 +1641,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("{}", options::HELP);
         return Ok(());
     }
+    if options.install {
+        let source = match options.update_source.as_deref() {
+            Some(url) => Some(
+                updater::Source::parse(&serde_json::json!({ "repository": url }).to_string())
+                    .ok_or("--update-source must be a plain https git URL")?,
+            ),
+            None => None,
+        };
+        let bundle = updater::install(source.as_ref())?;
+        println!("INSTALLED {}", bundle.display());
+        return Ok(());
+    }
+    let preview = options.smoke_launcher;
+    let launcher_mode = options.launcher() || preview;
+    if launcher_mode {
+        let home = std::env::var_os("HOME").ok_or("No home directory")?;
+        let jar = std::path::PathBuf::from(home)
+            .join("Library/Application Support/minecraft/versions/1.8.9/1.8.9.jar");
+        if !jar.is_file() {
+            alert(
+                "Horizon needs your copy of Minecraft 1.8.9. Open the Minecraft Launcher, \
+                 play 1.8.9 once so it downloads, then open Horizon again.",
+            );
+            return Ok(());
+        }
+        options.assets = Some(jar);
+    }
     let server = match options.authenticate()? {
         options::Startup::Complete => return Ok(()),
         options::Startup::Window(server) => server,
@@ -1535,7 +1696,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         failure: None,
         assets: options.assets,
         capture: options.capture,
-        connection: connection::Screen::new(server.is_some()),
+        connection: {
+            let mut screen = connection::Screen::new(server.is_some());
+            screen.back = launcher_mode;
+            screen
+        },
         server,
         network: None,
         chat: chat::Chat::default(),
@@ -1577,7 +1742,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             settings
         },
-        menu: menu::Menu::default(),
+        menu: {
+            let mut menu = menu::Menu::default();
+            menu.leave = launcher_mode;
+            menu
+        },
+        launcher: launcher_mode.then(|| {
+            if preview {
+                launcher::Launcher::preview()
+            } else {
+                launcher::Launcher::new()
+            }
+        }),
+        updater: (launcher_mode && !preview).then(updater::Updater::start),
         selector: Default::default(),
         no_entities: Default::default(),
         hud_rects: Vec::new(),
@@ -1589,7 +1766,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {
+        if launcher_mode {
+            alert(&format!("Horizon stopped: {error}"));
+        }
         return Err(error.into());
     }
     Ok(())
+}
+
+/// A native alert, for the app opened from Finder where errors have no
+/// terminal. The message is passed as an argument, never as script text.
+fn alert(message: &str) {
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "display alert \"Horizon 1.8.9\" message (item 1 of argv)",
+            "-e",
+            "end run",
+            "--",
+            message,
+        ])
+        .status();
 }

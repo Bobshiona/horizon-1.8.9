@@ -125,6 +125,8 @@ pub struct Geometry {
     pub cards: Vec<(Entry, [f32; 4])>,
     pub edit: [f32; 4],
     pub done: [f32; 4],
+    /// Between Edit HUD and Done, when the sheet is wide enough.
+    pub leave: Option<[f32; 4]>,
 }
 
 const CARD_W: f32 = 122.0;
@@ -159,6 +161,15 @@ pub fn geometry(layout: Layout) -> Geometry {
         sheet: [x0, y0, x0 + width, y0 + height],
         cards,
         edit: [x0 + MARGIN, bottom, x0 + MARGIN + button, bottom + 20.0],
+        leave: (width >= 3.0 * button + 2.0 * GAP + 2.0 * MARGIN).then(|| {
+            let mid = x0 + width / 2.0;
+            [
+                mid - button / 2.0,
+                bottom,
+                mid + button / 2.0,
+                bottom + 20.0,
+            ]
+        }),
         done: [
             x0 + width - MARGIN - button,
             bottom,
@@ -178,6 +189,8 @@ pub enum Click {
     Changed,
     EditHud,
     Close,
+    /// Leave the server for the launcher.
+    Disconnect,
     Nothing,
 }
 
@@ -217,6 +230,8 @@ pub struct Menu {
     shown: f32,
     /// Each card's switch knob, 0 off to 1 on, in menu order.
     knobs: Vec<f32>,
+    /// Offer Disconnect (sessions started from the launcher).
+    pub leave: bool,
 }
 
 impl Menu {
@@ -301,6 +316,10 @@ impl Menu {
             self.editing = true;
             return Click::EditHud;
         }
+        if self.leave && g.leave.is_some_and(|rect| inside(rect, mouse)) {
+            self.close();
+            return Click::Disconnect;
+        }
         if inside(g.done, mouse) || !inside(g.sheet, mouse) {
             self.close();
             return Click::Close;
@@ -370,6 +389,9 @@ impl Menu {
         shift(&mut g.sheet);
         shift(&mut g.edit);
         shift(&mut g.done);
+        if let Some(rect) = &mut g.leave {
+            shift(rect);
+        }
         for (_, rect) in &mut g.cards {
             shift(rect);
         }
@@ -461,6 +483,9 @@ impl Menu {
         let hover = |rect| self.open && inside(rect, mouse);
         button(canvas, g.edit, "Edit HUD", hover(g.edit), false, e);
         button(canvas, g.done, "Done", hover(g.done), true, e);
+        if let Some(rect) = g.leave.filter(|_| self.leave) {
+            button(canvas, rect, "Disconnect", hover(rect), false, e);
+        }
     }
 }
 
@@ -586,6 +611,19 @@ mod tests {
         menu.toggle();
         assert!(menu.open && !menu.editing);
         assert_eq!(menu.click(layout, (1.0, 1.0), &mut settings), Click::Close);
+        assert!(!menu.active());
+        // Disconnect shows only for launcher sessions.
+        let leave = g.leave.expect("wide sheet");
+        menu.toggle();
+        assert_eq!(
+            menu.click(layout, centre(leave), &mut settings),
+            Click::Nothing
+        );
+        menu.leave = true;
+        assert_eq!(
+            menu.click(layout, centre(leave), &mut settings),
+            Click::Disconnect
+        );
         assert!(!menu.active());
     }
 

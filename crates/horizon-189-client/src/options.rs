@@ -33,6 +33,12 @@ pub struct Options {
     pub bench: bool,
     /// Validation only: look this many degrees down once in the world.
     pub smoke_pitch: Option<f32>,
+    /// Create or refresh the app in Applications from this program.
+    pub install: bool,
+    /// Validation only: show the launcher (signed out, no updates).
+    pub smoke_launcher: bool,
+    /// With `--install`: the git repository the app updates from.
+    pub update_source: Option<String>,
     /// Vanilla `viewBobbing` (on by default).
     pub view_bobbing: bool,
     pub help: bool,
@@ -75,6 +81,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-inventory             With --smoke-frames, open the inventory over a slot\n\
     --smoke-menu                  With --smoke-frames, open the mod menu\n\
     --bench                       With --smoke-frames, time uncapped CPU and GPU frames\n\
+    --smoke-launcher              With --smoke-frames, show the launcher signed out\n\
     --smoke-pitch DEGREES         With --smoke-frames, look down (or up, negative) once in the world\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
@@ -82,10 +89,12 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --render-distance N           View distance in chunks, 2-16 (default 8)\n\
     --gui-scale N                 Interface scale 0-4 (0 automatic, as vanilla)\n\
     --no-view-bobbing             Turn off view bobbing (vanilla has it on)\n\
+    --install [--update-source URL]
+                                  Install Horizon 1.8.9.app (updating from URL's main)\n\
     --help                        Show options";
 
 /// The Microsoft client ID (`HORIZON_MSA_CLIENT_ID` overrides the default).
-fn client_id() -> String {
+pub(crate) fn client_id() -> String {
     std::env::var("HORIZON_MSA_CLIENT_ID")
         .ok()
         .map(|value| value.trim().to_owned())
@@ -131,7 +140,7 @@ fn microsoft_session(client_id: &str, save: bool) -> Result<Session, Box<dyn Err
     Ok(session)
 }
 
-fn remember(client_id: &str, session: &Session) {
+pub(crate) fn remember(client_id: &str, session: &Session) {
     let Some(token) = session.refresh_token() else {
         eprintln!("MICROSOFT_LOGIN_NOT_SAVED no refresh token was issued");
         return;
@@ -198,6 +207,9 @@ impl Options {
                 "--smoke-inventory" => options.smoke_inventory = true,
                 "--smoke-menu" => options.smoke_menu = true,
                 "--bench" => options.bench = true,
+                "--install" => options.install = true,
+                "--smoke-launcher" => options.smoke_launcher = true,
+                "--update-source" => options.update_source = Some(value()?),
                 "--smoke-pitch" => {
                     let pitch: f32 = value()?.parse()?;
                     if !(-90.0..=90.0).contains(&pitch) {
@@ -226,6 +238,18 @@ impl Options {
         if options.help {
             return Ok(options);
         }
+        if options.update_source.is_some() && !options.install {
+            return Err("--update-source requires --install".into());
+        }
+        if options.install
+            && (options.server.is_some()
+                || options.smoke_frames.is_some()
+                || options.login
+                || options.offline
+                || options.sign_out)
+        {
+            return Err("--install runs on its own".into());
+        }
         if options.sign_out
             && (options.login
                 || options.offline
@@ -250,13 +274,11 @@ impl Options {
             || options.smoke_inventory
             || options.smoke_menu
             || options.bench
-            || options.smoke_pitch.is_some())
+            || options.smoke_pitch.is_some()
+            || options.smoke_launcher)
             && options.smoke_frames.is_none()
         {
-            return Err(
-                "--smoke-tab, --smoke-inventory, --smoke-menu, --smoke-pitch and --bench require --smoke-frames"
-                    .into(),
-            );
+            return Err("Smoke flags and --bench require --smoke-frames".into());
         }
         if options.capture.is_some() && options.smoke_frames.is_none() {
             return Err("--capture requires --smoke-frames".into());
@@ -314,6 +336,18 @@ impl Options {
             return Err("Choose --server or --login-check".into());
         }
         Ok(options)
+    }
+
+    /// No mode flags at all: the installed app opening to its launcher.
+    pub fn launcher(&self) -> bool {
+        !self.login
+            && !self.offline
+            && !self.sign_out
+            && !self.install
+            && self.access_token.is_none()
+            && self.login_check.is_none()
+            && self.server.is_none()
+            && self.smoke_frames.is_none()
     }
 
     /// Prepare a terminal probe or a session owned by the connected viewport.
@@ -419,6 +453,15 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Options, Box<dyn Error>> {
         Options::parse(args.iter().map(|value| (*value).to_owned()))
+    }
+
+    #[test]
+    fn install_runs_alone_and_takes_a_source() {
+        let options =
+            parse(&["--install", "--update-source", "https://example.com/r.git"]).expect("ok");
+        assert!(options.install);
+        assert!(parse(&["--update-source", "https://example.com/r.git"]).is_err());
+        assert!(parse(&["--install", "--server", "localhost"]).is_err());
     }
 
     #[test]

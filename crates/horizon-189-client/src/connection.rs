@@ -19,6 +19,9 @@ enum Phase {
 #[derive(Default)]
 pub struct Screen {
     phase: Phase,
+    /// Opened from the launcher: the second button goes back to it
+    /// (vanilla's "Back to title screen") instead of quitting.
+    pub back: bool,
 }
 impl Screen {
     pub fn new(connecting: bool) -> Self {
@@ -28,6 +31,7 @@ impl Screen {
             } else {
                 Phase::Inactive
             },
+            back: false,
         }
     }
     pub fn active(&self) -> bool {
@@ -46,6 +50,10 @@ impl Screen {
     }
     pub fn lost(&mut self, reason: String) {
         self.phase = Phase::Disconnected(reason);
+    }
+    /// Leave for the launcher.
+    pub fn close(&mut self) {
+        self.phase = Phase::Inactive;
     }
     fn buttons(layout: Layout) -> [(Action, [f32; 4]); 2] {
         let width = 200.0f32.min((layout.width - 20.0).max(0.0));
@@ -111,6 +119,7 @@ impl Screen {
         for (action, rect) in Self::buttons(canvas.layout) {
             let key = match action {
                 Action::Reconnect => "horizon.connection.reconnect",
+                Action::Quit if self.back => "gui.toMenu",
                 Action::Quit => "horizon.connection.quit",
             };
             let label = canvas.res.translate(key).to_owned();

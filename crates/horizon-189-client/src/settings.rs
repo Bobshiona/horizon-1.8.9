@@ -127,7 +127,19 @@ impl Default for Toggles {
 pub struct Settings {
     pub hud: [Hud; 7],
     pub toggles: Toggles,
+    /// The launcher's server list: shown name and `host[:port]`.
+    pub servers: Vec<(String, String)>,
     path: Option<PathBuf>,
+}
+
+fn default_servers() -> Vec<(String, String)> {
+    [
+        ("Hypixel", "mc.hypixel.net"),
+        ("Minemen Club", "na.minemen.club"),
+        ("This Mac", "localhost"),
+    ]
+    .map(|(name, address)| (name.to_owned(), address.to_owned()))
+    .to_vec()
 }
 
 impl Default for Settings {
@@ -135,6 +147,7 @@ impl Default for Settings {
         Self {
             hud: HudKind::ALL.map(HudKind::default_hud),
             toggles: Toggles::default(),
+            servers: default_servers(),
             path: None,
         }
     }
@@ -200,6 +213,18 @@ impl Settings {
                 };
             }
         }
+        if let Some(Value::Array(servers)) = root.get("servers") {
+            settings.servers = servers
+                .iter()
+                .filter_map(|entry| {
+                    let name = entry.get("name")?.as_str()?;
+                    let address = entry.get("address")?.as_str()?;
+                    crate::launcher::address(address)?;
+                    Some((name.chars().take(48).collect(), address.to_owned()))
+                })
+                .take(32)
+                .collect();
+        }
         if let Some(Value::Object(t)) = root.get("toggles") {
             let flag =
                 |key: &str, default: bool| t.get(key).and_then(Value::as_bool).unwrap_or(default);
@@ -240,9 +265,15 @@ impl Settings {
             );
         }
         let t = self.toggles;
+        let servers: Vec<Value> = self
+            .servers
+            .iter()
+            .map(|(name, address)| json!({"name": name, "address": address}))
+            .collect();
         let root = json!({
             "version": 1,
             "hud": Value::Object(huds),
+            "servers": servers,
             "toggles": {
                 "zoom": t.zoom,
                 "smooth_zoom": t.smooth_zoom,
@@ -287,8 +318,15 @@ mod tests {
         settings.toggles.scoreboard_numbers = false;
         settings.toggles.crosshair = 2;
         settings.toggles.outline = 3;
+        settings
+            .servers
+            .push(("Test".into(), "play.example.com:25570".into()));
         let parsed = Settings::parse(&settings.to_json());
+        assert_eq!(parsed.servers, settings.servers);
         assert_eq!(parsed.hud, settings.hud);
+        let odd =
+            Settings::parse(r#"{"servers":[{"name":"x","address":"bad host"},{"name":"y"}]}"#);
+        assert!(odd.servers.is_empty());
         assert_eq!(parsed.toggles, settings.toggles);
         // Damaged files and out-of-range values fall back or clamp.
         assert_eq!(Settings::parse("not json"), Settings::default());

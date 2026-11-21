@@ -1244,3 +1244,42 @@ outline card cycle, settings round trip, and the new option's validation. A capt
 world, looking 40 degrees down, showed the box on the targeted grass block. Gate: 203 scoped tests,
 strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
 `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 44. Horizon 1.8.9.app: launcher and self-update
+
+Section 43's outline is `ce54a12409`.
+
+The owner asked for a dedicated, self-updating app to test with, in Rust, with updates built on his
+own Mac rather than published. The client is now also the app:
+
+- **Install** (`--install [--update-source URL]`, `updater::install`): writes `Horizon 1.8.9.app` to
+  `/Applications` (or `~/Applications` if that is not writable) with an `Info.plist`, the Horizon
+  icon and this program as `Contents/MacOS/horizon-189`, and records the update source (a plain
+  https git URL, branch `main`) in `~/Library/Application Support/Horizon 1.8.9/update.json`. The URL
+  lives only there, never in the repository.
+- **Launcher** (`launcher.rs`): with no mode flags the app opens to a liquid-glass card over the
+  vanilla title panorama (its four side faces drift across the screen; they load as interface layers
+  9 to 12). It shows the Microsoft account (the saved sign-in is refreshed on a background thread;
+  Sign In runs the device-code flow there, opens the browser and shows the code with Copy Code), the
+  server list from `settings.json` (Hypixel, Minemen Club and This Mac by default; add by typing an
+  address, × removes the selected one, double-click or Enter joins), and Play and Quit. Without a
+  sign-in only servers on this Mac can be joined, as an offline "Player". A missing 1.8.9 jar or a
+  fatal error shows a native alert, since the Finder-opened app has no terminal.
+- **Leaving a server**: the disconnect screen's second button becomes "Back to server list"
+  (`gui.toMenu`), and the mod menu gains Disconnect, for sessions started from the launcher.
+- **Self-update** (`updater.rs`): only when running from an app bundle. At launch a background thread
+  keeps a shallow clone in Application Support (`source/`), fetches the branch, and when its tip
+  differs from the commit the program was built from (`HORIZON_189_BUILD`, set by the updater's own
+  build) checks it out and runs the user's `cargo build --release --locked` into `build/`, showing
+  progress on the launcher. The new program is copied beside the old one and renamed over it, so the
+  swap is atomic and no old copy is left; the launcher then offers Restart (`open -n` the bundle).
+  Failures go to `update.log` and show on the card. Development and validation runs never update.
+- `--smoke-launcher` (validation) shows the launcher signed out, without the saved sign-in or updates.
+
+Regressions: bundle detection, update-source validation (https only, no option-like or
+shell-significant characters), rebuild decisions and cargo progress, the one-file program swap, the
+plist, address parsing and the local-only offline rule, launcher geometry, adding a typed server,
+server-list persistence and validation, the Disconnect button, and the new options. A
+`--smoke-launcher` capture checked the card over the panorama. Gate: 211 scoped tests, strict
+Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release build and
+`VANILLA_189_REFERENCE_GATE_PASS`.
