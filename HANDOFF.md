@@ -1036,3 +1036,21 @@ previous behaviour. Regression `block_placement_is_predicted_and_never_sent_into
 first (it sent the block C08 into the player). Gate: 175 scoped tests (91 client, 2 login CLI,
 1 assets, 6 auth, 18 physics, 38 protocol, 19 world), strict Clippy/fmt, layers, public-tree and diff
 privacy checks, ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 37. Block break prediction
+
+Section 36's placement fix is `83f2a63ed9`.
+
+`onPlayerDestroyBlock` sets the block to air in the client world as soon as the client considers it
+broken: when a survival dig completes (after C07 STOP), at once when `clickBlock` finds a block that
+breaks in one tick (only C07 START is sent; there is no STOP), and on every creative click
+(`clickBlockCreative`, which first puts out fire on the clicked face and destroys nothing while a
+sword is held, though it still sends START). The client only drew break particles and waited for the
+server's S23, so the player could not step into a dug space until the server answered; instant
+breaks sent a STOP one tick after START, and creative clicks with a sword sent no START. A block
+broken this tick is air for the rest of the tick (a second click falls through to the miss case, as
+`clickMouse` does), and `onPlayerDamageBlock` now swings on every held-attack tick, including the
+five-tick `blockHitDelay`. Regression `broken_blocks_are_removed_locally_and_instant_breaks_send_no_stop`
+failed first. Gate: 176 scoped tests (92 client, 2 login CLI, 1 assets, 6 auth, 18 physics,
+38 protocol, 19 world), strict Clippy/fmt, layers, public-tree and diff privacy checks, ARM64 release
+build and `VANILLA_189_REFERENCE_GATE_PASS`.

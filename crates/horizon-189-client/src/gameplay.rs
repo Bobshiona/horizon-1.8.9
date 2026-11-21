@@ -306,18 +306,16 @@ impl Controller {
                                 }
                             }
                         }
-                        Some(Hit::Block { at, face, .. }) if game_mode == 0 || game_mode == 1 => {
+                        // clickMouse: a block already broken this tick falls
+                        // through to the miss case.
+                        Some(Hit::Block { at, face, .. })
+                            if (game_mode == 0 || game_mode == 1)
+                                && !self.locally_air(world, at) =>
+                        {
                             self.abort(writer)?;
-                            if game_mode == 1 && inventory.held().is_some_and(|i| is_sword(i.id)) {
-                                continue;
-                            }
-                            writer.send(&packet::dig(0, at, face)?)?;
-                            if game_mode == 1 {
-                                self.broken.push(at);
-                                self.delay = 5;
-                            } else {
-                                self.digging = Some((at, face, 0.0, inventory.held().cloned()));
-                            }
+                            self.click_block(
+                                at, face, world, eye, player, inventory, game_mode, writer,
+                            )?;
                         }
                         _ => {
                             if game_mode != 1 {
@@ -463,29 +461,73 @@ impl Controller {
         if game_mode != 0 && game_mode != 1 {
             return Ok(());
         }
+        // sendClickBlockToController skips a target that is air by now.
+        if self.locally_air(world, at) {
+            return Ok(());
+        }
         // onPlayerDamageBlock: sync first, then count blockHitDelay down,
         // only while a block is targeted.
         self.sync_slot(inventory.view.selected, writer)?;
+        // Every branch of onPlayerDamageBlock returns true here, so
+        // sendClickBlockToController swings each tick, delay included.
         if self.delay > 0 {
             self.delay -= 1;
-            return Ok(());
+            return self.swing(writer);
         }
         let same = self.digging.as_ref().is_some_and(|(pos, _, _, item)| {
             *pos == at && same_tool(item.as_ref(), inventory.held())
         });
         if !same {
             self.abort(writer)?;
-            if game_mode == 1 && inventory.held().is_some_and(|i| is_sword(i.id)) {
-                return Ok(());
-            }
-            writer.send(&packet::dig(0, at, face)?)?;
-            if game_mode == 1 {
-                self.delay = 5;
-                return Ok(());
-            }
-            self.digging = Some((at, face, 0.0, inventory.held().cloned()));
+            self.click_block(at, face, world, eye, player, inventory, game_mode, writer)?;
+            // The creative path swings; clickBlock alone returns true too.
+            self.swing(writer)?;
             return Ok(());
         }
+        let progress = self.relative_hardness(world, at, eye, player, inventory);
+        let Some((_, _, damage, _)) = &mut self.digging else {
+            return Ok(());
+        };
+        *damage += progress;
+        if *damage >= 1.0 {
+            writer.send(&packet::dig(2, at, face)?)?;
+            self.digging = None;
+            self.delay = 5;
+            self.destroy(at);
+        }
+        self.swing(writer)?;
+        Ok(())
+    }
+
+    /// `onPlayerDestroyBlock`: the block becomes air in the client world.
+    fn destroy(&mut self, at: [i32; 3]) {
+        self.broken.push(at);
+        self.edits.push((at, horizon_world_189::BlockState(0)));
+    }
+
+    /// Air in the world, or broken earlier this tick.
+    fn locally_air(&self, world: &World, at: [i32; 3]) -> bool {
+        self.edits
+            .iter()
+            .rev()
+            .find(|(pos, _)| *pos == at)
+            .map_or_else(
+                || world.block(at[0], at[1], at[2]).unwrap_or_default(),
+                |(_, state)| *state,
+            )
+            .block_id()
+            == 0
+    }
+
+    /// `Block.getPlayerRelativeBlockHardness` for the block at `at`.
+    fn relative_hardness(
+        &self,
+        world: &World,
+        at: [i32; 3],
+        eye: [f64; 3],
+        player: &Player,
+        inventory: &Inventory,
+    ) -> f32 {
         let state = world.block(at[0], at[1], at[2]).unwrap_or_default();
         let cell = eye.map(|v| v.floor() as i32);
         let submerged = world.block(cell[0], cell[1], cell[2]).is_some_and(|s| {
@@ -493,24 +535,49 @@ impl Controller {
             let height = (cell[1] + 1) as f32 - (f32::from(level + 1) / 9.0 - 0.11111111);
             matches!(s.block_id(), 8 | 9) && eye[1] < f64::from(height)
         });
-        let progress = self.break_speed(
+        self.break_speed(
             state.block_id(),
             inventory.held(),
             player,
             inventory,
             submerged,
-        );
-        let Some((_, _, damage, _)) = &mut self.digging else {
-            return Ok(());
-        };
-        *damage += progress;
-        if *damage >= 1.0 {
-            writer.send(&packet::dig(2, at, face)?)?;
-            self.broken.push(at);
-            self.digging = None;
+        )
+    }
+
+    /// `PlayerControllerMP.clickBlock` (creative: `clickBlockCreative`):
+    /// C07 START, then an immediate destroy in creative or when the block
+    /// breaks in one tick, otherwise the start of a dig.
+    #[allow(clippy::too_many_arguments)]
+    fn click_block(
+        &mut self,
+        at: [i32; 3],
+        face: u8,
+        world: &World,
+        eye: [f64; 3],
+        player: &Player,
+        inventory: &Inventory,
+        game_mode: u8,
+        writer: &mut PacketWriter<impl Read + Write>,
+    ) -> io::Result<()> {
+        writer.send(&packet::dig(0, at, face)?)?;
+        if game_mode == 1 {
+            // clickBlockCreative: fire on the clicked face is put out
+            // instead; onPlayerDestroyBlock refuses with a sword.
             self.delay = 5;
+            let fire = offset(at, face);
+            if world
+                .block(fire[0], fire[1], fire[2])
+                .is_some_and(|s| s.block_id() == 51)
+            {
+                self.edits.push((fire, horizon_world_189::BlockState(0)));
+            } else if !inventory.held().is_some_and(|i| is_sword(i.id)) {
+                self.destroy(at);
+            }
+        } else if self.relative_hardness(world, at, eye, player, inventory) >= 1.0 {
+            self.destroy(at);
+        } else {
+            self.digging = Some((at, face, 0.0, inventory.held().cloned()));
         }
-        self.swing(writer)?;
         Ok(())
     }
 
@@ -832,6 +899,108 @@ mod tests {
         });
         world
     }
+    /// onPlayerDestroyBlock empties the block in the client world: at once
+    /// for a creative click or a survival block that breaks instantly (only
+    /// C07 START, no STOP), otherwise when the dig completes after C07 STOP.
+    #[test]
+    fn broken_blocks_are_removed_locally_and_instant_breaks_send_no_stop() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (_, mut writer) = Connection::new(client).split().unwrap();
+        let mut peer = Connection::new(peer);
+        let air = BlockState(0);
+        let entities = Entities::default();
+        let mut inventory = Inventory::default();
+        let mut player = Player::default();
+        player.set_position(0.5, 4.0, 0.5);
+        player.on_ground = true;
+        player.pitch = 50.0;
+        let mut attack = |world: &World,
+                          controller: &mut Controller,
+                          inventory: &mut Inventory,
+                          mode: u8,
+                          click: bool| {
+            let mut input = Input {
+                attack: true,
+                using: false,
+                actions: if click {
+                    VecDeque::from([Action::Attack])
+                } else {
+                    VecDeque::new()
+                },
+            };
+            controller
+                .tick(
+                    &mut input,
+                    &mut player,
+                    world,
+                    &entities,
+                    inventory,
+                    mode,
+                    &mut writer,
+                )
+                .unwrap();
+        };
+        // Tall grass breaks instantly by hand.
+        let mut world = world();
+        world.set_block(0, 3, 1, BlockState(3 << 4));
+        world.set_block(0, 4, 1, BlockState(31 << 4 | 1));
+        let mut controller = Controller::default();
+        attack(&world, &mut controller, &mut inventory, 0, true);
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        let start = peer.receive().unwrap();
+        assert_eq!(start[..2], [0x07, 0]);
+        assert_eq!(start[2..10], packet::dig(0, [0, 4, 1], 1).unwrap()[2..10]);
+        assert_eq!(controller.edits, vec![([0, 4, 1], air)]);
+        assert!(controller.digging.is_none());
+        // Creative: a click destroys the dirt below at once.
+        world.set_block(0, 4, 1, air);
+        let mut controller = Controller::default();
+        attack(&world, &mut controller, &mut inventory, 1, true);
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        assert_eq!(peer.receive().unwrap()[..2], [0x07, 0]);
+        assert_eq!(controller.edits, vec![([0, 3, 1], air)]);
+        // With a sword it still sends START, but nothing breaks.
+        inventory.player[36] = Some(Item {
+            id: 276,
+            count: 1,
+            damage: 0,
+            nbt: None,
+        });
+        let mut controller = Controller::default();
+        attack(&world, &mut controller, &mut inventory, 1, true);
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        assert_eq!(peer.receive().unwrap()[..2], [0x07, 0]);
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        assert!(controller.edits.is_empty());
+        inventory.player[36] = None;
+        // Survival dirt by hand: fifteen ticks, then STOP and the removal.
+        let mut controller = Controller::default();
+        attack(&world, &mut controller, &mut inventory, 0, true);
+        // clickMouse swings and starts; the same tick's
+        // sendClickBlockToController adds damage and swings again.
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        assert_eq!(peer.receive().unwrap()[..2], [0x07, 0]);
+        assert_eq!(peer.receive().unwrap(), [0x0a]);
+        let mut stopped = false;
+        for _ in 0..30 {
+            assert!(controller.edits.is_empty());
+            attack(&world, &mut controller, &mut inventory, 0, false);
+            // Every continuing tick swings; the last sends STOP first.
+            let packet = peer.receive().unwrap();
+            if packet.starts_with(&[0x07, 2]) {
+                assert_eq!(peer.receive().unwrap(), [0x0a]);
+                stopped = true;
+                break;
+            }
+            assert_eq!(packet, [0x0a]);
+        }
+        assert!(stopped);
+        assert_eq!(controller.edits, vec![([0, 3, 1], air)]);
+    }
+
     /// ItemBlock placement: PlayerControllerMP.onPlayerRightClick sends no
     /// block C08 when canPlaceBlockOnSide fails (here, into the player), and
     /// rightClickMouse falls back to sendUseItem. A valid placement is sent,
