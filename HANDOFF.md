@@ -1726,3 +1726,21 @@ No new regression test: this changes how bytes reach the GPU, not what is drawn,
 tests that render through `Scene` cover the result.
 
 Gate: 237 tests.
+
+## 60. Pacing: misses from slow frames don't widen the budget
+
+Section 59's staging belt is `3800111377`.
+
+A miss widened the budget by 1 ms even when the frame that missed had overrun its own lead, which
+happens while loading or during a hitch. It would have missed anyway, and the budget then took
+about 30 s to shrink back. The pacer now records each frame's own cost and the lead it was started
+with. The budget only grows when a frame cheaper than its lead still missed, which points at GPU or
+compositor time.
+
+In 2,400-frame vsync runs, terrain had 0 misses, a 4 ms budget and input age p50 4.8 ms (p99
+5.8 ms). The 441-villager crowd still settles near an 8 ms budget (p50 9.3 ms): its misses are
+genuine GPU time after present.
+
+Regression: a miss after a frame slower than its lead leaves the budget alone.
+
+Gate: 237 tests.

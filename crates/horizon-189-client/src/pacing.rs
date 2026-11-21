@@ -40,8 +40,12 @@ pub struct Pacer {
     since_sync: u32,
     /// This frame starts at once to block on purpose.
     syncing: bool,
-    /// When the last frame was presented.
+    /// When the last frame was presented, its own cost and the lead it was
+    /// given: a miss after a frame slower than its lead was that frame's
+    /// fault, not the budget's.
     last_presented: Option<Instant>,
+    last_cost: Duration,
+    last_lead: Duration,
     pub misses: u64,
 }
 
@@ -71,6 +75,8 @@ impl Pacer {
             since_sync: 0,
             syncing: true,
             last_presented: None,
+            last_cost: Duration::ZERO,
+            last_lead: Duration::MAX,
             misses: 0,
         }
     }
@@ -104,14 +110,21 @@ impl Pacer {
     /// Learn from a presented frame. Returns how old its input was when it
     /// reached the screen, by the vsync model, once the phase is known.
     pub fn presented(&mut self, frame: Frame) -> Option<Duration> {
+        // The lead this frame was started with, before it changes anything.
+        let given = self.budget + self.late;
         let blocked = frame.waited >= BLOCKED;
         if blocked {
             if !self.syncing && self.vsync.is_some() {
                 // A paced frame found its drawable still on screen: the
-                // previous frame missed its vsync.
+                // previous frame missed its vsync. Only a cheap frame that
+                // still missed says the budget is short (GPU or compositor
+                // time); a frame that overran its own lead (loading, a
+                // hitch) would have missed anyway.
                 self.misses += 1;
                 self.clean = 0;
-                self.budget = (self.budget + Duration::from_millis(1)).min(self.period * 3 / 4);
+                if self.last_cost < self.last_lead {
+                    self.budget = (self.budget + Duration::from_millis(1)).min(self.period * 3 / 4);
+                }
             }
             self.vsync = Some(frame.acquired);
         } else {
@@ -153,6 +166,8 @@ impl Pacer {
             self.budget = floor.min(self.period * 3 / 4);
         }
         self.last_presented = Some(frame.presented);
+        self.last_cost = cost;
+        self.last_lead = frame.planned.map_or(Duration::MAX, |_| given);
         self.syncing = false;
         self.since_sync += 1;
         if self.since_sync >= SYNC_EVERY {
@@ -287,6 +302,24 @@ mod tests {
         let start = pacer.next_start(t0);
         let target = pacer.vsync_after(late.presented).unwrap() + P;
         assert_eq!(start, target - pacer.budget() - Duration::from_millis(2));
+        // A miss after a frame that overran its own lead is that frame's,
+        // not the budget's.
+        let before = pacer.budget();
+        let mut slow = frame(t0, Duration::ZERO, P);
+        slow.planned = Some(t0);
+        pacer.presented(slow);
+        let after_slow = pacer.budget();
+        pacer.presented(frame(
+            t0 + P,
+            Duration::from_millis(2),
+            Duration::from_millis(1),
+        ));
+        assert_eq!(
+            pacer.budget(),
+            after_slow,
+            "slow frame's miss leaves the budget"
+        );
+        assert!(after_slow >= before);
         // A heavy frame raises the floor at once.
         pacer.presented(frame(t0, Duration::ZERO, Duration::from_millis(6)));
         assert!(pacer.budget() >= Duration::from_millis(7));
