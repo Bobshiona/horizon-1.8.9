@@ -31,7 +31,11 @@ const FIXED_LAYERS: u32 = 16;
 /// A fixed layer nothing writes: glyphs of absent pages sample transparency.
 const EMPTY_LAYER: u32 = FIXED_LAYERS - 1;
 const PAGE_LAYERS: u32 = 64;
-pub const LAYERS: u32 = FIXED_LAYERS + PAGE_LAYERS;
+/// Layers for system-font glyphs (`sysfont`), after the unicode pages.
+const SYSTEM_LAYERS: u32 = 8;
+pub const LAYERS: u32 = FIXED_LAYERS + PAGE_LAYERS + SYSTEM_LAYERS;
+/// Vertex `layer` flag: coverage-alpha text, exempt from the alpha test.
+pub const SMOOTH: u32 = 0x2000_0000;
 /// Vertex `layer` flag: sample the 128-pixel entity/item array instead.
 pub const ENTITY: u32 = 0x8000_0000;
 pub const UNTEXTURED: u32 = u32::MAX;
@@ -355,10 +359,12 @@ impl Layout {
     }
 }
 
-/// Unicode font pages resident in atlas layers.
+/// Unicode font pages resident in atlas layers, and the system font's
+/// glyph cache in the layers after them.
 pub struct Pages {
     resident: Vec<Option<u32>>,
     next: u32,
+    pub system: std::cell::RefCell<crate::sysfont::SystemFont>,
 }
 
 impl Default for Pages {
@@ -366,6 +372,11 @@ impl Default for Pages {
         Self {
             resident: vec![None; 256],
             next: FIXED_LAYERS,
+            system: std::cell::RefCell::new(crate::sysfont::SystemFont::new(
+                FIXED_LAYERS + PAGE_LAYERS,
+                SYSTEM_LAYERS,
+                ATLAS,
+            )),
         }
     }
 }
@@ -436,6 +447,86 @@ impl<'a> Canvas<'a> {
                 color,
             });
         }
+    }
+
+    /// Physical pixels for `size` GUI pixels of system-font text.
+    fn system_pixels(&self, size: f32) -> u32 {
+        (f64::from(size) * self.layout.factor).round().max(4.0) as u32
+    }
+
+    /// Width in GUI pixels of system-font text (the Minecraft font's width
+    /// when the system font is missing).
+    pub fn system_width(&self, text: &str, size: f32, weight: crate::sysfont::Weight) -> f32 {
+        let mut font = self.pages.system.borrow_mut();
+        if !font.available() {
+            return self.res.width(text) as f32;
+        }
+        let pixels = self.system_pixels(size);
+        let advance: f32 = text
+            .chars()
+            .filter_map(|c| font.glyph(pixels, weight, c))
+            .map(|g| g.advance)
+            .sum();
+        advance / self.layout.factor as f32
+    }
+
+    /// San Francisco text whose line box starts at (x, y) and is `size` GUI
+    /// pixels tall, snapped to physical pixels. Returns its width.
+    pub fn system_text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        weight: crate::sysfont::Weight,
+        color: u32,
+    ) -> f32 {
+        let factor = self.layout.factor as f32;
+        let pixels = self.system_pixels(size);
+        let mut quads = Vec::new();
+        let width = {
+            let mut font = self.pages.system.borrow_mut();
+            if !font.available() {
+                drop(font);
+                let top = (y + (size - 8.0) / 2.0).floor();
+                return self.text(text, x, top, color, false);
+            }
+            let (ascent, descent) = font.metrics(pixels, weight);
+            // Centre the font's ascent plus descent in the line box.
+            let line = size * factor;
+            let baseline = (y * factor + (line - ascent - descent) / 2.0 + ascent).round();
+            let start = (x * factor).round();
+            let mut pen = start;
+            for c in text.chars() {
+                let Some(glyph) = font.glyph(pixels, weight, c) else {
+                    continue;
+                };
+                if glyph.layer != u32::MAX {
+                    let left = (pen + glyph.left).round();
+                    let top = baseline + glyph.top.round();
+                    quads.push((left, top, glyph));
+                }
+                pen += glyph.advance;
+            }
+            (pen - start) / factor
+        };
+        let color = argb(color);
+        let s = 1.0 / ATLAS as f32;
+        for (left, top, glyph) in quads {
+            let (x0, y0) = (left / factor, top / factor);
+            let (w, h) = (glyph.size[0] as f32, glyph.size[1] as f32);
+            let (x1, y1) = (x0 + w / factor, y0 + h / factor);
+            let (u0, v0) = (glyph.at[0] as f32 * s, glyph.at[1] as f32 * s);
+            let (u1, v1) = (u0 + w * s, v0 + h * s);
+            self.quad(
+                false,
+                [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                [[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
+                glyph.layer | SMOOTH,
+                color,
+            );
+        }
+        width
     }
 
     /// A liquid-glass panel under what is drawn next in this layer.
@@ -1089,6 +1180,36 @@ impl Pass {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    /// Upload system-font glyphs rasterised this frame.
+    pub fn upload_glyphs(&mut self, queue: &wgpu::Queue) {
+        let uploads = std::mem::take(&mut self.pages.system.get_mut().pending);
+        for glyph in uploads {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: glyph.at[0],
+                        y: glyph.at[1],
+                        z: glyph.layer,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &glyph.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(glyph.size[0] * 4),
+                    rows_per_image: Some(glyph.size[1]),
+                },
+                wgpu::Extent3d {
+                    width: glyph.size[0],
+                    height: glyph.size[1],
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
     }
 
     /// Decode and upload unicode pages a frame asked for.

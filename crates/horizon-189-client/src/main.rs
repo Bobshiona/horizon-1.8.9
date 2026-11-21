@@ -29,6 +29,7 @@ mod scene_tests;
 mod scoreboard;
 mod settings;
 mod skins;
+mod sysfont;
 mod terrain;
 mod tooltip;
 mod ui;

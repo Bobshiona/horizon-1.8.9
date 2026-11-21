@@ -246,6 +246,7 @@ impl Renderer {
             [&glass[0], &glass[1]],
         )?;
         pass.load_pages(&self.queue, &registry.gui, &missing);
+        pass.upload_glyphs(&self.queue);
         Ok(())
     }
 

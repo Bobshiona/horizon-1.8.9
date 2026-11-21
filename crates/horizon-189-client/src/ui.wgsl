@@ -57,15 +57,17 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
         return glint(in);
     }
     var color = in.color;
+    // 0x20000000: system-font coverage, no alpha test.
+    let coverage_text = in.layer != 0xffffffffu && (in.layer & 0xa0000000u) == 0x20000000u;
     if in.layer != 0xffffffffu {
-        let index = in.layer & 0x7fffffffu;
+        let index = select(in.layer & 0x7fffffffu, in.layer & 0x1fffffffu, coverage_text);
         let a = textureSampleLevel(atlas, pixels, in.uv, min(index, u32(screen.scale.z) - 1u), 0.0);
         let e = textureSampleLevel(entity, pixels, in.uv, min(index, u32(screen.scale.w) - 1u), 0.0);
         let texel = select(a, vec4<f32>(linear_to_srgb(e.rgb), e.a), (in.layer & 0x80000000u) != 0u);
         color = color * texel;
     }
     // The GUI's alpha test, GL_GREATER 0.1.
-    if color.a <= 0.1 {
+    if color.a <= select(0.1, 0.0, coverage_text) {
         discard;
     }
     return vec4<f32>(color.rgb * color.a, color.a);

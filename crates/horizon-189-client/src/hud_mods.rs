@@ -4,6 +4,7 @@
 use crate::{
     glass::Panel,
     settings::{HudKind, Settings},
+    sysfont::Weight,
     terrain::Registry,
     ui::Canvas,
 };
@@ -28,12 +29,14 @@ pub struct ModFrame<'a> {
 }
 
 const PAD: f32 = 4.0;
+/// System-font line box, in GUI pixels.
+const LINE: f32 = 8.0;
 const TEXT: u32 = 0xFFF5_F7FA;
 const DIM: u32 = 0xFFB8_BEC8;
 
 /// A card's content size for `kind`, in GUI pixels at scale 1.
 fn content(kind: HudKind, frame: &ModFrame<'_>, canvas: &Canvas<'_>) -> (f32, f32) {
-    let width = |s: &str| canvas.res.width(s) as f32;
+    let width = |s: &str| canvas.system_width(s, LINE, Weight::Regular);
     match kind {
         HudKind::Keystrokes => (3.0 * KEY + 2.0 * GAP, 4.0 * KEY + 3.0 * GAP - 8.0),
         HudKind::Armor => (18.0, 4.0 * 17.0),
@@ -43,12 +46,12 @@ fn content(kind: HudKind, frame: &ModFrame<'_>, canvas: &Canvas<'_>) -> (f32, f3
                 .iter()
                 .map(|(a, b)| width(a).max(width(b)))
                 .fold(0.0f32, f32::max);
-            (w + 22.0, lines.len().max(1) as f32 * 22.0 - 2.0)
+            (w.ceil() + 22.0, lines.len().max(1) as f32 * 22.0 - 2.0)
         }
         _ => {
             let lines = text_lines(kind, frame);
             let w = lines.iter().map(|l| width(l)).fold(0.0f32, f32::max);
-            (w, lines.len() as f32 * 10.0 - 2.0)
+            (w.ceil(), lines.len() as f32 * (LINE + 1.0) - 1.0)
         }
     }
 }
@@ -219,7 +222,14 @@ pub fn draw(
                 card(canvas, rect, editing);
                 let lines = potion_lines(frame, canvas);
                 if lines.is_empty() {
-                    canvas.text("Potion Effects", x + PAD, y + PAD, DIM, false);
+                    canvas.system_text(
+                        "Potion Effects",
+                        x + PAD,
+                        y + PAD,
+                        LINE,
+                        Weight::Regular,
+                        DIM,
+                    );
                 }
                 for (i, (name, time)) in lines.iter().enumerate() {
                     let ly = y + PAD + i as f32 * 22.0;
@@ -242,15 +252,16 @@ pub fn draw(
                             [1.0; 4],
                         );
                     }
-                    canvas.text(name, x + PAD + 20.0, ly + 1.0, TEXT, true);
-                    canvas.text(time, x + PAD + 20.0, ly + 11.0, DIM, true);
+                    canvas.system_text(name, x + PAD + 20.0, ly, LINE, Weight::Semibold, TEXT);
+                    canvas.system_text(time, x + PAD + 20.0, ly + 10.0, LINE, Weight::Regular, DIM);
                 }
             }
             _ => {
                 card(canvas, rect, editing);
                 for (i, line) in text_lines(kind, frame).iter().enumerate() {
                     let color = if disabled { DIM } else { TEXT };
-                    canvas.text(line, x + PAD, y + PAD + i as f32 * 10.0, color, true);
+                    let ly = y + PAD + i as f32 * (LINE + 1.0);
+                    canvas.system_text(line, x + PAD, ly, LINE, Weight::Semibold, color);
                 }
             }
         }
@@ -271,13 +282,15 @@ fn keystrokes(canvas: &mut Canvas<'_>, frame: &ModFrame<'_>, x: f32, y: f32, edi
             }
             canvas.glass(panel);
             let color = if down { 0xFF1A_1C22 } else { TEXT };
-            let tw = canvas.res.width(label) as f32;
-            canvas.text(
+            let size = if label.len() > 2 { 6.5 } else { LINE };
+            let tw = canvas.system_width(label, size, Weight::Semibold);
+            canvas.system_text(
                 label,
-                (kx + (w - tw) / 2.0).floor(),
-                (ky + (h - 8.0) / 2.0).floor(),
+                kx + (w - tw) / 2.0,
+                ky + (h - size) / 2.0,
+                size,
+                Weight::Semibold,
                 color,
-                false,
             );
         };
     let k = frame.keys;
@@ -313,7 +326,7 @@ fn keystrokes(canvas: &mut Canvas<'_>, frame: &ModFrame<'_>, x: f32, y: f32, edi
         y + 3.0 * step,
         3.0 * KEY + 2.0 * GAP,
         KEY - 8.0,
-        "─────",
+        "———",
         k.jump,
     );
 }

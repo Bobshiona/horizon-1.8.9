@@ -1087,3 +1087,19 @@ Regressions: settings round trip and atomic save, menu geometry and click/drag b
 expansion, potion duration and facing formatting. Captures checked the menu over the world and the
 HUD cards. Gate: 182 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks,
 ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.
+
+## 39. San Francisco text in the mod interface
+
+Section 38's mod milestone is `f665bf3f4b`.
+
+The menu and HUD cards now draw the macOS system font. `sysfont.rs` reads the installed variable font
+`/System/Library/Fonts/SFNS.ttf` at run time (nothing is bundled or committed), sets regular (400) and
+semibold (590) weights, and rasterises glyphs with `ab_glyph` (pure Rust; the client forbids `unsafe`,
+so Core Text bindings were not used) at the drawable's physical pixel size. Glyphs are shelf-packed on
+demand into eight new interface atlas layers after the unicode pages and drawn as pixel-snapped
+quads with coverage alpha: the `0x20000000` layer flag exempts them from the GUI alpha test, so edges
+stay antialiased. `Canvas::system_text`/`system_width` take a line-box height in GUI pixels; without
+the font file they fall back to the Minecraft font. Vanilla HUD, chat and screens keep the Minecraft
+font. Regressions: glyph rasterising/caching/metrics and the atlas packer. A capture checked the
+menu and cards. Gate: 184 scoped tests, strict Clippy/fmt, layers, public-tree and diff privacy checks,
+ARM64 release build and `VANILLA_189_REFERENCE_GATE_PASS`.

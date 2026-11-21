@@ -1883,6 +1883,7 @@ dependencies = [
 name = "horizon-189-client"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "arboard",
  "base64 0.22.1",
  "bytemuck",

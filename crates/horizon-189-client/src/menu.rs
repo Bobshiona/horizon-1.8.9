@@ -3,6 +3,7 @@
 use crate::{
     glass::Panel,
     settings::{HudKind, Settings},
+    sysfont::Weight,
     ui::{Canvas, Layout},
 };
 
@@ -239,12 +240,19 @@ impl Menu {
         if self.editing {
             let w = canvas.layout.width;
             let label = "Drag cards to move them  ·  Right Shift to finish";
-            let tw = canvas.res.width(label) as f32;
+            let tw = canvas.system_width(label, BODY, Weight::Regular);
             let x = ((w - tw) / 2.0).floor();
             let mut pill = Panel::new(x - 10.0, 6.0, x + tw + 10.0, 24.0);
             pill.radius = 9.0;
             canvas.glass(pill);
-            canvas.text(label, x, 11.0, 0xFFF5_F7FA, false);
+            canvas.system_text(
+                label,
+                x,
+                6.0 + (18.0 - BODY) / 2.0,
+                BODY,
+                Weight::Regular,
+                WHITE,
+            );
             return;
         }
         if !self.open {
@@ -253,30 +261,41 @@ impl Menu {
         let g = geometry(canvas.layout);
         let [x0, y0, x1, _] = g.sheet;
         let mut sheet = Panel::new(g.sheet[0], g.sheet[1], g.sheet[2], g.sheet[3]);
-        sheet.radius = 12.0;
+        sheet.radius = 14.0;
         sheet.shadow = 0.4;
         sheet.tint = [0.05, 0.06, 0.08, 0.46];
         canvas.glass(sheet);
-        canvas.text("Horizon", x0 + MARGIN, y0 + 10.0, 0xFFFF_FFFF, false);
-        canvas.text(
+        let title_y = y0 + 9.0;
+        let w = canvas.system_text(
+            "Horizon",
+            x0 + MARGIN,
+            title_y,
+            TITLE,
+            Weight::Semibold,
+            WHITE,
+        );
+        canvas.system_text(
             "Mods",
-            x0 + MARGIN + canvas.res.width("Horizon ") as f32,
-            y0 + 10.0,
+            x0 + MARGIN + w + 4.0,
+            title_y,
+            TITLE,
+            Weight::Regular,
             0xFFC4_CAD4,
-            false,
         );
         let hint = "Right Shift";
-        canvas.text(
+        let hw = canvas.system_width(hint, SMALL, Weight::Regular);
+        canvas.system_text(
             hint,
-            x1 - MARGIN - canvas.res.width(hint) as f32,
-            y0 + 10.0,
-            0xFF9A_A3B2,
-            false,
+            x1 - MARGIN - hw,
+            title_y + (TITLE - SMALL) / 2.0,
+            SMALL,
+            Weight::Regular,
+            0xFFE2_E6EC,
         );
         for (entry, rect) in &g.cards {
             let hover = inside(*rect, mouse);
             let mut card = Panel::new(rect[0], rect[1], rect[2], rect[3]);
-            card.radius = 7.0;
+            card.radius = 8.0;
             card.shadow = 0.12;
             card.tint = if hover {
                 [0.26, 0.28, 0.34, 0.50]
@@ -284,24 +303,27 @@ impl Menu {
                 [0.12, 0.13, 0.16, 0.42]
             };
             canvas.glass(card);
-            canvas.text(
+            let text_y = rect[1] + (CARD_H - BODY) / 2.0;
+            canvas.system_text(
                 entry.title(),
-                rect[0] + 8.0,
-                rect[1] + 11.0,
-                0xFFF5_F7FA,
-                false,
+                rect[0] + 9.0,
+                text_y,
+                BODY,
+                Weight::Regular,
+                WHITE,
             );
             match entry.enabled(settings) {
-                Some(on) => switch(canvas, rect[2] - 26.0, rect[1] + 9.0, on),
+                Some(on) => switch(canvas, rect[2] - 27.0, rect[1] + (CARD_H - 11.0) / 2.0, on),
                 None => {
                     let value = entry.value(settings);
-                    let w = canvas.res.width(&value) as f32;
-                    canvas.text(
+                    let vw = canvas.system_width(&value, BODY, Weight::Semibold);
+                    canvas.system_text(
                         &value,
-                        rect[2] - 8.0 - w,
-                        rect[1] + 11.0,
+                        rect[2] - 9.0 - vw,
+                        text_y,
+                        BODY,
+                        Weight::Semibold,
                         0xFF6E_B6FF,
-                        false,
                     );
                 }
             }
@@ -310,6 +332,12 @@ impl Menu {
         button(canvas, g.done, "Done", inside(g.done, mouse), true);
     }
 }
+
+/// System-font sizes (line box height in GUI pixels).
+const TITLE: f32 = 9.5;
+const BODY: f32 = 7.5;
+const SMALL: f32 = 6.5;
+const WHITE: u32 = 0xFFF7_F8FA;
 
 /// An iOS-style switch: a pill track and a white knob.
 fn switch(canvas: &mut Canvas<'_>, x: f32, y: f32, on: bool) {
@@ -343,13 +371,14 @@ fn button(canvas: &mut Canvas<'_>, rect: [f32; 4], label: &str, hover: bool, pri
         (false, true) => [0.32, 0.35, 0.42, 0.50],
     };
     canvas.glass(panel);
-    let w = canvas.res.width(label) as f32;
-    canvas.text(
+    let w = canvas.system_width(label, BODY, Weight::Semibold);
+    canvas.system_text(
         label,
         (rect[0] + (rect[2] - rect[0] - w) / 2.0).floor(),
-        rect[1] + 6.0,
+        rect[1] + (rect[3] - rect[1] - BODY) / 2.0,
+        BODY,
+        Weight::Semibold,
         0xFFFF_FFFF,
-        false,
     );
 }
 
