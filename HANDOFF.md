@@ -1453,3 +1453,47 @@ the pull-in at a wall, the segment trace (stops at stone, passes water) and the 
 position, head and body turn and limb swing.
 
 Gate: 227 tests.
+
+## 53. F3 debug screen
+
+Section 52's F5 is `a5ac06fb0b`.
+
+F3 did nothing. From the same `ave.s` branch, key 61 with no screen open toggles `showDebugInfo`
+(`avh.aC`) on press, and `GuiOverlayDebug` (`avv`) draws it. Each non-empty line goes on a
+`0x90505050` backing in `0xE0E0E0` without shadow, nine pixels apart from y 2, the left column at
+x 2 and the right one right-aligned 2 in. The left column (`avv.b`), with the format strings from
+`ave`, `bfr`, `bho` and `bcz`:
+- `Minecraft 1.8.9 (1.8.9/vanilla)`, the brand this client sends.
+- `N fps (N chunk updates) T: <limit|inf>[ vsync] vbo`.
+- `C: drawn/(2D+1)^2*16 (s) D: N, pC/pU/aB`. Here `C` counts sections drawn with geometry, `pC`
+  is columns queued or meshing, `pU` is meshes waiting to upload, and `aB` is idle meshers.
+- `E: drawn/loaded, B: 0, I: rest` and `P: particles. T: All: loaded`.
+- `MultiplayerChunkCache: columns, columns`.
+- XYZ (feet, `%.3f / %.5f / %.3f`), Block, Chunk, and Facing (`getHorizontalFacing` with
+  wrapped yaw and pitch).
+- Biome (names from `ady`/`aeo`/`aeg`/`aeu`, mutated ones with " M"), and Light
+  (`getLightSubtracted`, then sky and block).
+- Local Difficulty: `DifficultyInstance` (`ok.a`) with no inhabited time, as a client's chunks have
+  none, and the moon factors.
+- Looking at, when the crosshair is on a block.
+
+Reduced debug (Join Game, entity status 22/23) shows only the header and Chunk-relative, as
+vanilla does. Section rebuilds per second count meshed columns times 16, since this client meshes
+whole columns where vanilla rebuilds 16-high sections. The right column puts this client's runtime
+in place of the JVM's: `Rust: Horizon <build> 64bit`, the CPU (`sysctl
+machdep.cpu.brand_string`, read once), `Display: WxH (Apple)`, the GPU and `Metal`, then
+`minecraft:<block>` when looking at a block. Block properties aren't listed yet. The HUD mods hide
+while F3 is up, since they would sit under the left column.
+
+Network: S03 sets the time of day (negative turns the daylight cycle off, as
+`WorldClient.setWorldTime` does) and each tick advances it while the cycle runs. S41, Join and
+Respawn set the difficulty. The mesher publishes its queue through `MeshStats`.
+`--smoke-debug` opens it for captures; the bench capture shows every line (the bench player stands
+in a cave at y 35, which is why bench shots are dark).
+
+Regressions: the full left column against hand-checked values, the reduced column, the right
+column's block name, local difficulty (peaceful, day 0, hard at full moon after 60 days, easy's
+halved moon), biome names, the F3 toggle, and S03/S41/status 22 reaching `Shared` with the cycle
+ticking.
+
+Gate: 230 tests.

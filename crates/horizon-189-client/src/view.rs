@@ -1,5 +1,6 @@
 //! The function-key view toggles `Minecraft.runTick` reads when no screen
-//! is open (`ave.s`): F1 hides the GUI, F5 cycles the perspective.
+//! is open (`ave.s`): F1 hides the GUI, F3 shows the debug overlay and F5
+//! cycles the perspective.
 
 use horizon_physics_189::{raycast::Raycaster, trig};
 use horizon_world_189::World;
@@ -12,6 +13,8 @@ pub struct View {
     /// `GameSettings.thirdPersonView` (`avh.aB`): 0 first person, 1 behind
     /// the player, 2 in front looking back.
     pub perspective: u8,
+    /// `GameSettings.showDebugInfo` (`avh.aC`).
+    pub debug: bool,
 }
 
 impl View {
@@ -23,6 +26,7 @@ impl View {
         }
         match key {
             KeyCode::F1 => self.hide_gui = !self.hide_gui,
+            KeyCode::F3 => self.debug = !self.debug,
             KeyCode::F5 => {
                 self.perspective = if self.perspective >= 2 {
                     0
@@ -181,6 +185,8 @@ mod tests {
         );
         assert!(!view.world_gui());
         assert!(!view.key(KeyCode::KeyW, false));
+        assert!(view.key(KeyCode::F3, false) && view.debug);
+        assert!(!view.key(KeyCode::F3, true) && view.debug);
         assert!(view.key(KeyCode::F1, false));
         assert!(!view.hide_gui);
     }

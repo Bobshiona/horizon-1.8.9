@@ -820,3 +820,52 @@ fn hotbar_sync_runs_before_the_first_position() {
     assert_eq!(actor.next(0x09), vec![0x09, 0, 3]);
     actor.position();
 }
+
+#[test]
+fn time_difficulty_and_reduced_debug_reach_the_debug_overlay() {
+    let mut actor = Actor::new();
+    actor.join();
+    actor.position();
+    actor.grounded();
+    actor.barrier(390);
+    assert_eq!(actor.shared.lock().unwrap().difficulty, 1, "Join Game");
+    // S41 hard; S03 with the daylight cycle off (negative time of day);
+    // S19 status 22 on the player (entity 7) reduces the debug screen.
+    actor.send(vec![0x41, 3]);
+    let time = |of_day: i64| {
+        let mut packet = vec![0x03];
+        packet.extend(100i64.to_be_bytes());
+        packet.extend(of_day.to_be_bytes());
+        packet
+    };
+    actor.send(time(-30000));
+    let mut status = vec![0x1a];
+    status.extend(7i32.to_be_bytes());
+    status.push(22);
+    actor.send(status);
+    actor.barrier(391);
+    actor.grounded();
+    {
+        let s = actor.shared.lock().unwrap();
+        assert_eq!(
+            (
+                s.difficulty,
+                s.time_of_day,
+                s.daylight_cycle,
+                s.reduced_debug
+            ),
+            (3, 30000, false, true)
+        );
+    }
+    // With the cycle on, each client tick advances the time of day.
+    actor.send(time(30000));
+    actor.barrier(392);
+    actor.grounded();
+    actor.grounded();
+    let s = actor.shared.lock().unwrap();
+    assert!(
+        s.daylight_cycle && s.time_of_day > 30000,
+        "{}",
+        s.time_of_day
+    );
+}

@@ -35,6 +35,8 @@ pub struct Renderer {
     pub names: bool,
     /// F5: the local player's model, drawn with the others.
     pub own_body: Option<(i32, horizon_world_189::entities::Entity)>,
+    /// F3's `E:`: entities in view this frame.
+    pub entities_drawn: usize,
     /// F2: read this frame back into `shot`.
     pub screenshot: bool,
     pub shot: Option<Result<crate::screenshot::Pixels, String>>,
@@ -160,6 +162,7 @@ impl Renderer {
             offscreen_frames: 0,
             names: true,
             own_body: None,
+            entities_drawn: 0,
             screenshot: false,
             shot: None,
             bench: false,
@@ -352,6 +355,17 @@ impl Renderer {
         }
     }
 
+    /// F3: the drawable's size, the GPU's name, sections drawn and the
+    /// render distance.
+    pub fn debug_facts(&self) -> ((u32, u32), String, u32, u8) {
+        (
+            (self.config.width, self.config.height),
+            self.adapter.get_info().name,
+            self.scene.as_ref().map_or(0, Scene::drawn_sections),
+            self.view_distance,
+        )
+    }
+
     /// Rebuild moving-entity geometry at this frame's partial tick.
     pub fn set_entities(
         &mut self,
@@ -466,6 +480,7 @@ impl Renderer {
             }
             None => entities,
         };
+        self.entities_drawn = drawn.iter().filter(|(_, e)| in_view(e)).count();
         crate::models::entities(
             &mut vertices,
             drawn,

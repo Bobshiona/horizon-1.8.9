@@ -5,6 +5,7 @@
 mod chat;
 mod connection;
 mod container_input;
+mod debug;
 mod frame_stats;
 mod gameplay;
 mod glass;
@@ -129,6 +130,11 @@ struct App {
     smoke_screenshot: bool,
     /// `orientCamera`'s block traces.
     camera_rays: horizon_physics_189::raycast::Raycaster,
+    /// F3: meshes uploaded in all, the CPU's name (read once), and section
+    /// rebuilds over the last second (`RenderChunk.renderChunksUpdated`).
+    meshes_applied: u64,
+    cpu_name: Option<String>,
+    rebuilds: (Instant, u64, u32),
     fov: f32,
     metrics: pvp_metrics::Metrics,
     settings: settings::Settings,
@@ -181,6 +187,9 @@ struct Snapshot {
     current: [f64; 3],
     aiming_entity: bool,
     own_body: Option<horizon_world_189::entities::Entity>,
+    difficulty: u8,
+    time_of_day: i64,
+    reduced_debug: bool,
 }
 
 impl App {
@@ -1270,6 +1279,9 @@ impl ApplicationHandler for App {
                         current: s.current,
                         aiming_entity: s.aiming_entity,
                         own_body: s.own_body.clone(),
+                        difficulty: s.difficulty,
+                        time_of_day: s.time_of_day,
+                        reduced_debug: s.reduced_debug,
                     })
                 });
                 if let Some(s) = &snapshot {
@@ -1542,6 +1554,100 @@ impl ApplicationHandler for App {
                                 .and_then(|(uuid, _)| snapshot.tab.entries.get(uuid))
                                 .map(|entry| entry.ping);
                             let yaw = pose.yaw;
+                            let debug_text = (self.view.debug && overlay).then(|| {
+                                let cpu = self.cpu_name.get_or_insert_with(cpu_name).clone();
+                                let (display, gpu, sections, view_distance) =
+                                    renderer.debug_facts();
+                                let network = self.network.as_ref();
+                                let stats = network.map(|n| &n.mesh_stats);
+                                let sent = stats.map_or(0, |s| {
+                                    s.sent.load(std::sync::atomic::Ordering::Relaxed)
+                                });
+                                if self.rebuilds.0.elapsed() >= Duration::from_secs(1) {
+                                    let meshed = sent.saturating_sub(self.rebuilds.1);
+                                    self.rebuilds = (
+                                        Instant::now(),
+                                        sent,
+                                        u32::try_from(meshed * 16).unwrap_or(u32::MAX),
+                                    );
+                                }
+                                let world = network.and_then(|n| n.world.try_read().ok());
+                                let feet = snapshot.current;
+                                let block = feet.map(|v| v.floor() as i32);
+                                let here = world.as_ref().and_then(|world| {
+                                    let column = world
+                                        .column(block[0].div_euclid(16), block[2].div_euclid(16))?;
+                                    Some(debug::Here {
+                                        biome: column.biome(
+                                            block[0].rem_euclid(16) as u8,
+                                            block[2].rem_euclid(16) as u8,
+                                        ),
+                                        light: world.light(block[0], block[1], block[2]),
+                                        difficulty: snapshot.difficulty,
+                                        time_of_day: snapshot.time_of_day,
+                                    })
+                                });
+                                let looking_at = world
+                                    .as_ref()
+                                    .filter(|_| !snapshot.aiming_entity)
+                                    .and_then(|world| {
+                                        let hit = self.selector.select(
+                                            world,
+                                            &self.no_entities,
+                                            pose.position,
+                                            pose.yaw,
+                                            pose.pitch,
+                                            snapshot.game_mode == 1,
+                                        );
+                                        let Some(horizon_physics_189::raycast::Hit::Block {
+                                            at,
+                                            ..
+                                        }) = hit
+                                        else {
+                                            return None;
+                                        };
+                                        let state = world.block(at[0], at[1], at[2])?;
+                                        Some((
+                                            at,
+                                            horizon_world_189::blocks::block(state.block_id()).name,
+                                        ))
+                                    });
+                                let columns = world.as_ref().map_or(0, |w| w.column_count());
+                                drop(world);
+                                let limit = self.settings.toggles.fps_limit;
+                                let info = debug::Info {
+                                    fps: sample.fps.unwrap_or(0),
+                                    chunk_updates: self.rebuilds.2,
+                                    fps_limit: (limit != 0 && limit != u32::MAX).then_some(limit),
+                                    vsync: limit == 0,
+                                    sections,
+                                    view_distance,
+                                    mesher: [
+                                        stats.map_or(0, |s| {
+                                            s.pending.load(std::sync::atomic::Ordering::Relaxed)
+                                        }),
+                                        usize::try_from(sent.saturating_sub(self.meshes_applied))
+                                            .unwrap_or(0),
+                                        stats.map_or(0, |s| {
+                                            s.idle.load(std::sync::atomic::Ordering::Relaxed)
+                                        }),
+                                    ],
+                                    entities: (renderer.entities_drawn, entities.len() + 1),
+                                    particles: self.particles.len(),
+                                    columns,
+                                    feet,
+                                    yaw: pose.yaw,
+                                    pitch: pose.pitch,
+                                    here,
+                                    looking_at,
+                                    reduced: snapshot.reduced_debug,
+                                    build: updater::BUILD.unwrap_or("dev"),
+                                    cpu: &cpu,
+                                    display,
+                                    gpu: &gpu,
+                                };
+                                (debug::left(&info), debug::right(&info))
+                            });
                             let result = renderer.draw_ui(tick, |canvas, registry, skin| {
                                 let frame = hud::Frame {
                                     view: &snapshot.view,
@@ -1563,7 +1669,12 @@ impl ApplicationHandler for App {
                                 if overlay {
                                     hud.draw(canvas, registry, &frame);
                                 }
+                                if let Some((left, right)) = &debug_text {
+                                    debug::draw(canvas, left, right);
+                                }
+                                // The mods would sit under the debug text.
                                 if overlay
+                                    && debug_text.is_none()
                                     && ((!snapshot.view.open && snapshot.vitals.health > 0.0)
                                         || menu.editing)
                                 {
@@ -1751,6 +1862,7 @@ impl ApplicationHandler for App {
             let Some(update) = update else {
                 break;
             };
+            self.meshes_applied += 1;
             if let Some(renderer) = &mut self.renderer
                 && let Err(error) = renderer.apply_mesh(update)
             {
@@ -1971,6 +2083,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         view: view::View {
             hide_gui: options.smoke_hide_gui,
             perspective: options.smoke_perspective,
+            debug: options.smoke_debug,
         },
         screenshot_dir: options
             .smoke_screenshot
@@ -1979,6 +2092,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         screenshots: std::sync::mpsc::channel(),
         smoke_screenshot: options.smoke_screenshot.is_some(),
         camera_rays: Default::default(),
+        meshes_applied: 0,
+        cpu_name: None,
+        rebuilds: (Instant::now(), 0, 0),
         fov: options.fov,
         metrics: pvp_metrics::Metrics::default(),
         settings: {
@@ -2103,4 +2219,17 @@ fn alert(message: &str) {
             message,
         ])
         .status();
+}
+
+/// F3's CPU line: the core count and `machdep.cpu.brand_string`.
+fn cpu_name() -> String {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let brand = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|brand| !brand.is_empty())
+        .unwrap_or_else(|| "Apple".into());
+    format!("{cores}x {brand}")
 }

@@ -1254,6 +1254,26 @@ impl Scene {
         self.effects = Mat4::IDENTITY;
     }
 
+    /// F3's `C:`: sections drawn this frame that have geometry.
+    pub fn drawn_sections(&self) -> u32 {
+        self.frame
+            .iter()
+            .filter_map(|(key, mask)| Some((self.columns.get(key)?, *mask)))
+            .map(|(column, mask)| {
+                (0..16)
+                    .filter(|&s| {
+                        mask & (1 << s) != 0
+                            && column
+                                .passes
+                                .iter()
+                                .flatten()
+                                .any(|pass| pass.sections[s + 1] > pass.sections[s])
+                    })
+                    .count() as u32
+            })
+            .sum()
+    }
+
     pub fn column_count(&self) -> usize {
         self.columns.len()
     }

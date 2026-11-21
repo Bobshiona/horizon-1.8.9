@@ -21,7 +21,7 @@ use std::{
     net::{Shutdown, TcpStream, ToSocketAddrs},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
@@ -116,6 +116,12 @@ pub struct Shared {
     pub aiming_entity: bool,
     /// The local player as a model for third person, stepped each tick.
     pub own_body: Option<horizon_world_189::entities::Entity>,
+    /// F3: Join/Respawn/S41 difficulty, the S03 time of day (ticked here
+    /// while the daylight cycle runs) and `hasReducedDebug`.
+    pub difficulty: u8,
+    pub time_of_day: i64,
+    pub daylight_cycle: bool,
+    pub reduced_debug: bool,
     /// A new render distance for the server (C15), sent on the next tick.
     pub view_distance: Option<u8>,
     pub vitals: crate::gameplay::Vitals,
@@ -186,8 +192,20 @@ pub enum Outgoing {
 /// Messages beyond this are dropped oldest-first if the window stalls.
 const INBOX_LIMIT: usize = 512;
 
+/// F3's mesher numbers, written by the mesher thread.
+#[derive(Default)]
+pub struct MeshStats {
+    /// Columns waiting or being meshed.
+    pub pending: AtomicUsize,
+    /// Meshers with no column.
+    pub idle: AtomicUsize,
+    /// Meshes sent to the window in all.
+    pub sent: AtomicU64,
+}
+
 pub struct Network {
     pub meshes: Receiver<MeshUpdate>,
+    pub mesh_stats: Arc<MeshStats>,
     /// The world, for the window's particle collisions (`try_read` only).
     pub world: Arc<RwLock<World>>,
     pub errors: Receiver<String>,
@@ -213,11 +231,14 @@ impl Network {
         let state = shared.clone();
         let language = registry.gui.language.clone();
         let window_world = world.clone();
+        let mesh_stats = Arc::new(MeshStats::default());
         let mesher = {
-            let (world, stop) = (world.clone(), stop.clone());
+            let (world, stop, stats) = (world.clone(), stop.clone(), mesh_stats.clone());
             thread::Builder::new()
                 .name("Legacy mesher".into())
-                .spawn(move || mesh_columns(&registry, &world, &inbox, &finished, &send, &stop))?
+                .spawn(move || {
+                    mesh_columns(&registry, &world, &inbox, &finished, &send, &stop, &stats);
+                })?
         };
         let worker = thread::Builder::new()
             .name("Protocol 47".into())
@@ -232,6 +253,7 @@ impl Network {
             })?;
         Ok(Self {
             meshes,
+            mesh_stats,
             world: window_world,
             errors,
             shared,
@@ -276,6 +298,7 @@ fn mesh_columns(
     finished: &mpsc::Sender<MeshCommand>,
     send: &Sender<MeshUpdate>,
     stop: &Arc<AtomicBool>,
+    stats: &MeshStats,
 ) {
     let (jobs, queue) = mpsc::channel::<((i32, i32), [i64; 3])>();
     let queue = Arc::new(Mutex::new(queue));
@@ -346,10 +369,11 @@ fn mesh_columns(
                 }
                 MeshCommand::Done(update) => {
                     meshed += 1;
-                    if let Some(update) = dispatch.finish(update)
-                        && send.send(update).is_err()
-                    {
-                        break 'run;
+                    if let Some(update) = dispatch.finish(update) {
+                        if send.send(update).is_err() {
+                            break 'run;
+                        }
+                        stats.sent.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -367,6 +391,14 @@ fn mesh_columns(
                 break 'run;
             }
         }
+        stats.pending.store(
+            dispatch.dirty.len() + dispatch.busy.len(),
+            Ordering::Relaxed,
+        );
+        stats.idle.store(
+            handles.len().saturating_sub(dispatch.busy.len()),
+            Ordering::Relaxed,
+        );
         if dispatch.idle()
             && let Some(since) = started.take()
         {
@@ -710,6 +742,8 @@ fn run_actor(
                             let mut state = lock(shared)?;
                             state.hardcore = join.game_mode & 8 != 0;
                             state.entity_id = join.entity_id;
+                            state.difficulty = join.difficulty;
+                            state.reduced_debug = join.reduced_debug;
                         }
                         // A new WorldClient brings a new scoreboard.
                         board = crate::scoreboard::Scoreboard::default();
@@ -903,6 +937,7 @@ fn run_actor(
                         state.game_mode = game_mode;
                         state.input.actions.clear();
                         state.cracks.clear();
+                        state.difficulty = respawn.difficulty;
                         if world_changed {
                             state.world_epoch = state.world_epoch.wrapping_add(1);
                             state.entities = Arc::default();
@@ -928,6 +963,22 @@ fn run_actor(
                         tab.apply(&updates, &formatted);
                         tab_dirty = true;
                         entities.update_profiles(updates);
+                    }
+                    // S03: total world time, then the time of day, negated
+                    // when the daylight cycle is off (WorldClient.setWorldTime).
+                    play::Packet::Other { id: 0x03, fields } => {
+                        if let Some(time) = fields.get(8..16) {
+                            let time = i64::from_be_bytes(time.try_into().unwrap_or([0; 8]));
+                            let mut state = lock(shared)?;
+                            state.daylight_cycle = time >= 0;
+                            state.time_of_day = time.saturating_abs();
+                        }
+                    }
+                    // S41 server difficulty.
+                    play::Packet::Other { id: 0x41, fields } => {
+                        if let Some(&difficulty) = fields.first() {
+                            lock(shared)?.difficulty = difficulty;
+                        }
                     }
                     play::Packet::Other { id: 0x47, fields } => {
                         let (header, footer) =
@@ -1046,6 +1097,13 @@ fn run_actor(
                                     if *id == entity_id =>
                                 {
                                     hand.hurt();
+                                }
+                                // EntityPlayer.handleStatusUpdate 22 and 23.
+                                entity_packets::EntityPacket::Status {
+                                    id,
+                                    status: status @ (22 | 23),
+                                } if *id == entity_id => {
+                                    lock(shared)?.reduced_debug = *status == 22;
                                 }
                                 // handleStatusUpdate(3) runs EntityPlayer.onDeath.
                                 entity_packets::EntityPacket::Status { id, status: 3 }
@@ -1461,6 +1519,9 @@ fn run_actor(
                     writer.send(&play::client_settings(chunks))?;
                 }
                 state.previous = state.current;
+                if state.daylight_cycle {
+                    state.time_of_day = state.time_of_day.saturating_add(1);
+                }
                 state.current = player.position;
                 state.ticked_at = Some(Instant::now());
                 state.sneaking = player.sneaking;

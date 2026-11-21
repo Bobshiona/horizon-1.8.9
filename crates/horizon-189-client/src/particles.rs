@@ -164,6 +164,11 @@ impl Default for Particles {
 const MAX_PARTICLES: usize = 4000;
 
 impl Particles {
+    /// F3's `P:`.
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+
     fn gaussian(&mut self) -> f64 {
         (-2.0 * self.random().max(f64::MIN_POSITIVE).ln()).sqrt()
             * (std::f64::consts::TAU * self.random()).cos()
@@ -639,11 +644,6 @@ impl Particles {
                 });
             }
         }
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.particles.len()
     }
 }
 
