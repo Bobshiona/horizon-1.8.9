@@ -2009,3 +2009,51 @@ the end); window parsing; the sparring partner's placement for two facings and s
 script's order, key pairing and windows; enabling everything; Toggle Sneak settings migration.
 
 Gate: 257 client tests, 12 trace-tool tests, Watchdog pass.
+
+## 68. mimalloc, allocation counts, the release-max profile and the profiling script
+
+Previous commit: 6d642031a4. Sprint 1.1's last two items.
+
+- **mimalloc is the client's global allocator** (`horizon_threads::GameAllocator`, the
+  allocator the Horizon client already ships: mimalloc on macOS and Windows, the sampling
+  allocator on Linux). It is C, built from the vendored `libmimalloc-sys`; the client crate
+  still forbids `unsafe` because the `GlobalAlloc` impl lives in horizon-threads.
+- **Allocations per frame.** `--features alloc-count` swaps in horizon-threads' counting
+  mimalloc and `--bench-trace` reports the main thread's allocations per frame (it was "n/a").
+  Measuring only; the gate benchmarks the default build. First numbers: lobby 356, flyover 220
+  allocations per frame on the main thread.
+- **`[profile.release-max]`**: fat LTO, one codegen unit, `panic = "abort"`;
+  `tools/bob-release-max.sh [--native]` builds it (`--native` adds `-C target-cpu=native`
+  into its own target directory, for this Mac only, never shipped). The app's updater still
+  builds `release`: with `panic = "abort"` a panic on any thread ends the process, so
+  switching the shipped build waits until the threads' panic paths are reviewed.
+- **`tools/bob-profile.sh time|metal|alloc|game NAME`** replays the benchmark session under
+  `xctrace record` (Time Profiler, Metal System Trace, Allocations, Game Performance) and
+  `tools/bob-profile-summary.py` prints, from 4 s on: CPU per thread, the allocator's share
+  of each thread, each busy thread's functions by self time (Rust v0 symbols demangled to
+  paths) and Bob Client's own functions by total time; for Metal traces also the GPU work by
+  channel and the command buffers' CPU encoding by label, with count, total, mean and p99.
+
+Measurements (the Mac was playing video throughout: lobby ~370 FPS here against ~655 idle):
+
+- Gate A/B against 6d642031a4, nine pairs over three runs: lobby average FPS -4.2% (pairs from
+  -24% to +107%), flyover -3.0%, lobby CPU p99 -2.8%; frame p50 +0.2%, CPU p50 +0.3%. The lobby
+  FPS median is past the -3% line, so the change was profiled before committing.
+- Time Profiler, two runs each, system heap -> mimalloc: allocator share of all CPU 1.87% /
+  2.01% -> 1.01% / 0.87%; main thread 2.42% / 2.43% -> 1.74% / 1.59%; mesh workers 1.4% / 2.2%
+  -> 0.3% / 0.2%. mimalloc halves the allocator's cost; that is about 1% of frame CPU, below
+  what the A/B resolves on a loaded Mac, so the flagged median is load, not this change.
+- release vs release-max, three pairs: lobby frame p50 -3.1% (-3%, -3%, -4%), CPU p50 -3.6%,
+  average FPS +4.9%, mesh p50 -4.2%; flyover flat (-0.3% FPS, CPU p50 -2.7%). The binary is
+  7.8 MB against 10.7 MB. `target-cpu=native` not measured.
+
+What the first profiles show for 1.2 (lobby, main thread): `terrain::Registry::item_mesh`
+10-16% self time through `hand::generated_item` (the held item's mesh is rebuilt every frame),
+`models::add` 7-11%, `memmove` 8-10%, `Renderer::set_entities` 25% total; on the mesh workers
+SipHash (`DefaultHasher`) is 45-50% of `mesh_column`'s time; a blit encoder costs 0.36 ms of
+CPU per frame on average (p99 1.8 ms).
+
+Regressions: the main thread's allocation count, which counts only its own blocks and is 0
+without counting; the earlier `--bench-trace` report test.
+
+Gate: 258 client tests (and clippy with `alloc-count`), 12 trace-tool tests, Watchdog pass.

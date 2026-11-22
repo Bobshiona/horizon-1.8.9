@@ -1893,6 +1893,7 @@ dependencies = [
  "horizon-client-platform",
  "horizon-physics-189",
  "horizon-protocol-47",
+ "horizon-threads",
  "horizon-world-189",
  "objc2-core-graphics",
  "png",

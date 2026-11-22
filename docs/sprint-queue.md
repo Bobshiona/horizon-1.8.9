@@ -57,9 +57,15 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       lobby -0.6%, flyover -3.7%, CPU p99 -3.1% (no regression). The benchmark gate is now A/B
       against origin/main (median of paired ratios); the trace was re-recorded from the
       ground.
-- [ ] CLI Metal System Trace / Instruments profiling script.
-- [ ] Global allocator `mimalloc`; `release-max` profile (fat LTO, one codegen unit,
+- [x] CLI Metal System Trace / Instruments profiling script.
+      HANDOFF 68: `tools/bob-profile.sh` + `tools/bob-profile-summary.py`.
+- [x] Global allocator `mimalloc`; `release-max` profile (fat LTO, one codegen unit,
       `panic = "abort"`, optional `-C target-cpu=native`).
+      HANDOFF 68: 258 + 12 tests. Allocator share of CPU 1.9-2.0% -> 0.9-1.0% (Time
+      Profiler); A/B vs 6d642031a4 lobby FPS -4.2% median of nine noisy pairs (frame p50
+      +0.2%), flagged and profiled, see HANDOFF. release-max: lobby frame p50 -3.1%, binary
+      -26%; the app still ships `release`. Main thread 356 / 220 allocations per frame
+      (lobby / flyover).
 
 ### 1.2 OptiFine-class native engine and GPU pipeline
 - [ ] Palette-compressed sections (4/8-bit indirect palettes, shared immutable state tables).

@@ -145,6 +145,8 @@ pub struct TraceBench {
     phases: Vec<Phase>,
     started: Option<std::time::Instant>,
     pub ended: bool,
+    /// The main thread's allocation count at the last frame.
+    allocations_seen: u64,
 }
 
 /// What a chat line from the trace server means.
@@ -166,6 +168,23 @@ pub fn marker(text: &str) -> Option<Marker<'_>> {
 }
 
 impl TraceBench {
+    /// Counting when the allocator counts (`alloc-count`).
+    pub fn new() -> Self {
+        TraceBench {
+            counting: horizon_threads::alloc_count::ON,
+            allocations_seen: horizon_threads::alloc_count::here().allocs,
+            ..TraceBench::default()
+        }
+    }
+
+    /// Blocks the main thread allocated since the last call (0 when not counting).
+    pub fn main_thread_allocations(&mut self) -> u64 {
+        let now = horizon_threads::alloc_count::here().allocs;
+        let since = now.wrapping_sub(self.allocations_seen);
+        self.allocations_seen = now;
+        since
+    }
+
     /// A server chat line; true when it was one of the trace's markers.
     pub fn chat(&mut self, text: &str) -> bool {
         match marker(text) {
@@ -303,5 +322,24 @@ mod tests {
         assert!(report[1].contains("allocs_per_frame=2.0"));
         bench.counting = false;
         assert!(bench.report()[1].contains("allocs_per_frame=n/a"));
+    }
+
+    #[test]
+    fn main_thread_allocations_count_only_this_threads_blocks() {
+        let mut bench = TraceBench::new();
+        assert_eq!(bench.counting, horizon_threads::alloc_count::ON);
+        let blocks: Vec<Box<u64>> = (0..50).map(Box::new).collect();
+        // Another thread's allocations are not the frame's.
+        std::thread::spawn(|| (0..500).map(Box::new).collect::<Vec<_>>().len())
+            .join()
+            .unwrap();
+        let counted = bench.main_thread_allocations();
+        if bench.counting {
+            assert!((51..200).contains(&counted), "{counted}");
+        } else {
+            assert_eq!(counted, 0);
+        }
+        drop(blocks);
+        assert!(bench.main_thread_allocations() < 50);
     }
 }

@@ -20,6 +20,8 @@ horizon-client-platform = { path = "../horizon-client-platform" }
 horizon-protocol-47 = { path = "../horizon-protocol-47" }
 horizon-world-189 = { path = "../horizon-world-189" }
 horizon-physics-189 = { path = "../horizon-physics-189" }
+# The global allocator: mimalloc (a heap per thread), counting with `alloc-count`.
+horizon-threads = { path = "../horizon-threads" }
 png = "0.18"
 pollster = "0.4"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
@@ -27,6 +29,11 @@ winit = "0.30.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEventSource", "CGEventTypes", "CGRemoteOperation"] }
+
+[features]
+# The allocator counts each thread's allocations; `--bench-trace` then reports the main
+# thread's allocations per frame. Measuring only: the benchmark gate runs the default build.
+alloc-count = ["horizon-threads/alloc-count"]
 
 [lints]
 workspace = true

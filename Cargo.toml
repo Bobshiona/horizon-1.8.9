@@ -170,6 +170,15 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
+# The fastest build of Bob Client (horizon-189-client): whole-program LTO and no unwinding, so a
+# panic on any thread ends the process. tools/bob-release-max.sh builds it, optionally with
+# -C target-cpu=native for this Mac only. cargo build --profile release-max
+[profile.release-max]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
 # Optimized but quick-to-link builds for iteration: cargo build --profile fast
 [profile.fast]
 inherits = "release"

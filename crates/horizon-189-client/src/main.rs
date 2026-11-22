@@ -48,6 +48,11 @@ mod view;
 mod watchdog;
 
 use horizon_client_platform::is_quit_shortcut_down;
+
+/// mimalloc keeps a heap per thread, so the network, mesh and audio threads never wait on
+/// each other's allocations; it counts them in an `alloc-count` build.
+#[global_allocator]
+static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
 use horizon_physics_189::player::{EYE_HEIGHT, Keys};
 use horizon_protocol_47::play::PositionLook;
 use keyboard::Keyboard;
@@ -1948,12 +1953,13 @@ impl ApplicationHandler for App {
                                     if let Some(last) = self.bench_last.replace(now) {
                                         self.bench_wall.record(now - last);
                                         if let Some(bench) = &mut self.trace_bench {
+                                            let allocations = bench.main_thread_allocations();
                                             bench.frame(&trace_bench::Frame {
                                                 interval: now - last,
                                                 cpu: frame_started.elapsed().saturating_sub(gpu),
                                                 gpu,
                                                 draws,
-                                                allocations: 0,
+                                                allocations,
                                             });
                                         }
                                     }
@@ -2351,7 +2357,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         bench_cpu: Default::default(),
         bench_wall: Default::default(),
         bench_last: None,
-        trace_bench: options.bench_trace.then(trace_bench::TraceBench::default),
+        trace_bench: options.bench_trace.then(trace_bench::TraceBench::new),
         watchdog: watchdog.then(watchdog::Watchdog::new),
         container_pointer: container_input::Pointer::default(),
         particles: particles::Particles::default(),
