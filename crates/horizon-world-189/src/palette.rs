@@ -30,9 +30,9 @@ impl States {
         palette.sort_unstable();
         palette.dedup();
         let bits = match palette.len() {
-            1 => return States::Uniform(raw[0]),
-            ..=16 => 4,
-            ..=256 => 8,
+            0 | 1 => return States::Uniform(raw[0]),
+            2..=16 => 4,
+            17..=256 => 8,
             _ => return States::Direct(Box::new(*raw)),
         };
         // The sorted copy held all 4096 states; keep only the palette.

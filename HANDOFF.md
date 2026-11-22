@@ -2092,3 +2092,14 @@ decoded surface column's heap size; block changes through the world; the hash sp
 render distance's columns over the table, differs per world and separates [1,2,3]/[1,2,4].
 
 Gate: 263 tests, 12 trace-tool tests, Watchdog pass.
+
+## 70. Clippy fix for section 69
+
+Previous commit: 8c8efd13b3. That commit went out with two clippy errors in horizon-world-189
+(`chunks_exact` with a constant size in the key hash, overlapping match ranges in the palette
+choice): the gate printed CLIPPY=101 and the push went ahead on the benchmark lines alone. Both
+are rewritten with identical behaviour (`as_chunks::<8>`, explicit `2..=16` / `17..=256`).
+From here the whole gate line set is read before every push, not its tail.
+
+Gate: 263 tests, 12 trace-tool tests, Watchdog pass; clippy clean. No benchmark: no change in
+behaviour or generated code paths.
