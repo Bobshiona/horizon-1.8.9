@@ -21,6 +21,7 @@
   ],
   "crates": {
     "horizon-189-client": "engine",
+    "horizon-189-trace": "tool",
     "horizon-assets-189": "engine",
     "horizon-auth": "engine",
     "horizon-client-platform": "engine",

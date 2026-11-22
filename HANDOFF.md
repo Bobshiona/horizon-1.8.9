@@ -1909,3 +1909,50 @@ clicks and number keys (not while typing), stepper halves and end stops, Restart
 ready, News paging bounds, and profile parsing for skins.
 
 Gate: 251 tests.
+
+## 66. The deterministic packet-trace benchmark
+
+Previous commit: b5a1582f95. Sprint phase 1.1, first item (docs/sprint-queue.md).
+
+- **`horizon-189-trace` (new tool crate).** `record` proxies one offline session between the
+  client and a test server and writes every play packet both ways with its time (`BOBTRACE`
+  format: direction, ms, length, body). `serve` is that server again: offline login with
+  compression at 256, the recorded server packets on their recorded timeline (minus the
+  recording's own disconnect), a seeded crowd of fighting players, `BOBTRACE PHASE <name>` and
+  `BOBTRACE END` chat markers, and an optional log of everything the client sends (for the
+  Watchdog suite). The crowd: tab list entries and spawns holding diamond swords, then every
+  tick a strafe round its own spot, a head turn, swings every 3-8 ticks and a hurt flash every 23;
+  removed at `--crowd-until`. The same seed gives the same packets.
+- **The session** (`tools/bob-trace-record.sh`, private trace): 14 s standing at spawn, then up
+  30 blocks and east at 16 blocks/s for 30 s with view distance 16 (865 chunk packets).
+  `tools/bob-trace-bench.sh` replays it with 80 fighters from 1.5 to 15.3 s, phases lobby@4000
+  and flyover@15300.
+- **`--bench-trace`** runs uncapped until `BOBTRACE END`, counting every frame and finished mesh
+  against the current phase in fixed microsecond histograms (nothing allocated per frame), then
+  prints `BOBTRACE_RESULT` per phase: average FPS, 1% lows (mean of the slowest 1% of frame
+  intervals), p50/p99/p99.9 frame interval, CPU and GPU p50/p99, world draw calls per frame,
+  allocations per frame (n/a until the counting allocator lands), meshes and mesh latency.
+  Mesh latency runs from a column first going dirty to its finished mesh reaching the renderer
+  (a column dirtied again while meshing counts from its first dirty time). The script samples
+  resident memory.
+
+Baseline (M5, median of four runs):
+
+| phase | avg FPS | 1% low | p99 frame | p99.9 | CPU p50/p99 | GPU p99 | draws/frame | mesh p50/p99 | RAM |
+|---|---|---|---|---|---|---|---|---|---|
+| lobby, 80 players | 657 | 374 | 2.27 ms | 2.94 ms | 0.22/0.94 ms | 1.67 ms | 704 | 2.4/7.8 ms | 265 MB peak |
+| flyover, 16 chunks | 745 | 296 | 3.06 ms | 3.79 ms | 0.24/1.66 ms | 1.57 ms | 697 | 4.8/32.5 ms | |
+
+Run-to-run noise: lobby average FPS within 0.5%, flyover within 4%, lobby CPU p99 0.55-0.94 ms.
+The gate now runs the benchmark three times and fails on a median drop over 3% (lobby FPS) or
+5% (flyover FPS), or a lobby CPU p99 rise over 25%. The first gated run: 646/717 FPS, CPU p99
+0.99 ms, no regression. About 700 world draw calls a frame (one per run of visible sections)
+and two `Vec`s allocated per frame in `Scene::draw` are the first targets for 1.2.
+
+Regressions: trace round trip and damage, crowd packets decoded by the client's own decoders,
+seeded determinism and bounded movement, chat markers, keep-alive and destroy encoding, serve
+options and timeline ordering (crowd ticks, leave, phases, end), teleport parsing, not replaying
+the recording's disconnect; the histogram (quantiles, 1% lows, overflow), phase markers and
+splitting, and mesh latency from first dirty through a stale rebuild.
+
+Gate: 254 client tests and 8 trace-tool tests.

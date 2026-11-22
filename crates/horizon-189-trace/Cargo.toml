@@ -1,0 +1,13 @@
+[package]
+name = "horizon-189-trace"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Records and replays Protocol 47 sessions for Bob Client's deterministic benchmark and packet-parity checks"
+
+[dependencies]
+horizon-protocol-47 = { path = "../horizon-protocol-47" }
+
+[lints]
+workspace = true

@@ -31,6 +31,8 @@ pub struct Options {
     pub smoke_menu: bool,
     /// Validation only: uncapped presentation with per-frame GPU timing.
     pub bench: bool,
+    /// `--bench-trace`: the packet-trace benchmark (see `trace_bench`).
+    pub bench_trace: bool,
     /// Validation only: look this many degrees down once in the world.
     pub smoke_pitch: Option<f32>,
     /// Create or refresh the app in Applications from this program.
@@ -106,6 +108,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-inventory             With --smoke-frames, open the inventory over a slot\n\
     --smoke-menu                  With --smoke-frames, open the mod menu\n\
     --bench                       With --smoke-frames, time uncapped CPU and GPU frames\n\
+    --bench-trace                 Packet-trace benchmark against horizon-189-trace serve\n\
     --smoke-launcher              With --smoke-frames, show the launcher signed out\n\
     --smoke-page N                With --smoke-launcher, open page N (0 Home to 4 Settings)\n\
     --smoke-settings              With --smoke-frames, open the settings screen\n\
@@ -278,6 +281,12 @@ impl Options {
                 "--smoke-inventory" => options.smoke_inventory = true,
                 "--smoke-menu" => options.smoke_menu = true,
                 "--bench" => options.bench = true,
+                "--bench-trace" => {
+                    // Uncapped frames until the trace server's end marker.
+                    options.bench = true;
+                    options.bench_trace = true;
+                    options.smoke_frames = Some(100_000_000);
+                }
                 "--install" => options.install = true,
                 "--smoke-launcher" => options.smoke_launcher = true,
                 "--smoke-page" => options.smoke_page = value()?.parse::<usize>()?.min(4),

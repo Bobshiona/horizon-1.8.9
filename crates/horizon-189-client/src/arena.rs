@@ -124,6 +124,7 @@ pub fn meshes(registry: &Registry, world: &World) -> Vec<MeshUpdate> {
             key,
             origin,
             mesh: Some(registry.mesh_column(world, key, origin)),
+            latency: std::time::Duration::ZERO,
         })
         .collect()
 }

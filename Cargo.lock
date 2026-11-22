@@ -1904,6 +1904,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-189-trace"
+version = "0.1.0"
+dependencies = [
+ "horizon-protocol-47",
+]
+
+[[package]]
 name = "horizon-addresses"
 version = "0.1.0"
 

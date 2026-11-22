@@ -617,6 +617,11 @@ impl Renderer {
         }
     }
 
+    /// World draw calls since the last call.
+    pub fn take_draws(&self) -> u32 {
+        self.scene.as_ref().map_or(0, Scene::take_draws)
+    }
+
     pub fn world_ready(&self) -> bool {
         self.scene.as_ref().is_some_and(Scene::has_geometry)
     }

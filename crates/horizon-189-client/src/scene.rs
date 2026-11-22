@@ -136,6 +136,8 @@ pub fn section_runs(mask: u16, sections: &[u32; 17]) -> impl Iterator<Item = (u3
 }
 
 pub struct Scene {
+    /// Draw calls issued since `take_draws`.
+    draws: std::cell::Cell<u32>,
     /// The fixture and entities, in the full vertex format.
     pipeline: wgpu::RenderPipeline,
     /// Packed terrain: solid (no alpha test), cutout, translucent.
@@ -792,6 +794,7 @@ impl Scene {
             mapped_at_creation: false,
         });
         let mut scene = Self {
+            draws: std::cell::Cell::new(0),
             pipeline,
             terrain_pipelines,
             quads,
@@ -1121,6 +1124,7 @@ impl Scene {
         for (pipeline, &count) in self.label_pipelines.iter().zip(&self.label_counts) {
             if count > 0 {
                 pass.set_pipeline(pipeline);
+                self.draws.set(self.draws.get() + 1);
                 pass.draw(start..start + count, 0..1);
             }
             start += count;
@@ -1239,6 +1243,7 @@ impl Scene {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.model_bindings, &[]);
             pass.set_vertex_buffer(0, self.model.slice(..));
+            self.draws.set(self.draws.get() + 1);
             pass.draw(0..self.model_count, 0..1);
         }
     }
@@ -1252,9 +1257,11 @@ impl Scene {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.hand_bindings, &[]);
             pass.set_vertex_buffer(0, self.hand.slice(..));
+            self.draws.set(self.draws.get() + 1);
             pass.draw(0..self.hand_count, 0..1);
             if self.hand_glint_count > 0 {
                 pass.set_pipeline(&self.hand_glint);
+                self.draws.set(self.draws.get() + 1);
                 pass.draw(
                     self.hand_count..self.hand_count + self.hand_glint_count,
                     0..1,
@@ -1507,9 +1514,15 @@ impl Scene {
             pass.set_vertex_buffer(0, gpu.buffer.slice(..));
             let instance = instance as u32;
             for (start, end) in section_runs(mask, &gpu.sections) {
+                self.draws.set(self.draws.get() + 1);
                 pass.draw_indexed(start * 6..end * 6, 0, instance..instance + 1);
             }
         }
+    }
+
+    /// Draw calls since the last call, for the benchmark.
+    pub fn take_draws(&self) -> u32 {
+        self.draws.replace(0)
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -1517,6 +1530,7 @@ impl Scene {
         pass.set_bind_group(0, &self.bindings, &[]);
         if let Some(fixture) = &self.fixture {
             pass.set_vertex_buffer(0, fixture.buffer.slice(..));
+            self.draws.set(self.draws.get() + 1);
             pass.draw(0..fixture.count, 0..1);
         }
         let near_to_far: Vec<usize> = (0..self.frame.len()).collect();
@@ -1531,11 +1545,13 @@ impl Scene {
         for (key, _) in &self.frame {
             if let Some(mesh) = self.columns.get(key).and_then(|c| c.entity.as_ref()) {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                self.draws.set(self.draws.get() + 1);
                 pass.draw(0..mesh.count, 0..1);
             }
         }
         if self.entity_count > 0 {
             pass.set_vertex_buffer(0, self.entities.slice(..));
+            self.draws.set(self.draws.get() + 1);
             pass.draw(0..self.entity_count, 0..1);
         }
         pass.set_bind_group(0, &self.bindings, &[]);

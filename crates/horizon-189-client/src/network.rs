@@ -16,7 +16,7 @@ use horizon_world_189::{
     entities::{Entities, Entity},
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io,
     net::{Shutdown, TcpStream, ToSocketAddrs},
     sync::{
@@ -47,6 +47,8 @@ pub struct MeshUpdate {
     pub key: (i32, i32),
     pub origin: [i64; 3],
     pub mesh: Option<ColumnMesh>,
+    /// From the column first going dirty to its mesh being handed over.
+    pub latency: Duration,
 }
 
 enum MeshCommand {
@@ -66,9 +68,20 @@ struct Dispatch {
     dirty: HashSet<(i32, i32)>,
     busy: HashSet<(i32, i32)>,
     origin: Option<[i64; 3]>,
+    /// When each waiting column first went dirty, for mesh latency.
+    since: HashMap<(i32, i32), Instant>,
 }
 
 impl Dispatch {
+    /// Columns to (re)mesh; keeps the time each first went dirty.
+    fn mark(&mut self, keys: impl IntoIterator<Item = (i32, i32)>) {
+        let now = Instant::now();
+        for key in keys {
+            self.since.entry(key).or_insert(now);
+            self.dirty.insert(key);
+        }
+    }
+
     fn next(&mut self, center: (i64, i64)) -> Option<((i32, i32), [i64; 3])> {
         let origin = self.origin?;
         let busy = &self.busy;
@@ -88,9 +101,14 @@ impl Dispatch {
 
     /// A finished mesh to forward, or `None` if it was built for an older
     /// origin (its column is meshed again).
-    fn finish(&mut self, update: MeshUpdate) -> Option<MeshUpdate> {
+    fn finish(&mut self, mut update: MeshUpdate) -> Option<MeshUpdate> {
         self.busy.remove(&update.key);
         if Some(update.origin) == self.origin {
+            if !self.dirty.contains(&update.key)
+                && let Some(since) = self.since.remove(&update.key)
+            {
+                update.latency = since.elapsed();
+            }
             Some(update)
         } else {
             self.dirty.insert(update.key);
@@ -334,7 +352,12 @@ fn mesh_columns(
                         Err(_) => return,
                     };
                     if finished
-                        .send(MeshCommand::Done(MeshUpdate { key, origin, mesh }))
+                        .send(MeshCommand::Done(MeshUpdate {
+                            key,
+                            origin,
+                            mesh,
+                            latency: Duration::ZERO,
+                        }))
                         .is_err()
                     {
                         return;
@@ -359,12 +382,12 @@ fn mesh_columns(
         };
         for command in first.into_iter().chain(inbox.try_iter()) {
             match command {
-                MeshCommand::Dirty(keys) => dispatch.dirty.extend(keys),
+                MeshCommand::Dirty(keys) => dispatch.mark(keys),
                 MeshCommand::Focus(position) => focus = position,
                 MeshCommand::Origin(new) => {
                     dispatch.origin = Some(new);
                     if let Ok(world) = world.read() {
-                        dispatch.dirty.extend(world.columns().map(|(key, _)| key));
+                        dispatch.mark(world.columns().map(|(key, _)| key));
                     }
                 }
                 MeshCommand::Done(update) => {
@@ -1641,7 +1664,31 @@ mod dispatch_tests {
             key,
             origin,
             mesh: None,
+            latency: std::time::Duration::ZERO,
         }
+    }
+
+    #[test]
+    fn mesh_latency_runs_from_first_dirty_to_the_last_rebuild() {
+        let mut dispatch = Dispatch {
+            origin: Some([0; 3]),
+            ..Dispatch::default()
+        };
+        dispatch.mark([(0, 0)]);
+        let first = dispatch.since[&(0, 0)];
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // Dirty again before it meshes: the clock keeps the first time.
+        dispatch.mark([(0, 0)]);
+        assert_eq!(dispatch.since[&(0, 0)], first);
+        let (key, origin) = dispatch.next((0, 0)).unwrap();
+        // Edited while meshing: this mesh is stale, so no latency yet.
+        dispatch.mark([(0, 0)]);
+        let stale = dispatch.finish(done(key, origin)).unwrap();
+        assert_eq!(stale.latency, std::time::Duration::ZERO);
+        let (key, origin) = dispatch.next((0, 0)).unwrap();
+        let fresh = dispatch.finish(done(key, origin)).unwrap();
+        assert!(fresh.latency >= std::time::Duration::from_millis(5));
+        assert!(dispatch.since.is_empty());
     }
 
     #[test]

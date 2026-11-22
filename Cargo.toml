@@ -7,6 +7,7 @@ members = [
     "crates/horizon-world-189",
     "crates/horizon-client-platform",
     "crates/horizon-189-client",
+    "crates/horizon-189-trace",
     "crates/horizon-protocol-47",
     "crates/horizon-guest-stack",
     "crates/horizon-mod-vocab",

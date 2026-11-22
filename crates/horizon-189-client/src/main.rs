@@ -41,6 +41,7 @@ mod style;
 mod sysfont;
 mod terrain;
 mod tooltip;
+mod trace_bench;
 mod ui;
 mod updater;
 mod view;
@@ -125,6 +126,8 @@ struct App {
     bench_cpu: frame_stats::FrameStats,
     bench_wall: frame_stats::FrameStats,
     bench_last: Option<Instant>,
+    /// `--bench-trace` statistics, by phase.
+    trace_bench: Option<trace_bench::TraceBench>,
     container_pointer: container_input::Pointer,
     particles: particles::Particles,
     /// The last client tick particles advanced to.
@@ -1376,6 +1379,11 @@ impl ApplicationHandler for App {
                     for event in &snapshot.inbox {
                         match event {
                             network::ChatEvent::Message(message) => {
+                                if let Some(bench) = &mut self.trace_bench
+                                    && bench.chat(&message.unformatted)
+                                {
+                                    continue;
+                                }
                                 self.chat.receive(&registry.gui, message, tick);
                             }
                             network::ChatEvent::ActionBar(text) => {
@@ -1931,8 +1939,18 @@ impl ApplicationHandler for App {
                                     self.bench_gpu.record(gpu);
                                     self.bench_cpu
                                         .record(frame_started.elapsed().saturating_sub(gpu));
+                                    let draws = renderer.take_draws();
                                     if let Some(last) = self.bench_last.replace(now) {
                                         self.bench_wall.record(now - last);
+                                        if let Some(bench) = &mut self.trace_bench {
+                                            bench.frame(&trace_bench::Frame {
+                                                interval: now - last,
+                                                cpu: frame_started.elapsed().saturating_sub(gpu),
+                                                gpu,
+                                                draws,
+                                                allocations: 0,
+                                            });
+                                        }
                                     }
                                 }
                                 if self.smoke_frames.is_some() && capture.is_none() {
@@ -1957,6 +1975,16 @@ impl ApplicationHandler for App {
                             return;
                         }
                     }
+                }
+                if self.trace_bench.as_ref().is_some_and(|bench| bench.ended)
+                    && let Some(bench) = self.trace_bench.take()
+                {
+                    for line in bench.report() {
+                        eprintln!("{line}");
+                    }
+                    eprintln!("BOBTRACE_DONE frames={}", self.frames);
+                    event_loop.exit();
+                    return;
                 }
                 if self.smoke_frames.is_some_and(|limit| self.frames >= limit) {
                     let mode = if self.network.is_some() {
@@ -2041,6 +2069,11 @@ impl ApplicationHandler for App {
                 break;
             };
             self.meshes_applied += 1;
+            if let Some(bench) = &mut self.trace_bench
+                && update.mesh.is_some()
+            {
+                bench.mesh(update.latency);
+            }
             if let Some(renderer) = &mut self.renderer
                 && let Err(error) = renderer.apply_mesh(update)
             {
@@ -2278,6 +2311,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         bench_cpu: Default::default(),
         bench_wall: Default::default(),
         bench_last: None,
+        trace_bench: options.bench_trace.then(trace_bench::TraceBench::default),
         container_pointer: container_input::Pointer::default(),
         particles: particles::Particles::default(),
         particle_tick: 0,
