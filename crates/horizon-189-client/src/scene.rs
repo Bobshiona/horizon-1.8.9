@@ -433,7 +433,7 @@ impl Scene {
                         Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<TerrainVertex>() as u64,
                             step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![0=>Uint16x4, 1=>Unorm16x2, 2=>Unorm8x4],
+                            attributes: &wgpu::vertex_attr_array![0=>Uint16x4, 1=>Uint16x2, 2=>Unorm8x4],
                         }),
                         Some(wgpu::VertexBufferLayout {
                             array_stride: 12,
@@ -613,9 +613,13 @@ impl Scene {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        // GL_NEAREST_MIPMAP_LINEAR, as vanilla's mipmapped terrain atlas.
+        // GL_NEAREST_MIPMAP_LINEAR, as vanilla's mipmapped terrain atlas. Each sprite
+        // is its own layer, so repeating tiles a greedy-merged quad's sprite once per
+        // block; with nearest texels a 0-1 quad samples exactly as with clamping.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Legacy terrain sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,

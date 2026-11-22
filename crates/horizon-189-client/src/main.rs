@@ -10,6 +10,7 @@ mod debug;
 mod frame_stats;
 mod gameplay;
 mod glass;
+mod greedy;
 mod hand;
 mod hardness;
 mod hud;

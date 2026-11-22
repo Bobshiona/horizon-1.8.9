@@ -40,13 +40,14 @@ struct TerrainOut {
 }
 
 // Packed terrain: column-local position in 1/128 blocks biased by 8 blocks,
-// the sprite layer, and the column's offset from the mesh origin.
+// the sprite layer, texture coordinates, and the column's offset from the mesh origin.
 @vertex
-fn terrain_vertex(@location(0) packed: vec4<u32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) base: vec3<f32>) -> TerrainOut {
+fn terrain_vertex(@location(0) packed: vec4<u32>, @location(1) uv: vec2<u32>, @location(2) color: vec4<f32>, @location(3) base: vec3<f32>) -> TerrainOut {
     var out: TerrainOut;
     let position = vec3<f32>(packed.xyz) / 128.0 - 8.0 + base;
     out.position = camera.view_projection * vec4<f32>(position, 1.0);
-    out.uv = uv;
+    // 1/2048 sprites; a greedy-merged quad runs past 1 and the sampler repeats.
+    out.uv = vec2<f32>(uv) / 2048.0;
     out.layer = packed.w;
     out.color = srgb_to_linear(color.rgb);
     out.relative = position - camera.eye.xyz;

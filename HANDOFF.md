@@ -2103,3 +2103,45 @@ From here the whole gate line set is read before every push, not its tail.
 
 Gate: 263 tests, 12 trace-tool tests, Watchdog pass; clippy clean. No benchmark: no change in
 behaviour or generated code paths.
+
+## 71. Greedy meshing
+
+Previous commit: fee37526cd. Sprint 1.2, second item.
+
+- **Neighbouring full faces that look the same become one quad** (`greedy.rs`). A face takes
+  part when it covers its whole block side on the block boundary and maps exactly one sprite
+  across it in any orientation (`Grid::of`, computed once per baked face); two cells merge
+  only with the same plane, sprite, texture origin and orientation, and colour (tint x face
+  shade x flat light), so light and biome-tint edges stay. Per section, each pass's faces are
+  grouped by plane and merged row by row into rectangles.
+- **Draw order on a plane is kept**: a block's faces in a pass wait for merging only when all
+  of them can, and faces are merged by their rank on the plane, so the grass side overlay
+  still draws after the side it covers. Liquids, translucent faces, block entities and partial
+  faces are emitted as before.
+- **Texture coordinates repeat**: terrain UVs are now unsigned 1/2048 sprites up to 31
+  (`TerrainVertex::UV_SCALE`, `Uint16x2`) and the terrain sampler repeats; each sprite is its
+  own array layer, and with nearest texels a 0-1 quad samples exactly as with clamping
+  (a capture with merging switched off differs from the previous build in 7 pixels, the FPS
+  text). A merged quad whose texture runs backwards is shifted by whole sprites to stay
+  positive.
+
+Measurements, A/B against fee37526cd (three pairs): lobby average FPS +7.1% (+4.3%, +13.5%,
++7.1%), flyover +6.3%, lobby CPU p99 -10.2% (every pair lower), GPU p50 -6% to -8% in every
+pair. Mesh time, alternating in-process runs over a hilly test column: 788 us against 766 us
+per column (+3%). Mesh latency (dirty to handed over) rose in the flyover: p50 4.3-4.6 ->
+4.8-5.2 ms; lobby unchanged within noise. A capture of the replayed session differs from the
+per-block build in 523 of 576,000 pixels, all along far grazing edges where a merged edge's
+vertices snap to the pixel grid differently from per-block edges; the jar test below shows
+every block cell keeps its sprite, colour and texels.
+
+Regressions: grids only for whole boundary faces with one sprite per block (no cull side,
+slab top, half sprite rejected; rotated texture accepted); a uniform floor is one quad
+spanning the section with the sprite repeated per block; a lit square splits a dark floor
+and the area is covered once; mirrored textures shift back to positive coordinates; an
+overlay stays after its base; and with the owned jar, a 3 x 3-column hillside of grass, dirt,
+stone, gravel, leaves and water under patchy sky light meshes with merging to exactly the
+same block cells, passes, sprites, colours and texture corners as without it, the same
+translucent geometry and visibility, and fewer than three quarters of the solid quads
+(`BOB_MESH_TIMING=1` prints the alternating mesh timings).
+
+Gate: 268 tests, 12 trace-tool tests, Watchdog pass.

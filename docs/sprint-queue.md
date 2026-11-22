@@ -71,7 +71,10 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
 - [x] Palette-compressed sections (4/8-bit indirect palettes, shared immutable state tables).
       HANDOFF 69: 263 + 12 tests. Peak RSS 311 -> 268 MB; mesh p99 flyover 66.7 -> 34.3 ms
       (with the world-map hash); FPS within noise of 81428beeae.
-- [ ] Greedy meshing and face culling that respects AO and light boundaries.
+- [x] Greedy meshing and face culling that respects AO and light boundaries.
+      HANDOFF 71: 268 + 12 tests. Lobby FPS +7.1%, flyover +6.3%, CPU p99 -10%, GPU p50 -6 to
+      -8% vs fee37526cd; flyover mesh p50 +0.5 ms. Terrain is flat-lit (no AO yet); merging
+      keys on the full colour, so smooth lighting/AO would split quads the same way.
 - [ ] Bit-packed 8-12 byte chunk vertices and bindless Metal argument buffers.
 - [ ] Distance/frustum-prioritized async meshing; QoS pinning (USER_INTERACTIVE for tick, raw
       mouse and submission; UTILITY for meshing, decoding and pack rebuilds).

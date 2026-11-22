@@ -33,6 +33,29 @@ struct Face {
     shade: f32,
     tint: bool,
     cull: Option<[i32; 3]>,
+    /// Set for a whole block side: greedy meshing may merge it with its neighbours'.
+    grid: Option<crate::greedy::Grid>,
+}
+
+impl Face {
+    fn baked(
+        positions: [[f32; 3]; 4],
+        uv: [[f32; 2]; 4],
+        layer: u32,
+        shade: f32,
+        tint: bool,
+        cull: Option<[i32; 3]>,
+    ) -> Self {
+        Face {
+            grid: crate::greedy::Grid::of(&positions, &uv, cull),
+            positions,
+            uv,
+            layer,
+            shade,
+            tint,
+            cull,
+        }
+    }
 }
 
 struct Model {
@@ -56,6 +79,9 @@ pub struct TerrainVertex {
 impl TerrainVertex {
     pub const SCALE: f32 = 128.0;
     pub const BIAS: f32 = 8.0;
+    /// Texture coordinates in 1/2048 sprites, up to 31 sprites: a greedy quad
+    /// repeats its sprite once per block across a section.
+    pub const UV_SCALE: f32 = 2048.0;
 
     pub fn new(local: [f32; 3], uv: [f32; 2], layer: u32, color: [f32; 3]) -> Self {
         let axis = |value: f32| {
@@ -63,7 +89,7 @@ impl TerrainVertex {
                 .round()
                 .clamp(0.0, 65535.0) as u16
         };
-        let unit = |value: f32| (value.clamp(0.0, 1.0) * 65535.0).round() as u16;
+        let unit = |value: f32| (value.clamp(0.0, 31.0) * Self::UV_SCALE).round() as u16;
         let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
         Self {
             position: [
@@ -246,6 +272,8 @@ pub struct Registry {
     /// Blocks whose item model is a separate `*_inventory` block model, by
     /// (id, metadata or 255 for any).
     inventory: HashMap<(u16, u8), u32>,
+    /// Merge neighbouring full faces (`greedy`); off only to compare against.
+    greedy: bool,
 }
 
 /// The ten crack stages a block shows while it is broken.
@@ -509,17 +537,19 @@ impl Registry {
                         Ok(quads) => {
                             let faces = quads
                                 .into_iter()
-                                .map(|quad| Face {
-                                    positions: quad.positions,
-                                    uv: quad.uv,
-                                    layer: layer_for(&quad.material.sprite, &mut textures),
-                                    shade: if quad.shade {
-                                        face_shade(quad.facing.name())
-                                    } else {
-                                        1.0
-                                    },
-                                    tint: quad.tint_index >= 0,
-                                    cull: quad.cull.map(|side| direction(side.name())),
+                                .map(|quad| {
+                                    Face::baked(
+                                        quad.positions,
+                                        quad.uv,
+                                        layer_for(&quad.material.sprite, &mut textures),
+                                        if quad.shade {
+                                            face_shade(quad.facing.name())
+                                        } else {
+                                            1.0
+                                        },
+                                        quad.tint_index >= 0,
+                                        quad.cull.map(|side| direction(side.name())),
+                                    )
                                 })
                                 .collect();
                             alternatives.push((faces, weight));
@@ -567,17 +597,19 @@ impl Registry {
             };
             let faces = quads
                 .into_iter()
-                .map(|quad| Face {
-                    positions: quad.positions,
-                    uv: quad.uv,
-                    layer: layer_for(&quad.material.sprite, &mut textures),
-                    shade: if quad.shade {
-                        face_shade(quad.facing.name())
-                    } else {
-                        1.0
-                    },
-                    tint: quad.tint_index >= 0,
-                    cull: quad.cull.map(|side| direction(side.name())),
+                .map(|quad| {
+                    Face::baked(
+                        quad.positions,
+                        quad.uv,
+                        layer_for(&quad.material.sprite, &mut textures),
+                        if quad.shade {
+                            face_shade(quad.facing.name())
+                        } else {
+                            1.0
+                        },
+                        quad.tint_index >= 0,
+                        quad.cull.map(|side| direction(side.name())),
+                    )
                 })
                 .collect();
             inventory.insert(key, models.len() as u32);
@@ -767,6 +799,7 @@ impl Registry {
             overlays,
             block_layers,
             inventory,
+            greedy: true,
         };
         let empty = World::default();
         let mut unresolved = Vec::new();
@@ -1134,6 +1167,9 @@ impl Registry {
         let Some(column) = world.column(chunk.0, chunk.1) else {
             return mesh;
         };
+        let mut merger = crate::greedy::Merger::default();
+        // A block's visible faces: face, colour, pass (0 solid, 1 cutout, 2 translucent).
+        let mut visible: Vec<(&Face, [f32; 3], u8)> = Vec::new();
         for section_y in 0..16 {
             let Some(section) = column.section(section_y) else {
                 mesh.close_section(section_y);
@@ -1190,6 +1226,7 @@ impl Registry {
                 };
                 let translucent = info.layer == Layer::Translucent;
                 let mut tint = None;
+                visible.clear();
                 for face in faces {
                     let light_pos = match face.cull {
                         Some([dx, dy, dz]) => {
@@ -1208,28 +1245,62 @@ impl Registry {
                     } else {
                         [1.0; 3]
                     };
-                    let target = if translucent {
-                        &mut mesh.translucent
+                    let pass = if translucent {
+                        2
                     } else if self
                         .cutout
                         .get(face.layer as usize)
                         .copied()
                         .unwrap_or(false)
                     {
-                        &mut mesh.cutout
+                        1
                     } else {
-                        &mut mesh.solid
+                        0
+                    };
+                    visible.push((
+                        face,
+                        color.map(|channel| channel * face.shade * light),
+                        pass,
+                    ));
+                }
+                // A block's faces in a pass wait for merging only when all of them can, so
+                // faces on one plane keep their order (an overlay after its base).
+                let whole = |pass: u8| {
+                    visible
+                        .iter()
+                        .all(|(face, _, of)| *of != pass || face.grid.is_some())
+                };
+                let defer = [self.greedy && whole(0), self.greedy && whole(1)];
+                merger.next_block();
+                for &(face, color, pass) in &visible {
+                    if let Some(grid) = face.grid.filter(|_| pass < 2 && defer[usize::from(pass)]) {
+                        merger.push(
+                            pass,
+                            grid,
+                            &face.positions,
+                            &face.uv,
+                            face.layer,
+                            color,
+                            local,
+                        );
+                        continue;
+                    }
+                    let target = match pass {
+                        0 => &mut mesh.solid,
+                        1 => &mut mesh.cutout,
+                        _ => &mut mesh.translucent,
                     };
                     append(
                         &mut target.vertices,
                         face.positions,
                         face.uv,
                         face.layer,
-                        color.map(|channel| channel * face.shade * light),
+                        color,
                         local,
                     );
                 }
             }
+            merger.flush(&mut mesh.solid, &mut mesh.cutout);
             mesh.close_section(section_y);
         }
         mesh
@@ -1520,7 +1591,7 @@ mod tests {
             let vertex = TerrainVertex::new(local, [0.0, 1.0], 360, [1.0, 0.5, 0.0]);
             assert_eq!(vertex.local(), local);
             assert_eq!(vertex.position[3], 360);
-            assert_eq!(vertex.uv, [0, 65535]);
+            assert_eq!(vertex.uv, [0, 2048]);
             assert_eq!(vertex.color, [255, 128, 0, 255]);
         }
         let liquid = TerrainVertex::new([0.0, 63.0 + 8.0 / 9.0, 0.0], [0.5; 2], 1, [0.8; 3]);
@@ -1667,6 +1738,176 @@ mod tests {
         // Grass sides draw the tinted overlay over the solid dirt side.
         let grass = cutout("grass");
         assert!(grass.contains(&true) && grass.contains(&false));
+        Ok(())
+    }
+
+    /// Every quad cut into its block-sized cells: pass, normal axis, plane, cell,
+    /// sprite, colour and the texture at the cell's corners (whole sprites dropped).
+    fn cells(mesh: &ColumnMesh) -> Vec<(u8, usize, u16, [u16; 2], u16, [u8; 4], [[i32; 2]; 3])> {
+        let mut out = Vec::new();
+        for (pass, terrain) in [(0u8, &mesh.solid), (1, &mesh.cutout)] {
+            for quad in terrain.vertices.chunks(4) {
+                let normal = (0..3)
+                    .find(|&axis| {
+                        quad.iter()
+                            .all(|v| v.position[axis] == quad[0].position[axis])
+                    })
+                    .expect("axis-aligned full faces only");
+                let across: Vec<usize> = (0..3).filter(|&axis| axis != normal).collect();
+                let block = |value: u16| i32::from(value) / 128;
+                let low = across
+                    .iter()
+                    .map(|&a| quad.iter().map(|v| block(v.position[a])).min().unwrap())
+                    .collect::<Vec<_>>();
+                let high = across
+                    .iter()
+                    .map(|&a| quad.iter().map(|v| block(v.position[a])).max().unwrap())
+                    .collect::<Vec<_>>();
+                // The quad's texture as an affine function of the two positions.
+                let corner = |a: i32, b: i32| {
+                    quad.iter()
+                        .find(|v| {
+                            block(v.position[across[0]]) == a && block(v.position[across[1]]) == b
+                        })
+                        .unwrap()
+                };
+                let origin = corner(low[0], low[1]);
+                let (along_a, along_b) = (corner(high[0], low[1]), corner(low[0], high[1]));
+                let uv_at = |a: i32, b: i32| -> [i32; 2] {
+                    std::array::from_fn(|i| {
+                        let o = i32::from(origin.uv[i]);
+                        let da = (i32::from(along_a.uv[i]) - o) / (high[0] - low[0]);
+                        let db = (i32::from(along_b.uv[i]) - o) / (high[1] - low[1]);
+                        o + da * (a - low[0]) + db * (b - low[1])
+                    })
+                };
+                for a in low[0]..high[0] {
+                    for b in low[1]..high[1] {
+                        let corners = [uv_at(a, b), uv_at(a + 1, b), uv_at(a, b + 1)];
+                        let shift = corners[0].map(|v| v.div_euclid(2048) * 2048);
+                        let corners = corners.map(|c| [c[0] - shift[0], c[1] - shift[1]]);
+                        out.push((
+                            pass,
+                            normal,
+                            quad[0].position[normal],
+                            [a as u16, b as u16],
+                            quad[0].position[3],
+                            quad[0].color,
+                            corners,
+                        ));
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    #[test]
+    #[ignore = "Requires HORIZON_189_TEST_JAR pointing at an owned 1.8.9 jar"]
+    fn greedy_meshing_covers_exactly_the_cells_and_texels_of_per_block_faces()
+    -> Result<(), Box<dyn Error>> {
+        use horizon_world_189::{ColumnData, ColumnUpdate, Section};
+        let jar = std::env::var_os("HORIZON_189_TEST_JAR").ok_or("Set HORIZON_189_TEST_JAR")?;
+        let mut registry = Registry::open(Path::new(&jar))?;
+        // Rolling grass over dirt and stone with a lake, gravel, leaves and
+        // patchy sky light, over a 3 x 3 neighbourhood so column edges cull.
+        let mut world = World::default();
+        let mut seed = 0x2545_f491_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                let mut sections: [Option<Section>; 16] = std::array::from_fn(|_| None);
+                for (section_y, section) in sections.iter_mut().enumerate().take(5) {
+                    let mut states = [0u16; 4096];
+                    let mut sky = [0u8; 2048];
+                    for index in 0..4096 {
+                        let (x, y, z) =
+                            (index & 15, section_y * 16 + (index >> 8), (index >> 4) & 15);
+                        let height = 60 + (x / 3 + z / 5) % 4 + usize::from((cx + cz) % 2 == 0);
+                        states[index] = if y < height - 4 {
+                            1 << 4
+                        } else if y < height {
+                            3 << 4
+                        } else if y == height {
+                            if next() % 9 == 0 { 13 << 4 } else { 2 << 4 }
+                        } else if y == height + 1 && next() % 7 == 0 {
+                            18 << 4
+                        } else if y == height + 1 && x < 4 {
+                            9 << 4
+                        } else {
+                            0
+                        };
+                        let level = if y > height + 2 {
+                            15
+                        } else {
+                            (next() % 3) as u8 * 6
+                        };
+                        sky[index >> 1] |= level << ((index & 1) * 4);
+                    }
+                    *section = Some(Section::new(&states, &[0; 2048], Some(&sky)));
+                }
+                world.apply(ColumnUpdate::Data {
+                    x: cx,
+                    z: cz,
+                    full: true,
+                    data: Box::new(ColumnData {
+                        sections,
+                        biomes: None,
+                    }),
+                });
+            }
+        }
+        let merged = registry.mesh_column(&world, (0, 0), [0, 0, 0]);
+        registry.greedy = false;
+        let single = registry.mesh_column(&world, (0, 0), [0, 0, 0]);
+        if std::env::var_os("BOB_MESH_TIMING").is_some() {
+            // Alternating runs, so load on the machine falls on both alike.
+            let mut times = [Vec::new(), Vec::new()];
+            for round in 0..400 {
+                registry.greedy = round % 2 == 0;
+                let start = std::time::Instant::now();
+                std::hint::black_box(registry.mesh_column(&world, (0, 0), [0, 0, 0]));
+                times[round % 2].push(start.elapsed().as_micros());
+            }
+            for (name, mut list) in ["greedy", "per-block"].into_iter().zip(times) {
+                list.sort_unstable();
+                eprintln!(
+                    "MESH_TIMING {name} p50_us={} p90_us={}",
+                    list[list.len() / 2],
+                    list[list.len() * 9 / 10]
+                );
+            }
+            registry.greedy = false;
+        }
+        // Patchy light keeps this terrain from merging much; flat lit floors merge far more.
+        assert!(
+            merged.solid.quads() * 4 < single.solid.quads() * 3,
+            "{} vs {}",
+            merged.solid.quads(),
+            single.solid.quads()
+        );
+        // Liquids, translucent faces and block entities do not merge.
+        assert_eq!(merged.translucent.vertices, single.translucent.vertices);
+        assert_eq!(merged.visibility, single.visibility);
+        // Only full faces merge; check them cell by cell.
+        let full = |mesh: &ColumnMesh| ColumnMesh {
+            solid: TerrainPass {
+                vertices: mesh.solid.vertices.clone(),
+                sections: [0; 17],
+            },
+            cutout: TerrainPass {
+                vertices: mesh.cutout.vertices.clone(),
+                sections: [0; 17],
+            },
+            ..ColumnMesh::default()
+        };
+        assert_eq!(cells(&full(&merged)), cells(&full(&single)));
         Ok(())
     }
 
