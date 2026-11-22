@@ -33,6 +33,8 @@ pub struct Options {
     pub bench: bool,
     /// `--bench-trace`: the packet-trace benchmark (see `trace_bench`).
     pub bench_trace: bool,
+    /// `--watchdog`: the scripted session for the parity suite.
+    pub watchdog: bool,
     /// Validation only: look this many degrees down once in the world.
     pub smoke_pitch: Option<f32>,
     /// Create or refresh the app in Applications from this program.
@@ -109,6 +111,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-menu                  With --smoke-frames, open the mod menu\n\
     --bench                       With --smoke-frames, time uncapped CPU and GPU frames\n\
     --bench-trace                 Packet-trace benchmark against horizon-189-trace serve\n\
+    --watchdog                    Every module on, scripted session for the parity suite\n\
     --smoke-launcher              With --smoke-frames, show the launcher signed out\n\
     --smoke-page N                With --smoke-launcher, open page N (0 Home to 4 Settings)\n\
     --smoke-settings              With --smoke-frames, open the settings screen\n\
@@ -281,6 +284,11 @@ impl Options {
                 "--smoke-inventory" => options.smoke_inventory = true,
                 "--smoke-menu" => options.smoke_menu = true,
                 "--bench" => options.bench = true,
+                "--watchdog" => {
+                    // Every module on and a scripted session (`watchdog`).
+                    options.watchdog = true;
+                    options.smoke_frames = Some(100_000_000);
+                }
                 "--bench-trace" => {
                     // Uncapped frames until the trace server's end marker.
                     options.bench = true;
@@ -400,6 +408,7 @@ impl Options {
         }
         if (options.autopilot
             || options.autopilot_fly
+            || options.watchdog
             || options.smoke_chat.is_some()
             || options.smoke_tab
             || options.smoke_inventory)
@@ -412,7 +421,9 @@ impl Options {
         {
             return Err("Scripted validation requires a loopback server".into());
         }
-        if (options.autopilot || options.autopilot_fly) && options.server.is_none() {
+        if (options.autopilot || options.autopilot_fly || options.watchdog)
+            && options.server.is_none()
+        {
             return Err("--autopilot requires --server".into());
         }
         if options.assets.is_some() && options.smoke_frames.is_none() && options.server.is_none() {

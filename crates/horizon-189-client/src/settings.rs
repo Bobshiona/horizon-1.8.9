@@ -91,7 +91,6 @@ pub struct Toggles {
     pub zoom: bool,
     pub smooth_zoom: bool,
     pub toggle_sprint: bool,
-    pub toggle_sneak: bool,
     pub fullbright: bool,
     /// Frame cap: 0 follows the display (vsync), otherwise frames per second;
     /// `u32::MAX` is unlimited.
@@ -145,7 +144,6 @@ impl Default for Toggles {
             zoom: true,
             smooth_zoom: true,
             toggle_sprint: false,
-            toggle_sneak: false,
             fullbright: false,
             fps_limit: 0,
             scoreboard_numbers: true,
@@ -285,7 +283,6 @@ impl Settings {
                 zoom: flag("zoom", d.zoom),
                 smooth_zoom: flag("smooth_zoom", d.smooth_zoom),
                 toggle_sprint: flag("toggle_sprint", d.toggle_sprint),
-                toggle_sneak: flag("toggle_sneak", d.toggle_sneak),
                 fullbright: flag("fullbright", d.fullbright),
                 fps_limit: t
                     .get("fps_limit")
@@ -340,7 +337,6 @@ impl Settings {
                 "zoom": t.zoom,
                 "smooth_zoom": t.smooth_zoom,
                 "toggle_sprint": t.toggle_sprint,
-                "toggle_sneak": t.toggle_sneak,
                 "fullbright": t.fullbright,
                 "fps_limit": t.fps_limit,
                 "scoreboard_numbers": t.scoreboard_numbers,
@@ -371,6 +367,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_sneak_is_gone_and_old_files_still_load() {
+        // Toggle Sneak is on the never-build list: a file from an older
+        // build that had it on loads, keeps its other toggles, and the key
+        // is never written back.
+        let old = Settings::parse(r#"{"toggles":{"toggle_sneak":true,"toggle_sprint":true}}"#);
+        assert!(old.toggles.toggle_sprint);
+        assert!(!old.to_json().contains("sneak"));
+    }
 
     #[test]
     fn settings_round_trip_and_reject_bad_values() {

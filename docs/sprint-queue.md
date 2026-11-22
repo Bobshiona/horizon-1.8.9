@@ -33,10 +33,11 @@ Baseline: b5a1582f95, 251 tests, Live Arena launcher.
 
 ## Found during setup
 
-- [ ] ToggleSneak is on the never-build list but ships today (`toggles.toggle_sneak`, the Mods
+- [x] ToggleSneak is on the never-build list but ships today (`toggles.toggle_sneak`, the Mods
       page, the Right Shift menu, the launcher). Remove it and migrate saved settings.
-- [ ] The Watchdog suite does not exist yet; it is built in 1.1 alongside the packet-trace
-      server, since both drive the client through a scripted session.
+      Removed in HANDOFF 67.
+- [x] The Watchdog suite does not exist yet; it is built in 1.1 alongside the packet-trace
+      server, since both drive the client through a scripted session. HANDOFF 67.
 
 ## Phase 1: Native Metal/Rust performance ceiling, input and network latency
 
@@ -50,8 +51,12 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       Shipped in the commit after b5a1582f95 (HANDOFF 66): 262 tests. Lobby 657 FPS (1% 374,
       CPU p99 0.94 ms), flyover 745 FPS (1% 296, mesh p99 32.5 ms), 265 MB. Allocations per
       frame wait for the counting allocator.
-- [ ] Watchdog packet-parity suite (every PvP module on, C03-C06 cadence, C0A before C02, no
+- [x] Watchdog packet-parity suite (every PvP module on, C03-C06 cadence, C0A before C02, no
       C0B in menus, no extra packets).
+      HANDOFF 67: `tools/bob-watchdog.sh`, in the gate. 257 + 12 tests. A/B vs 4d421d79bc:
+      lobby -0.6%, flyover -3.7%, CPU p99 -3.1% (no regression). The benchmark gate is now A/B
+      against origin/main (median of paired ratios); the trace was re-recorded from the
+      ground.
 - [ ] CLI Metal System Trace / Instruments profiling script.
 - [ ] Global allocator `mimalloc`; `release-max` profile (fat LTO, one codegen unit,
       `panic = "abort"`, optional `-C target-cpu=native`).

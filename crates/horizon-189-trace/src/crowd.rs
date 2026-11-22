@@ -161,7 +161,19 @@ fn byte_angle(degrees: f64) -> i8 {
 
 impl Crowd {
     /// `count` players around `centre` (feet position), from `seed`.
+    #[cfg(test)]
     pub fn new(count: usize, centre: [f64; 3], seed: u32) -> (Self, Vec<Vec<u8>>) {
+        Self::with_partner(count, centre, None, seed)
+    }
+
+    /// As `new`, plus with `facing` (the player's yaw) a sparring partner
+    /// standing still 2.2 blocks straight ahead, inside attack reach.
+    pub fn with_partner(
+        count: usize,
+        centre: [f64; 3],
+        facing: Option<f32>,
+        seed: u32,
+    ) -> (Self, Vec<Vec<u8>>) {
         let mut rng = Rng(seed.max(1));
         let mut fighters = Vec::with_capacity(count);
         let mut names = Vec::with_capacity(count);
@@ -189,6 +201,26 @@ impl Crowd {
             });
             let uuid = 0xB0B0_0000_0000_4000_8000_0000_0000_0000u128 | i as u128;
             names.push((uuid, format!("Bench{i:02}")));
+        }
+        if let Some(yaw) = facing {
+            // The look vector for a yaw is (-sin, cos) on x and z.
+            let yaw = f64::from(yaw).to_radians();
+            let at = [centre[0] - yaw.sin() * 2.2, centre[2] + yaw.cos() * 2.2];
+            fighters.push(Fighter {
+                id: FIRST_ID + count as i32,
+                anchor: at,
+                fixed: [
+                    (at[0] * 32.0).round() as i32,
+                    (centre[1] * 32.0).round() as i32,
+                    (at[1] * 32.0).round() as i32,
+                ],
+                phase: 0.0,
+                speed: 0.0,
+                radius: 0.0,
+                swing_every: 5,
+            });
+            let uuid = 0xB0B0_0000_0000_4000_8000_0000_0000_FFFFu128;
+            names.push((uuid, "Sparring".to_owned()));
         }
         let mut packets = vec![packet::tab_add(&names)];
         for (fighter, (uuid, _)) in fighters.iter().zip(&names) {
@@ -307,6 +339,24 @@ mod tests {
             let dz = f64::from(f.fixed[2]) / 32.0 - f.anchor[1];
             assert!((dx * dx + dz * dz).sqrt() < f.radius + 0.2);
         }
+    }
+
+    #[test]
+    fn the_sparring_partner_stands_in_reach_straight_ahead() {
+        // Facing south (yaw 0) is +z.
+        let (crowd, packets) = Crowd::with_partner(2, [0.5, 64.0, 0.5], Some(0.0), 1);
+        let partner = crowd.fighters.last().unwrap();
+        assert_eq!(partner.fixed, [16, 64 * 32, (2.7f64 * 32.0).round() as i32]);
+        assert_eq!(crowd.fighters.len(), 3);
+        assert_eq!(packets.len(), 1 + 3 * 2);
+        // Facing west (yaw 90) is -x; it never moves.
+        let (mut crowd, _) = Crowd::with_partner(0, [0.0, 64.0, 0.0], Some(90.0), 1);
+        let start = crowd.fighters[0].fixed;
+        assert_eq!(start[0], (-2.2f64 * 32.0).round() as i32);
+        for _ in 0..50 {
+            crowd.tick();
+        }
+        assert_eq!(crowd.fighters[0].fixed, start);
     }
 
     #[test]

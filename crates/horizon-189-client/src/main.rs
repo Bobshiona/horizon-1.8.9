@@ -45,6 +45,7 @@ mod trace_bench;
 mod ui;
 mod updater;
 mod view;
+mod watchdog;
 
 use horizon_client_platform::is_quit_shortcut_down;
 use horizon_physics_189::player::{EYE_HEIGHT, Keys};
@@ -126,6 +127,8 @@ struct App {
     bench_cpu: frame_stats::FrameStats,
     bench_wall: frame_stats::FrameStats,
     bench_last: Option<Instant>,
+    /// `--watchdog`: the scripted parity session.
+    watchdog: Option<watchdog::Watchdog>,
     /// `--bench-trace` statistics, by phase.
     trace_bench: Option<trace_bench::TraceBench>,
     container_pointer: container_input::Pointer,
@@ -159,7 +162,6 @@ struct App {
     zoom_at: Instant,
     /// Toggle Sprint / Toggle Sneak latches.
     sprint_latched: bool,
-    sneak_latched: bool,
     /// The fullbright state the terrain was last meshed with.
     fullbright: bool,
     menu: menu::Menu,
@@ -397,6 +399,419 @@ impl App {
         self.release_cursor();
     }
 
+    /// A key from the window, or from the Watchdog script, which presses
+    /// keys exactly where the keyboard does.
+    fn key_input(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        key: KeyCode,
+        pressed: bool,
+        repeat: bool,
+        text: Option<&str>,
+    ) {
+        // `dispatchKeypresses`: F2 works over any screen.
+        if pressed
+            && !repeat
+            && key == KeyCode::F2
+            && let Some(renderer) = &mut self.renderer
+        {
+            renderer.screenshot = true;
+        }
+        if self.launcher_shown() {
+            if pressed {
+                if key == KeyCode::KeyQ && self.modifiers.super_key() {
+                    event_loop.exit();
+                    return;
+                }
+                let before = self.settings.clone();
+                let action = self
+                    .launcher
+                    .as_mut()
+                    .and_then(|launcher| launcher.key(key, text, &mut self.settings));
+                if self.settings != before {
+                    self.settings_changed(&before);
+                }
+                self.launcher_action(event_loop, action);
+            }
+            return;
+        }
+        if self.connection.active() {
+            if pressed && !repeat {
+                match self.connection.key_action(key, self.modifiers.super_key()) {
+                    Some(connection::Action::Reconnect) => self.reconnect(event_loop),
+                    Some(connection::Action::Quit) => self.quit_or_back(event_loop),
+                    None => {}
+                }
+            }
+            return;
+        }
+        if self.chat.open {
+            if !pressed {
+                self.keyboard.release(key);
+            } else if key == KeyCode::KeyQ
+                && self.modifiers.super_key()
+                && !self.modifiers.shift_key()
+            {
+                event_loop.exit();
+            } else {
+                self.chat_key(key, text);
+            }
+            return;
+        }
+        let screen = self.network.as_ref().is_some_and(|network| {
+            network
+                .shared
+                .lock()
+                .is_ok_and(|s| s.inventory.open || s.vitals.health <= 0.0)
+        });
+        if pressed
+            && !repeat
+            && !screen
+            && self.network.is_some()
+            && matches!(key, KeyCode::KeyT | KeyCode::Slash)
+            && !self.modifiers.super_key()
+        {
+            self.open_chat(if key == KeyCode::Slash { "/" } else { "" });
+            return;
+        }
+        // Right Shift opens the mod menu over the world; while it
+        // or the HUD editor is up it takes every key.
+        if pressed && !repeat && key == KeyCode::ShiftRight && !screen && self.network.is_some() {
+            self.menu.toggle();
+            if !self.menu.active() {
+                self.save_settings();
+            }
+            return;
+        }
+        if self.menu.active() {
+            // Typing searches the open menu; Escape clears the
+            // search first, then closes.
+            let used = pressed && self.menu.key(key, text);
+            if pressed && !used && !repeat && key == KeyCode::Escape {
+                self.menu.close();
+                self.save_settings();
+            }
+            if !pressed {
+                self.keyboard.release(key);
+            }
+            return;
+        }
+        if self.pause.active() {
+            if pressed && !repeat && key == KeyCode::Escape {
+                self.pause.back();
+                self.save_settings();
+            }
+            if !pressed {
+                self.keyboard.release(key);
+            }
+            return;
+        }
+        if key == KeyCode::Tab {
+            self.tab_held = pressed && !screen;
+        }
+        if pressed && !repeat {
+            let toggles = self.settings.toggles;
+            if toggles.toggle_sprint
+                && matches!(
+                    key,
+                    KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft
+                )
+            {
+                self.sprint_latched = !self.sprint_latched;
+            }
+        }
+        if pressed {
+            self.keyboard.press(key, repeat);
+        } else {
+            self.keyboard.release(key);
+        }
+        if is_quit_shortcut_down(self.keyboard.state(), self.keyboard.held()) {
+            event_loop.exit();
+            return;
+        }
+        if pressed && !repeat {
+            if self.network.is_some() {
+                if key != KeyCode::F3 && self.keyboard.down(KeyCode::F3) {
+                    match self.view.combo(key, screen) {
+                        Some(view::Combo::ClearChat) => self.chat.clear(),
+                        // F3+H saves the options, as vanilla does.
+                        Some(view::Combo::AdvancedTooltips) => {
+                            let t = &mut self.settings.toggles;
+                            t.advanced_tooltips = !t.advanced_tooltips;
+                            self.save_settings();
+                        }
+                        Some(view::Combo::ReloadChunks) => {
+                            if let Some(network) = &self.network
+                                && let Ok(mut shared) = network.shared.lock()
+                            {
+                                shared.remesh = true;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                self.view.key(key, screen);
+            }
+            if let Some(network) = &self.network
+                && let Ok(mut state) = network.shared.lock()
+            {
+                use gameplay::Action;
+                let action = if state.vitals.health <= 0.0 {
+                    // Enter stands in for the Respawn button, which
+                    // GuiGameOver enables only after twenty ticks.
+                    if matches!(key, KeyCode::Enter | KeyCode::NumpadEnter)
+                        && self.hud.respawn_ready(self.tick())
+                    {
+                        Some(Action::Respawn)
+                    } else {
+                        None
+                    }
+                } else if state.inventory.open {
+                    // GuiContainer.keyTyped: hotbar keys and Q act
+                    // on the hovered slot.
+                    let hovered = self.renderer.as_ref().and_then(|r| {
+                        hud::hovered_slot(&state.inventory, r.layout, self.mouse_gui())
+                    });
+                    let digit = hotbar_digit(key);
+                    match (key, hovered, digit) {
+                        (KeyCode::KeyE | KeyCode::Escape, _, _) => {
+                            self.container_pointer.clear();
+                            Some(Action::CloseInventory)
+                        }
+                        (_, Some(slot), Some(button)) if state.inventory.cursor.is_none() => {
+                            Some(Action::Click {
+                                slot,
+                                mode: 2,
+                                button,
+                            })
+                        }
+                        (KeyCode::KeyQ, Some(slot), _) => Some(Action::Click {
+                            slot,
+                            mode: 4,
+                            button: u8::from(self.modifiers.control_key()),
+                        }),
+                        _ => None,
+                    }
+                } else {
+                    match key {
+                        KeyCode::KeyQ => Some(Action::Drop {
+                            all: self.modifiers.control_key(),
+                        }),
+                        KeyCode::Digit1 => Some(Action::Select(0)),
+                        KeyCode::Digit2 => Some(Action::Select(1)),
+                        KeyCode::Digit3 => Some(Action::Select(2)),
+                        KeyCode::Digit4 => Some(Action::Select(3)),
+                        KeyCode::Digit5 => Some(Action::Select(4)),
+                        KeyCode::Digit6 => Some(Action::Select(5)),
+                        KeyCode::Digit7 => Some(Action::Select(6)),
+                        KeyCode::Digit8 => Some(Action::Select(7)),
+                        KeyCode::Digit9 => Some(Action::Select(8)),
+                        KeyCode::KeyE if !state.inventory.open => Some(Action::OpenInventory),
+                        KeyCode::KeyE | KeyCode::Escape if state.inventory.open => {
+                            self.container_pointer.clear();
+                            Some(Action::CloseInventory)
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(action) = action
+                    && state.input.actions.len() < 128
+                {
+                    state.input.actions.push_back(action);
+                }
+            }
+            if key == KeyCode::Escape {
+                // GuiIngameMenu, when no other screen is open.
+                if !screen && self.network.is_some() {
+                    self.pause.open();
+                }
+                self.release_cursor();
+            }
+        }
+        self.publish_keys();
+    }
+
+    /// A mouse button from the window, or from the Watchdog script.
+    fn mouse_input(&mut self, event_loop: &ActiveEventLoop, button: MouseButton, pressed: bool) {
+        if self.launcher_shown() {
+            if pressed
+                && button == MouseButton::Left
+                && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+            {
+                let mouse = self.mouse_gui();
+                let status = self
+                    .updater
+                    .as_ref()
+                    .map_or(updater::Status::Off, updater::Updater::status);
+                let before = self.settings.clone();
+                let action = self.launcher.as_mut().and_then(|launcher| {
+                    launcher.click(layout, mouse, &mut self.settings, &status)
+                });
+                if self.settings != before {
+                    self.settings_changed(&before);
+                }
+                self.launcher_action(event_loop, action);
+            }
+            return;
+        }
+        if self.connection.active() {
+            if pressed
+                && button == MouseButton::Left
+                && let Some(renderer) = &self.renderer
+            {
+                match self.connection.action_at(renderer.layout, self.mouse_gui()) {
+                    Some(connection::Action::Reconnect) => self.reconnect(event_loop),
+                    Some(connection::Action::Quit) => self.quit_or_back(event_loop),
+                    None => {}
+                }
+            }
+            return;
+        }
+        if self.pause.active() {
+            if button == MouseButton::Left
+                && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+            {
+                if pressed {
+                    let mouse = self.mouse_gui();
+                    let click = self.pause.press(layout, mouse, &mut self.settings);
+                    self.pause_click(event_loop, click);
+                } else if self.pause.release() {
+                    self.save_settings();
+                }
+            }
+            return;
+        }
+        if self.menu.active() {
+            let mouse = self.mouse_gui();
+            if button == MouseButton::Left
+                && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+            {
+                if !pressed {
+                    if self.menu.release() {
+                        self.save_settings();
+                    }
+                } else if self.menu.editing {
+                    self.menu.press(mouse, &self.hud_rects);
+                } else {
+                    let click = self.menu.click(layout, mouse, &mut self.settings);
+                    if click != menu::Click::Nothing {
+                        self.save_settings();
+                    }
+                    if click == menu::Click::Disconnect {
+                        self.back_to_launcher(event_loop);
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(index) = match button {
+            MouseButton::Left => Some(0),
+            MouseButton::Right => Some(1),
+            _ => None,
+        } {
+            let eligible = self.focused
+                && self.captured
+                && !self.chat.open
+                && self.network.as_ref().is_some_and(|network| {
+                    network
+                        .shared
+                        .lock()
+                        .is_ok_and(|s| !s.inventory.open && s.vitals.health > 0.0)
+                });
+            self.metrics
+                .button(index, pressed, eligible, self.started.elapsed());
+        }
+        let mouse = self.mouse_gui();
+        if self.chat.open {
+            if pressed
+                && button == MouseButton::Left
+                && let Some(registry) = self.renderer.as_ref().and_then(|r| r.registry.clone())
+            {
+                let height = self.renderer.as_ref().map_or(0.0, |r| r.layout.height);
+                let request = self.chat.click(&registry.gui, height, mouse);
+                self.chat_request(request);
+            }
+            return;
+        }
+        let layout = self.renderer.as_ref().map(|r| r.layout);
+        let tick = self.tick();
+        let death = layout.and_then(|layout| self.hud.death_button_at(layout, mouse, tick));
+        if pressed && button == MouseButton::Left && death == Some(hud::DeathButton::TitleScreen) {
+            event_loop.exit();
+            return;
+        }
+        let mut open = false;
+        if let Some(network) = &self.network
+            && let Ok(mut state) = network.shared.lock()
+        {
+            open = state.inventory.open || state.vitals.health <= 0.0;
+            if open {
+                if let Some(layout) = layout {
+                    if state.vitals.health <= 0.0 {
+                        if pressed
+                            && button == MouseButton::Left
+                            && death == Some(hud::DeathButton::Respawn)
+                            && state.input.actions.len() < 128
+                        {
+                            state.input.actions.push_back(gameplay::Action::Respawn);
+                        }
+                    } else if matches!(button, MouseButton::Left | MouseButton::Right)
+                        && state.input.actions.len() < 128
+                    {
+                        // GuiContainer.mouseClicked: a slot, or -999
+                        // outside the window to drop the carried stack.
+                        let slot =
+                            hud::hovered_slot(&state.inventory, layout, mouse).or_else(|| {
+                                (!hud::inside_window(&state.inventory, layout, mouse))
+                                    .then_some(-999)
+                            });
+                        let button = u8::from(button == MouseButton::Right);
+                        let clicks = if pressed {
+                            self.container_pointer.press(
+                                &state.inventory,
+                                slot,
+                                button,
+                                self.modifiers.shift_key(),
+                                Instant::now(),
+                            )
+                        } else {
+                            self.container_pointer
+                                .release(&state.inventory, slot, button)
+                        };
+                        if !clicks.is_empty() && state.input.actions.len() < 128 {
+                            let window = state.inventory.window;
+                            state
+                                .input
+                                .actions
+                                .push_back(gameplay::Action::ContainerGesture { window, clicks });
+                        }
+                    }
+                }
+            } else if self.captured {
+                let action = match button {
+                    MouseButton::Left => {
+                        state.input.attack = pressed;
+                        Some(gameplay::Action::Attack)
+                    }
+                    MouseButton::Right => {
+                        state.input.using = pressed;
+                        Some(gameplay::Action::Use)
+                    }
+                    _ => None,
+                };
+                if pressed
+                    && let Some(action) = action
+                    && state.input.actions.len() < 128
+                {
+                    state.input.actions.push_back(action);
+                }
+            }
+        }
+        if !open && !self.captured && pressed && button == MouseButton::Left {
+            self.capture_cursor();
+        }
+    }
+
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
         self.failure = Some(error.to_string());
         event_loop.exit();
@@ -610,9 +1025,6 @@ impl App {
             if toggles.toggle_sprint {
                 keys.sprint = self.sprint_latched;
             }
-            if toggles.toggle_sneak {
-                keys.sneak = self.sneak_latched;
-            }
             keys
         } else {
             Keys::default()
@@ -790,238 +1202,13 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let PhysicalKey::Code(key) = event.physical_key {
-                    let pressed = event.state == ElementState::Pressed;
-                    // `dispatchKeypresses`: F2 works over any screen.
-                    if pressed
-                        && !event.repeat
-                        && key == KeyCode::F2
-                        && let Some(renderer) = &mut self.renderer
-                    {
-                        renderer.screenshot = true;
-                    }
-                    if self.launcher_shown() {
-                        if pressed {
-                            if key == KeyCode::KeyQ && self.modifiers.super_key() {
-                                event_loop.exit();
-                                return;
-                            }
-                            let before = self.settings.clone();
-                            let action = self.launcher.as_mut().and_then(|launcher| {
-                                launcher.key(key, event.text.as_deref(), &mut self.settings)
-                            });
-                            if self.settings != before {
-                                self.settings_changed(&before);
-                            }
-                            self.launcher_action(event_loop, action);
-                        }
-                        return;
-                    }
-                    if self.connection.active() {
-                        if pressed && !event.repeat {
-                            match self.connection.key_action(key, self.modifiers.super_key()) {
-                                Some(connection::Action::Reconnect) => self.reconnect(event_loop),
-                                Some(connection::Action::Quit) => self.quit_or_back(event_loop),
-                                None => {}
-                            }
-                        }
-                        return;
-                    }
-                    if self.chat.open {
-                        if !pressed {
-                            self.keyboard.release(key);
-                        } else if key == KeyCode::KeyQ
-                            && self.modifiers.super_key()
-                            && !self.modifiers.shift_key()
-                        {
-                            event_loop.exit();
-                        } else {
-                            self.chat_key(key, event.text.as_deref());
-                        }
-                        return;
-                    }
-                    let screen = self.network.as_ref().is_some_and(|network| {
-                        network
-                            .shared
-                            .lock()
-                            .is_ok_and(|s| s.inventory.open || s.vitals.health <= 0.0)
-                    });
-                    if pressed
-                        && !event.repeat
-                        && !screen
-                        && self.network.is_some()
-                        && matches!(key, KeyCode::KeyT | KeyCode::Slash)
-                        && !self.modifiers.super_key()
-                    {
-                        self.open_chat(if key == KeyCode::Slash { "/" } else { "" });
-                        return;
-                    }
-                    // Right Shift opens the mod menu over the world; while it
-                    // or the HUD editor is up it takes every key.
-                    if pressed
-                        && !event.repeat
-                        && key == KeyCode::ShiftRight
-                        && !screen
-                        && self.network.is_some()
-                    {
-                        self.menu.toggle();
-                        if !self.menu.active() {
-                            self.save_settings();
-                        }
-                        return;
-                    }
-                    if self.menu.active() {
-                        // Typing searches the open menu; Escape clears the
-                        // search first, then closes.
-                        let used = pressed && self.menu.key(key, event.text.as_deref());
-                        if pressed && !used && !event.repeat && key == KeyCode::Escape {
-                            self.menu.close();
-                            self.save_settings();
-                        }
-                        if !pressed {
-                            self.keyboard.release(key);
-                        }
-                        return;
-                    }
-                    if self.pause.active() {
-                        if pressed && !event.repeat && key == KeyCode::Escape {
-                            self.pause.back();
-                            self.save_settings();
-                        }
-                        if !pressed {
-                            self.keyboard.release(key);
-                        }
-                        return;
-                    }
-                    if key == KeyCode::Tab {
-                        self.tab_held = pressed && !screen;
-                    }
-                    if pressed && !event.repeat {
-                        let toggles = self.settings.toggles;
-                        if toggles.toggle_sprint
-                            && matches!(
-                                key,
-                                KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft
-                            )
-                        {
-                            self.sprint_latched = !self.sprint_latched;
-                        }
-                        if toggles.toggle_sneak && key == KeyCode::ShiftLeft {
-                            self.sneak_latched = !self.sneak_latched;
-                        }
-                    }
-                    if event.state == ElementState::Pressed {
-                        self.keyboard.press(key, event.repeat);
-                    } else {
-                        self.keyboard.release(key);
-                    }
-                    if is_quit_shortcut_down(self.keyboard.state(), self.keyboard.held()) {
-                        event_loop.exit();
-                        return;
-                    }
-                    if event.state == ElementState::Pressed && !event.repeat {
-                        if self.network.is_some() {
-                            if key != KeyCode::F3 && self.keyboard.down(KeyCode::F3) {
-                                match self.view.combo(key, screen) {
-                                    Some(view::Combo::ClearChat) => self.chat.clear(),
-                                    // F3+H saves the options, as vanilla does.
-                                    Some(view::Combo::AdvancedTooltips) => {
-                                        let t = &mut self.settings.toggles;
-                                        t.advanced_tooltips = !t.advanced_tooltips;
-                                        self.save_settings();
-                                    }
-                                    Some(view::Combo::ReloadChunks) => {
-                                        if let Some(network) = &self.network
-                                            && let Ok(mut shared) = network.shared.lock()
-                                        {
-                                            shared.remesh = true;
-                                        }
-                                    }
-                                    None => {}
-                                }
-                            }
-                            self.view.key(key, screen);
-                        }
-                        if let Some(network) = &self.network
-                            && let Ok(mut state) = network.shared.lock()
-                        {
-                            use gameplay::Action;
-                            let action = if state.vitals.health <= 0.0 {
-                                // Enter stands in for the Respawn button, which
-                                // GuiGameOver enables only after twenty ticks.
-                                if matches!(key, KeyCode::Enter | KeyCode::NumpadEnter)
-                                    && self.hud.respawn_ready(self.tick())
-                                {
-                                    Some(Action::Respawn)
-                                } else {
-                                    None
-                                }
-                            } else if state.inventory.open {
-                                // GuiContainer.keyTyped: hotbar keys and Q act
-                                // on the hovered slot.
-                                let hovered = self.renderer.as_ref().and_then(|r| {
-                                    hud::hovered_slot(&state.inventory, r.layout, self.mouse_gui())
-                                });
-                                let digit = hotbar_digit(key);
-                                match (key, hovered, digit) {
-                                    (KeyCode::KeyE | KeyCode::Escape, _, _) => {
-                                        self.container_pointer.clear();
-                                        Some(Action::CloseInventory)
-                                    }
-                                    (_, Some(slot), Some(button))
-                                        if state.inventory.cursor.is_none() =>
-                                    {
-                                        Some(Action::Click {
-                                            slot,
-                                            mode: 2,
-                                            button,
-                                        })
-                                    }
-                                    (KeyCode::KeyQ, Some(slot), _) => Some(Action::Click {
-                                        slot,
-                                        mode: 4,
-                                        button: u8::from(self.modifiers.control_key()),
-                                    }),
-                                    _ => None,
-                                }
-                            } else {
-                                match key {
-                                    KeyCode::KeyQ => Some(Action::Drop {
-                                        all: self.modifiers.control_key(),
-                                    }),
-                                    KeyCode::Digit1 => Some(Action::Select(0)),
-                                    KeyCode::Digit2 => Some(Action::Select(1)),
-                                    KeyCode::Digit3 => Some(Action::Select(2)),
-                                    KeyCode::Digit4 => Some(Action::Select(3)),
-                                    KeyCode::Digit5 => Some(Action::Select(4)),
-                                    KeyCode::Digit6 => Some(Action::Select(5)),
-                                    KeyCode::Digit7 => Some(Action::Select(6)),
-                                    KeyCode::Digit8 => Some(Action::Select(7)),
-                                    KeyCode::Digit9 => Some(Action::Select(8)),
-                                    KeyCode::KeyE if !state.inventory.open => {
-                                        Some(Action::OpenInventory)
-                                    }
-                                    KeyCode::KeyE | KeyCode::Escape if state.inventory.open => {
-                                        self.container_pointer.clear();
-                                        Some(Action::CloseInventory)
-                                    }
-                                    _ => None,
-                                }
-                            };
-                            if let Some(action) = action
-                                && state.input.actions.len() < 128
-                            {
-                                state.input.actions.push_back(action);
-                            }
-                        }
-                        if key == KeyCode::Escape {
-                            // GuiIngameMenu, when no other screen is open.
-                            if !screen && self.network.is_some() {
-                                self.pause.open();
-                            }
-                            self.release_cursor();
-                        }
-                    }
-                    self.publish_keys();
+                    self.key_input(
+                        event_loop,
+                        key,
+                        event.state == ElementState::Pressed,
+                        event.repeat,
+                        event.text.as_deref(),
+                    );
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -1105,189 +1292,7 @@ impl ApplicationHandler for App {
                 state: button_state,
                 button,
                 ..
-            } => {
-                let pressed = button_state == ElementState::Pressed;
-                if self.launcher_shown() {
-                    if pressed
-                        && button == MouseButton::Left
-                        && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
-                    {
-                        let mouse = self.mouse_gui();
-                        let status = self
-                            .updater
-                            .as_ref()
-                            .map_or(updater::Status::Off, updater::Updater::status);
-                        let before = self.settings.clone();
-                        let action = self.launcher.as_mut().and_then(|launcher| {
-                            launcher.click(layout, mouse, &mut self.settings, &status)
-                        });
-                        if self.settings != before {
-                            self.settings_changed(&before);
-                        }
-                        self.launcher_action(event_loop, action);
-                    }
-                    return;
-                }
-                if self.connection.active() {
-                    if pressed
-                        && button == MouseButton::Left
-                        && let Some(renderer) = &self.renderer
-                    {
-                        match self.connection.action_at(renderer.layout, self.mouse_gui()) {
-                            Some(connection::Action::Reconnect) => self.reconnect(event_loop),
-                            Some(connection::Action::Quit) => self.quit_or_back(event_loop),
-                            None => {}
-                        }
-                    }
-                    return;
-                }
-                if self.pause.active() {
-                    if button == MouseButton::Left
-                        && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
-                    {
-                        if pressed {
-                            let mouse = self.mouse_gui();
-                            let click = self.pause.press(layout, mouse, &mut self.settings);
-                            self.pause_click(event_loop, click);
-                        } else if self.pause.release() {
-                            self.save_settings();
-                        }
-                    }
-                    return;
-                }
-                if self.menu.active() {
-                    let mouse = self.mouse_gui();
-                    if button == MouseButton::Left
-                        && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
-                    {
-                        if !pressed {
-                            if self.menu.release() {
-                                self.save_settings();
-                            }
-                        } else if self.menu.editing {
-                            self.menu.press(mouse, &self.hud_rects);
-                        } else {
-                            let click = self.menu.click(layout, mouse, &mut self.settings);
-                            if click != menu::Click::Nothing {
-                                self.save_settings();
-                            }
-                            if click == menu::Click::Disconnect {
-                                self.back_to_launcher(event_loop);
-                            }
-                        }
-                    }
-                    return;
-                }
-                if let Some(index) = match button {
-                    MouseButton::Left => Some(0),
-                    MouseButton::Right => Some(1),
-                    _ => None,
-                } {
-                    let eligible = self.focused
-                        && self.captured
-                        && !self.chat.open
-                        && self.network.as_ref().is_some_and(|network| {
-                            network
-                                .shared
-                                .lock()
-                                .is_ok_and(|s| !s.inventory.open && s.vitals.health > 0.0)
-                        });
-                    self.metrics
-                        .button(index, pressed, eligible, self.started.elapsed());
-                }
-                let mouse = self.mouse_gui();
-                if self.chat.open {
-                    if pressed
-                        && button == MouseButton::Left
-                        && let Some(registry) =
-                            self.renderer.as_ref().and_then(|r| r.registry.clone())
-                    {
-                        let height = self.renderer.as_ref().map_or(0.0, |r| r.layout.height);
-                        let request = self.chat.click(&registry.gui, height, mouse);
-                        self.chat_request(request);
-                    }
-                    return;
-                }
-                let layout = self.renderer.as_ref().map(|r| r.layout);
-                let tick = self.tick();
-                let death = layout.and_then(|layout| self.hud.death_button_at(layout, mouse, tick));
-                if pressed
-                    && button == MouseButton::Left
-                    && death == Some(hud::DeathButton::TitleScreen)
-                {
-                    event_loop.exit();
-                    return;
-                }
-                let mut open = false;
-                if let Some(network) = &self.network
-                    && let Ok(mut state) = network.shared.lock()
-                {
-                    open = state.inventory.open || state.vitals.health <= 0.0;
-                    if open {
-                        if let Some(layout) = layout {
-                            if state.vitals.health <= 0.0 {
-                                if pressed
-                                    && button == MouseButton::Left
-                                    && death == Some(hud::DeathButton::Respawn)
-                                    && state.input.actions.len() < 128
-                                {
-                                    state.input.actions.push_back(gameplay::Action::Respawn);
-                                }
-                            } else if matches!(button, MouseButton::Left | MouseButton::Right)
-                                && state.input.actions.len() < 128
-                            {
-                                // GuiContainer.mouseClicked: a slot, or -999
-                                // outside the window to drop the carried stack.
-                                let slot = hud::hovered_slot(&state.inventory, layout, mouse)
-                                    .or_else(|| {
-                                        (!hud::inside_window(&state.inventory, layout, mouse))
-                                            .then_some(-999)
-                                    });
-                                let button = u8::from(button == MouseButton::Right);
-                                let clicks = if pressed {
-                                    self.container_pointer.press(
-                                        &state.inventory,
-                                        slot,
-                                        button,
-                                        self.modifiers.shift_key(),
-                                        Instant::now(),
-                                    )
-                                } else {
-                                    self.container_pointer
-                                        .release(&state.inventory, slot, button)
-                                };
-                                if !clicks.is_empty() && state.input.actions.len() < 128 {
-                                    let window = state.inventory.window;
-                                    state.input.actions.push_back(
-                                        gameplay::Action::ContainerGesture { window, clicks },
-                                    );
-                                }
-                            }
-                        }
-                    } else if self.captured {
-                        let action = match button {
-                            MouseButton::Left => {
-                                state.input.attack = pressed;
-                                Some(gameplay::Action::Attack)
-                            }
-                            MouseButton::Right => {
-                                state.input.using = pressed;
-                                Some(gameplay::Action::Use)
-                            }
-                            _ => None,
-                        };
-                        if pressed
-                            && let Some(action) = action
-                            && state.input.actions.len() < 128
-                        {
-                            state.input.actions.push_back(action);
-                        }
-                    }
-                }
-                if !open && !self.captured && pressed && button == MouseButton::Left {
-                    self.capture_cursor();
-                }
-            }
+            } => self.mouse_input(event_loop, button, button_state == ElementState::Pressed),
             WindowEvent::RedrawRequested => {
                 if self.smoke_frames.is_some_and(|limit| self.frames >= limit) {
                     return;
@@ -2138,6 +2143,40 @@ impl ApplicationHandler for App {
             self.open_chat("/");
             eprintln!("SMOKE_CHAT_SENT chars={}", text.chars().count());
         }
+        if self.watchdog.is_some() {
+            let tick = self
+                .network
+                .as_ref()
+                .and_then(|n| n.shared.lock().ok().map(|s| s.moves_sent))
+                .unwrap_or(0);
+            let steps = self
+                .watchdog
+                .as_mut()
+                .map(|w| w.due(tick))
+                .unwrap_or_default();
+            for step in steps {
+                match step {
+                    watchdog::Step::Key(key, pressed) => {
+                        self.key_input(event_loop, key, pressed, false, None);
+                    }
+                    watchdog::Step::Click(button, pressed) => {
+                        self.mouse_input(event_loop, button, pressed);
+                    }
+                    watchdog::Step::Capture => {
+                        self.capture_cursor();
+                        // A smoke window may not hold focus to lock the
+                        // pointer; the game still treats it as captured.
+                        self.captured = true;
+                        self.publish_keys();
+                    }
+                    watchdog::Step::Done => {
+                        eprintln!("WATCHDOG_SCRIPT_DONE ticks={tick}");
+                        event_loop.exit();
+                        return;
+                    }
+                }
+            }
+        }
         if let Some(error) = self
             .network
             .as_ref()
@@ -2237,6 +2276,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let preview = options.smoke_launcher;
     let launcher_mode = options.launcher() || preview;
     let from_launcher = options.started_by_launcher();
+    let watchdog = options.watchdog;
     let smoke_page = options.smoke_page;
     if launcher_mode {
         let home = std::env::var_os("HOME").ok_or("No home directory")?;
@@ -2312,6 +2352,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         bench_wall: Default::default(),
         bench_last: None,
         trace_bench: options.bench_trace.then(trace_bench::TraceBench::default),
+        watchdog: watchdog.then(watchdog::Watchdog::new),
         container_pointer: container_input::Pointer::default(),
         particles: particles::Particles::default(),
         particle_tick: 0,
@@ -2380,12 +2421,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         zoom: 1.0,
         zoom_at: Instant::now(),
         sprint_latched: false,
-        sneak_latched: false,
         fullbright: false,
     };
     if launcher_mode || from_launcher {
         // The app's own settings, not command-line defaults.
         app.apply_video();
+    }
+    if watchdog {
+        watchdog::enable_everything(&mut app.settings, &mut app.view);
+        eprintln!("WATCHDOG_WINDOWS {}", watchdog::closed());
     }
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.failure {

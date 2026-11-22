@@ -4,17 +4,22 @@
 //! and an offline-mode server and writes every play packet both ways.
 //!
 //! `serve --listen ADDR --trace FILE [--until MS] [--crowd N --crowd-at MS
-//! [--crowd-until MS] --seed S] [--phase NAME@MS]... [--log FILE]` is that
+//! [--crowd-until MS] [--sparring] --seed S] [--phase NAME@MS]... [--log FILE]` is that
 //! server again: it
 //! logs the client in offline, replays the recorded server packets on their
 //! recorded timeline, adds the seeded crowd, marks benchmark phases with
 //! `BOBTRACE PHASE <name>` chat lines and the end with `BOBTRACE END`, and
 //! can log everything the client sends for the packet-parity checks.
+//! `check --log FILE [--closed FROM-TO,...]` runs the Watchdog parity rules
+//! (`parity`) over a client log, with the ticks a screen was open; it prints
+//! `WATCHDOG_PASS` or one `WATCHDOG_FAIL` line per problem and exits 1.
+//!
 //! Nothing here talks to a real network service; traces and logs stay
 //! private (they hold the test world).
 #![forbid(unsafe_code)]
 
 mod crowd;
+mod parity;
 mod trace;
 
 use horizon_protocol_47::{Connection, read_string, read_varint, write_string, write_varint};
@@ -33,6 +38,7 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("record") => parse_record(&args[1..]).and_then(|(l, s, o)| record(&l, &s, o)),
         Some("serve") => parse_serve(&args[1..]).and_then(serve),
+        Some("check") => check(&args[1..]),
         _ => Err(io::Error::other(
             "usage: horizon-189-trace record|serve ... (see the source header)",
         )),
@@ -85,6 +91,8 @@ struct Serve {
     /// When the crowd is removed; never if unset.
     crowd_until: Option<u32>,
     seed: u32,
+    /// A still fighter straight ahead of the player, for real attacks.
+    sparring: bool,
     phases: Vec<(u32, String)>,
     log: Option<PathBuf>,
 }
@@ -104,6 +112,7 @@ fn parse_serve(args: &[String]) -> io::Result<Serve> {
             "--crowd-at" => serve.crowd_at = number(value(args, &mut i)?)?,
             "--crowd-until" => serve.crowd_until = Some(number(value(args, &mut i)?)?),
             "--seed" => serve.seed = number(value(args, &mut i)?)?,
+            "--sparring" => serve.sparring = true,
             "--log" => serve.log = Some(PathBuf::from(value(args, &mut i)?)),
             "--phase" => {
                 let text = value(args, &mut i)?;
@@ -123,9 +132,60 @@ fn parse_serve(args: &[String]) -> io::Result<Serve> {
     Ok(serve)
 }
 
+fn check(args: &[String]) -> io::Result<()> {
+    let (mut log, mut windows) = (None, Vec::new());
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--log" => log = Some(PathBuf::from(value(args, &mut i)?)),
+            "--closed" => {
+                for part in value(args, &mut i)?.split(',') {
+                    windows.push(
+                        parity::Window::parse(part)
+                            .ok_or_else(|| io::Error::other(format!("bad window {part}")))?,
+                    );
+                }
+            }
+            other => return Err(io::Error::other(format!("unknown argument {other}"))),
+        }
+        i += 1;
+    }
+    let log = log.ok_or_else(|| io::Error::other("check needs --log"))?;
+    let records = trace::read(File::open(log)?)?;
+    let sent = records
+        .iter()
+        .filter(|r| r.direction == Direction::ToServer)
+        .count();
+    let mut counts = std::collections::BTreeMap::new();
+    for record in records
+        .iter()
+        .filter(|r| r.direction == Direction::ToServer)
+    {
+        let id = horizon_protocol_47::read_varint(&mut &record.body[..]).unwrap_or(-1);
+        *counts.entry(id).or_insert(0u32) += 1;
+    }
+    let counts: Vec<String> = counts
+        .iter()
+        .map(|(id, n)| format!("{id:#04x}x{n}"))
+        .collect();
+    println!("WATCHDOG_SENT {}", counts.join(" "));
+    let problems = parity::check(&records, &windows);
+    if problems.is_empty() {
+        println!("WATCHDOG_PASS packets={sent} windows={}", windows.len());
+        return Ok(());
+    }
+    for problem in &problems {
+        println!("WATCHDOG_FAIL {problem}");
+    }
+    std::process::exit(1);
+}
+
+/// Write one record and flush it, so a log stays whole however the process
+/// ends (the Watchdog script stops the server once the client is done).
 fn log_record(file: &Mutex<BufWriter<File>>, record: &Record) {
     if let Ok(mut file) = file.lock() {
         let _ = trace::write_record(&mut *file, record);
+        let _ = file.flush();
     }
 }
 
@@ -211,8 +271,8 @@ fn replayable(record: &Record) -> bool {
     record.body.first() != Some(&0x40)
 }
 
-/// The position in an absolute 0x08 Player Position And Look.
-fn teleport(body: &[u8]) -> Option<[f64; 3]> {
+/// The position and yaw in an absolute 0x08 Player Position And Look.
+fn teleport(body: &[u8]) -> Option<([f64; 3], f32)> {
     if body.len() < 1 + 3 * 8 + 2 * 4 + 1 || body[0] != 0x08 {
         return None;
     }
@@ -221,7 +281,8 @@ fn teleport(body: &[u8]) -> Option<[f64; 3]> {
         return None;
     }
     let read = |at: usize| f64::from_be_bytes(body[at..at + 8].try_into().unwrap_or([0; 8]));
-    Some([read(1), read(9), read(17)])
+    let yaw = f32::from_be_bytes(body[25..29].try_into().unwrap_or([0; 4]));
+    Some(([read(1), read(9), read(17)], yaw))
 }
 
 /// One thing the server sends, at a time on the trace's timeline.
@@ -320,6 +381,7 @@ fn serve(serve: Serve) -> io::Result<()> {
         }
     });
     let mut centre = [0.5, 64.0, 0.5];
+    let mut facing = 0.0f32;
     let mut crowd: Option<crowd::Crowd> = None;
     let result = (|| -> io::Result<()> {
         for (at, event) in &events {
@@ -330,13 +392,15 @@ fn serve(serve: Serve) -> io::Result<()> {
             match event {
                 Event::Recorded(i) => {
                     let body = &records[*i].body;
-                    if let Some(position) = teleport(body) {
-                        centre = position;
+                    if let Some((position, yaw)) = teleport(body) {
+                        (centre, facing) = (position, yaw);
                     }
                     writer.send(body)?;
                 }
                 Event::CrowdSpawn => {
-                    let (spawned, packets) = crowd::Crowd::new(serve.crowd, centre, serve.seed);
+                    let partner = serve.sparring.then_some(facing);
+                    let (spawned, packets) =
+                        crowd::Crowd::with_partner(serve.crowd, centre, partner, serve.seed);
                     for body in packets {
                         writer.send(&body)?;
                     }
@@ -473,7 +537,7 @@ mod tests {
         body.extend_from_slice(&0f32.to_be_bytes());
         body.extend_from_slice(&0f32.to_be_bytes());
         body.push(0);
-        assert_eq!(teleport(&body), Some([10.5, 70.0, -3.25]));
+        assert_eq!(teleport(&body), Some(([10.5, 70.0, -3.25], 0.0)));
         *body.last_mut().unwrap() = 1; // relative x
         assert_eq!(teleport(&body), None);
         assert_eq!(teleport(&[0x08, 1]), None);

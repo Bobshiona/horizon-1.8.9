@@ -124,6 +124,8 @@ impl Dispatch {
 /// State the window thread and the simulation exchange every frame/tick.
 #[derive(Default)]
 pub struct Shared {
+    /// Movement packets sent: one a tick, the Watchdog script's clock.
+    pub moves_sent: u64,
     pub keys: Keys,
     pub input: crate::gameplay::Input,
     pub inventory: Arc<crate::inventory::View>,
@@ -1538,6 +1540,9 @@ fn run_actor(
             }
             {
                 let mut state = lock(shared)?;
+                if updated {
+                    state.moves_sent += 1;
+                }
                 if let Some(chunks) = state.view_distance.take() {
                     writer.send(&play::client_settings(chunks))?;
                 }

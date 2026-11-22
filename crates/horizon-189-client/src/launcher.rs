@@ -112,7 +112,6 @@ enum Mod {
     Zoom,
     SmoothZoom,
     ToggleSprint,
-    ToggleSneak,
     Fullbright,
     ScoreboardNumbers,
     AdvancedTooltips,
@@ -120,7 +119,7 @@ enum Mod {
     Outline,
 }
 
-const MODS: [Mod; 16] = [
+const MODS: [Mod; 15] = [
     Mod::Hud(HudKind::Keystrokes),
     Mod::Hud(HudKind::Cps),
     Mod::Hud(HudKind::Fps),
@@ -131,7 +130,6 @@ const MODS: [Mod; 16] = [
     Mod::Zoom,
     Mod::SmoothZoom,
     Mod::ToggleSprint,
-    Mod::ToggleSneak,
     Mod::Fullbright,
     Mod::ScoreboardNumbers,
     Mod::AdvancedTooltips,
@@ -152,7 +150,6 @@ impl Mod {
             Mod::Zoom => "Zoom",
             Mod::SmoothZoom => "Smooth Zoom",
             Mod::ToggleSprint => "Toggle Sprint",
-            Mod::ToggleSneak => "Toggle Sneak",
             Mod::Fullbright => "Fullbright",
             Mod::ScoreboardNumbers => "Scoreboard Numbers",
             Mod::AdvancedTooltips => "Advanced Tooltips",
@@ -168,7 +165,6 @@ impl Mod {
             Mod::Zoom => t.zoom,
             Mod::SmoothZoom => t.smooth_zoom,
             Mod::ToggleSprint => t.toggle_sprint,
-            Mod::ToggleSneak => t.toggle_sneak,
             Mod::Fullbright => t.fullbright,
             Mod::ScoreboardNumbers => t.scoreboard_numbers,
             Mod::AdvancedTooltips => t.advanced_tooltips,
@@ -197,7 +193,6 @@ impl Mod {
             Mod::Zoom => flip(&mut t.zoom),
             Mod::SmoothZoom => flip(&mut t.smooth_zoom),
             Mod::ToggleSprint => flip(&mut t.toggle_sprint),
-            Mod::ToggleSneak => flip(&mut t.toggle_sneak),
             Mod::Fullbright => flip(&mut t.fullbright),
             Mod::ScoreboardNumbers => flip(&mut t.scoreboard_numbers),
             Mod::AdvancedTooltips => flip(&mut t.advanced_tooltips),

@@ -1956,3 +1956,56 @@ the recording's disconnect; the histogram (quantiles, 1% lows, overflow), phase 
 splitting, and mesh latency from first dirty through a stale rebuild.
 
 Gate: 254 client tests and 8 trace-tool tests.
+
+## 67. The Watchdog packet-parity suite; Toggle Sneak removed
+
+Previous commit: 4d421d79bc. Sprint standing rule (Watchdog gate) and the never-build list.
+
+- **Toggle Sneak is gone** (it is on the never-build list): the setting, its key latch, and its
+  cards in the Right Shift menu and the launcher's Mods page. Older settings files with it on
+  still load and the key is never written back. Toggle Sprint stays (sprint only; the network
+  thread still decides C0B by vanilla's rules).
+- **`horizon-189-trace check`** runs the rules over everything a client sent: only packets a
+  vanilla client sends in such a session; 18-22 movement packets in every whole second; a
+  position at least every 21st tick (vanilla tests `positionUpdateTicks >= 20` before raising
+  it, so a still player sends 20 look-only packets between positions - the first draft said 19
+  and the client was right); every attack directly after its swing (C0A then C02); sneak and
+  sprint start/stop strictly alternating; no sneak C0B while a screen is open (a stop in the
+  first two ticks, from keys released on opening, is vanilla); settings and brand once.
+- **`--watchdog`** switches every module on (all HUD cards, zoom, smooth zoom, Toggle Sprint,
+  fullbright, scoreboard numbers, advanced tooltips, a custom crosshair and outline, hitboxes)
+  and plays a fixed script through the same key and mouse handlers the window uses: five swings
+  at a sparring partner, walk, latch sprint, jump, sneak, sneak held with the inventory open,
+  sneak held with the Right Shift menu open, F5 three times, zoom, F3+B. Its clock is the
+  number of movement packets the network thread has sent, which is exactly how the checker
+  counts ticks, so the screen windows (110-140, 145-165) line up with the server's log. The
+  window's keyboard and mouse handlers became `key_input` and `mouse_input` for this (no
+  behaviour change).
+- **`serve --sparring`** adds a still fighter 2.2 blocks straight ahead of the player's
+  recorded facing, so the script's swings land real attacks; `tools/bob-watchdog.sh` fails if no
+  attack reaches the server, so the swing-then-attack rule is always exercised. Client logs are
+  flushed per record so they stay whole however the server stops.
+- **Re-recorded trace.** The first recording started where an aborted one ended, mid-air at
+  y 80.5, so its lobby had the player falling past a floating crowd. Section 66's absolute
+  numbers belong to that trace. The test server's saved player was reset and the session
+  recorded again from the ground (y 68.0, 47.9 s, rise at 14.5 s).
+- **Benchmark gate is now A/B.** Benchmarks run on a Mac in use (a browser playing video took
+  lobby from about 655 to 380 FPS), so a fixed baseline flags load, not code. The gate builds
+  origin/main's client once per commit and runs three pairs in alternating order; the verdict is
+  the median of the per-pair new/base ratios (lobby FPS -3%, flyover FPS -5%, lobby CPU p99
+  +25%). This commit against 4d421d79bc: lobby -0.6%, flyover -3.7%, CPU p99 -3.1% (pairs
+  -27.6%, -0.6%, +1.3% / -32.7%, -3.7%, +2.3%; the first pair straddled a load spike). An earlier
+  six-pair run under lighter load showed no consistent difference either; nothing in the frame
+  loop changed.
+
+The suite on this commit: 235 packets (5 keep-alives, 4 attacks after 5 swings, 143 C03, 67 C04,
+1 C06, 6 entity actions, inventory close, status, settings, brand), both windows clean,
+WATCHDOG_PASS three runs in a row.
+
+Regressions: every rule passes a vanilla session and catches its own break (foreign packet,
+double-rate movement, 21 ticks without position and 20 allowed, attack without swing, double
+sprint start, sneak inside a window with the opening stop allowed, settings twice, a window past
+the end); window parsing; the sparring partner's placement for two facings and stillness; the
+script's order, key pairing and windows; enabling everything; Toggle Sneak settings migration.
+
+Gate: 257 client tests, 12 trace-tool tests, Watchdog pass.

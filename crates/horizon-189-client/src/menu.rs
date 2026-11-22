@@ -17,7 +17,6 @@ pub enum Entry {
     Zoom,
     SmoothZoom,
     ToggleSprint,
-    ToggleSneak,
     Fullbright,
     ScoreboardNumbers,
     Crosshair,
@@ -35,7 +34,6 @@ fn entries() -> Vec<Entry> {
         Entry::Zoom,
         Entry::SmoothZoom,
         Entry::ToggleSprint,
-        Entry::ToggleSneak,
         Entry::Fullbright,
         Entry::ScoreboardNumbers,
         Entry::Crosshair,
@@ -84,7 +82,6 @@ impl Entry {
             Entry::Zoom => "Zoom (C)",
             Entry::SmoothZoom => "Smooth Zoom",
             Entry::ToggleSprint => "Toggle Sprint",
-            Entry::ToggleSneak => "Toggle Sneak",
             Entry::Fullbright => "Fullbright",
             Entry::ScoreboardNumbers => "Scoreboard Numbers",
             Entry::VanillaMenu => "Vanilla Menu",
@@ -97,9 +94,7 @@ impl Entry {
     pub fn category(self) -> Category {
         match self {
             Entry::Hud(_) => Category::Hud,
-            Entry::Zoom | Entry::SmoothZoom | Entry::ToggleSprint | Entry::ToggleSneak => {
-                Category::Gameplay
-            }
+            Entry::Zoom | Entry::SmoothZoom | Entry::ToggleSprint => Category::Gameplay,
             Entry::Fullbright
             | Entry::ScoreboardNumbers
             | Entry::Crosshair
@@ -127,7 +122,6 @@ impl Entry {
             Entry::Zoom => t.zoom,
             Entry::SmoothZoom => t.smooth_zoom,
             Entry::ToggleSprint => t.toggle_sprint,
-            Entry::ToggleSneak => t.toggle_sneak,
             Entry::Fullbright => t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers,
             Entry::VanillaMenu => t.vanilla_menu,
@@ -162,7 +156,6 @@ impl Entry {
             Entry::Zoom => t.zoom = !t.zoom,
             Entry::SmoothZoom => t.smooth_zoom = !t.smooth_zoom,
             Entry::ToggleSprint => t.toggle_sprint = !t.toggle_sprint,
-            Entry::ToggleSneak => t.toggle_sneak = !t.toggle_sneak,
             Entry::Fullbright => t.fullbright = !t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers = !t.scoreboard_numbers,
             Entry::VanillaMenu => t.vanilla_menu = !t.vanilla_menu,
@@ -996,7 +989,7 @@ mod tests {
         assert!(menu.geometry(layout).cards.is_empty());
         menu.close();
         assert!(menu.query.is_empty());
-        // All 17 cards don't fit a small window: the wheel scrolls by rows
+        // All 16 cards don't fit a small window: the wheel scrolls by rows
         // and stops at both ends.
         let small = Layout::new((640, 480), 1.0, 2);
         menu.toggle();
