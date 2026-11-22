@@ -9,11 +9,11 @@ fn world(extra: &[([i32; 3], u16)]) -> World {
             let mut sections = std::array::from_fn(|_| None);
             let mut states = vec![0u16; 4096];
             states[3 * 256..4 * 256].fill(1 << 4);
-            sections[0] = Some(Section {
-                states: states.into_boxed_slice().try_into().unwrap(),
-                block_light: vec![0; 2048].into_boxed_slice().try_into().unwrap(),
-                sky_light: Some(vec![0xff; 2048].into_boxed_slice().try_into().unwrap()),
-            });
+            sections[0] = Some(Section::new(
+                &states.try_into().unwrap(),
+                &[0; 2048],
+                Some(&[0xff; 2048]),
+            ));
             world.apply(ColumnUpdate::Data {
                 x: cx,
                 z: cz,

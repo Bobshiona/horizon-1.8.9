@@ -2057,3 +2057,38 @@ Regressions: the main thread's allocation count, which counts only its own block
 without counting; the earlier `--bench-trace` report test.
 
 Gate: 258 client tests (and clippy with `alloc-count`), 12 trace-tool tests, Watchdog pass.
+
+## 69. Palette-compressed sections and a fast hash for world lookups
+
+Previous commit: 81428beeae. Sprint 1.2, first item.
+
+- **Sections are stored compactly** (`horizon_world_189::palette`). The wire's 4096 16-bit
+  states become one value for a uniform section, 4-bit indices into a palette of up to 16
+  states, 8-bit indices for up to 256, or the raw array beyond that; each light plane is one
+  level when every block shares it (block light 0 in most sections, sky light 15 above ground
+  and 0 below) or the 2048-byte plane otherwise. A typical surface section drops from 12 KiB
+  to about 4 KiB. Block changes widen the storage as new states arrive (uniform -> 4 -> 8 bits
+  -> raw) and never lose a block. `Section`'s fields are private now: `state_at`, `states()`
+  (`unpack` fills a 4096-entry array for the mesher's per-section loop), `light`,
+  `has_sky_light`, `heap_bytes`. The mesher unpacks a section once and reads the array.
+- **The world's coordinate maps hash with `horizon_world_189::Keys`**: multiply-rotate per
+  integer with a splitmix64 finish, keyed randomly per map so a server cannot pick colliding
+  columns. The first Time Profiler run showed SipHash at about half of every mesh worker's
+  time (`hash_one` + `DefaultHasher::write` around `World::block` and `World::light`, a
+  dozen lookups per block); it is gone from the profile, and each mesh worker used 363 ms of
+  CPU against 1163 ms for the same session.
+- "Shared immutable state tables": uniform sections and light planes need no table at all;
+  palettes are per section and small (2-512 bytes), so they are not interned.
+
+Measurements, A/B against 81428beeae (gate, three pairs, Mac playing video): lobby FPS -0.2%,
+flyover -1.5%, lobby CPU p99 +0.9% (all inside noise), BENCH_REGRESSION=0. Chunk mesh latency:
+lobby p50 4.1 -> 2.4 ms, p99 12.5 -> 7.7 ms; flyover p50 6.6 -> 4.1 ms, p99 66.7 -> 34.3 ms
+(medians). Resident memory over the session, two runs each: peak 311 / 313 -> 268 / 261 MB,
+mean 289 / 289 -> 245 / 241 MB.
+
+Regressions: each storage form round-trips exactly; block changes widen through every form
+with every block checked; light planes keep both nibbles and collapse only when uniform; a
+decoded surface column's heap size; block changes through the world; the hash spreads a
+render distance's columns over the table, differs per world and separates [1,2,3]/[1,2,4].
+
+Gate: 263 tests, 12 trace-tool tests, Watchdog pass.

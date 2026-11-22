@@ -6,10 +6,14 @@ pub mod block_entities;
 pub mod blocks;
 mod decode;
 pub mod entities;
+mod keys;
+pub mod palette;
 pub mod variants;
 pub use decode::{
     BlockChange, decode_block_change, decode_bulk, decode_chunk, decode_multi_block_change,
 };
+pub use keys::Keys;
+use palette::{Nibbles, States};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,28 +28,70 @@ impl BlockState {
     }
 }
 
+/// A 16-block cube of states and light, stored compactly (see [`palette`]).
 #[derive(Debug)]
 pub struct Section {
-    pub states: Box<[u16; 4096]>,
-    pub block_light: Box<[u8; 2048]>,
-    pub sky_light: Option<Box<[u8; 2048]>>,
+    states: States,
+    block_light: Nibbles,
+    sky_light: Option<Nibbles>,
 }
 
 impl Section {
+    /// A section from the wire's arrays: states indexed `y << 8 | z << 4 | x`,
+    /// light planes two levels per byte, low nibble first.
+    pub fn new(
+        states: &[u16; 4096],
+        block_light: &[u8; 2048],
+        sky_light: Option<&[u8; 2048]>,
+    ) -> Self {
+        Section {
+            states: States::new(states),
+            block_light: Nibbles::new(block_light),
+            sky_light: sky_light.map(Nibbles::new),
+        }
+    }
+
+    /// The section a block change creates where none was sent: air, no block
+    /// light, full sky light.
+    fn empty() -> Self {
+        Section {
+            states: States::Uniform(0),
+            block_light: Nibbles::Uniform(0),
+            sky_light: Some(Nibbles::Uniform(15)),
+        }
+    }
+
     pub fn state(&self, x: u8, y: u8, z: u8) -> Option<BlockState> {
         let index = section_index(x, y, z)?;
-        Some(BlockState(self.states[index]))
+        Some(BlockState(self.states.get(index)))
+    }
+
+    /// The raw state at `y << 8 | z << 4 | x`.
+    #[inline]
+    pub fn state_at(&self, index: usize) -> u16 {
+        self.states.get(index)
+    }
+
+    pub fn states(&self) -> &States {
+        &self.states
     }
 
     pub fn light(&self, x: u8, y: u8, z: u8) -> Option<(u8, u8)> {
         let index = section_index(x, y, z)?;
-        let shift = (index & 1) * 4;
-        let block = (self.block_light[index >> 1] >> shift) & 15;
-        let sky = self
-            .sky_light
-            .as_ref()
-            .map_or(0, |light| (light[index >> 1] >> shift) & 15);
+        let block = self.block_light.get(index);
+        let sky = self.sky_light.as_ref().map_or(0, |light| light.get(index));
         Some((block, sky))
+    }
+
+    pub fn has_sky_light(&self) -> bool {
+        self.sky_light.is_some()
+    }
+
+    /// Bytes this section keeps on the heap.
+    pub fn heap_bytes(&self) -> usize {
+        self.states.heap_bytes()
+            + self.block_light.heap_bytes()
+            + self.sky_light.as_ref().map_or(0, Nibbles::heap_bytes)
     }
 }
 
@@ -105,7 +151,7 @@ impl ChunkColumn {
                 continue;
             };
             for y in (0..16).rev() {
-                let state = section.states[(y << 8) | (z << 4) | x];
+                let state = section.state_at((y << 8) | (z << 4) | x);
                 if blocks::blocks_light(state >> 4) {
                     height = (section_y * 16 + y + 1) as u16;
                     break 'sections;
@@ -119,6 +165,15 @@ impl ChunkColumn {
         self.sections.get(index)?.as_ref()
     }
 
+    /// Bytes the column's sections keep on the heap.
+    pub fn heap_bytes(&self) -> usize {
+        self.sections
+            .iter()
+            .flatten()
+            .map(Section::heap_bytes)
+            .sum()
+    }
+
     pub fn biome(&self, x: u8, z: u8) -> Option<u8> {
         if x >= 16 || z >= 16 {
             return None;
@@ -129,8 +184,8 @@ impl ChunkColumn {
 
 #[derive(Debug, Default)]
 pub struct World {
-    columns: HashMap<(i32, i32), ChunkColumn>,
-    block_entities: HashMap<[i32; 3], block_entities::BlockEntity>,
+    columns: HashMap<(i32, i32), ChunkColumn, Keys>,
+    block_entities: HashMap<[i32; 3], block_entities::BlockEntity, Keys>,
     no_sky: bool,
 }
 
@@ -212,15 +267,11 @@ impl World {
         let Some(column) = self.columns.get_mut(&(x.div_euclid(16), z.div_euclid(16))) else {
             return false;
         };
-        let section = column.sections[y as usize >> 4].get_or_insert_with(|| Section {
-            states: Box::new([0; 4096]),
-            block_light: Box::new([0; 2048]),
-            sky_light: Some(Box::new([0xff; 2048])),
-        });
+        let section = column.sections[y as usize >> 4].get_or_insert_with(Section::empty);
         let index = ((y as usize & 15) << 8)
             | ((z.rem_euclid(16) as usize) << 4)
             | x.rem_euclid(16) as usize;
-        section.states[index] = state.0;
+        section.states.set(index, state.0);
         let column_index = index & 0xff;
         let height = &mut column.heights[column_index];
         if blocks::blocks_light(state.block_id()) {
@@ -267,7 +318,7 @@ impl World {
                     z.rem_euclid(16) as u8,
                 )
                 .map_or((0, 15), |(block, sky)| {
-                    (block, if section.sky_light.is_some() { sky } else { 0 })
+                    (block, if section.has_sky_light() { sky } else { 0 })
                 }),
         }
     }

@@ -109,7 +109,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         for update in updates {
             if let ColumnUpdate::Data { data, .. } = &update {
                 for section in data.sections.iter().flatten() {
-                    for &state in section.states.iter() {
+                    let mut states = [0u16; 4096];
+                    section.states().unpack(&mut states);
+                    for state in states {
                         *block_counts.entry(state >> 4).or_default() += 1;
                     }
                 }

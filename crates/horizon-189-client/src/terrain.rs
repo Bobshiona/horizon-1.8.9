@@ -1139,10 +1139,11 @@ impl Registry {
                 mesh.close_section(section_y);
                 continue;
             };
-            mesh.visibility[section_y] = visibility(|index| {
-                block(BlockState(section.states[index]).block_id()).opaque_cube()
-            });
-            for (index, &raw) in section.states.iter().enumerate() {
+            let mut states = [0u16; 4096];
+            section.states().unpack(&mut states);
+            mesh.visibility[section_y] =
+                visibility(|index| block(BlockState(states[index]).block_id()).opaque_cube());
+            for (index, &raw) in states.iter().enumerate() {
                 if raw == 0 {
                     continue;
                 }

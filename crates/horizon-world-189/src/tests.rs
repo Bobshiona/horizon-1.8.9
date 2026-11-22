@@ -263,3 +263,39 @@ fn open_sky_is_fully_lit_and_heights_follow_block_changes() {
     assert_eq!(world.height(3, 3), Some(41));
     assert_eq!(world.light(3, 41, 3).1, 15);
 }
+
+#[test]
+fn sections_are_stored_compactly_and_block_changes_grow_them() {
+    // Stone below y 8, air above, sky light 15 above and 0 below in every section.
+    let mut world = World::default();
+    let mut data = vec![0u8; 10240 + 2048 + 256];
+    for index in 0..2048 {
+        data[index * 2..index * 2 + 2].copy_from_slice(&(1u16 << 4).to_le_bytes());
+    }
+    data[10240 + 1024..10240 + 2048].fill(0xff);
+    world.apply(decode_chunk(&chunk(3, 4, 1, true, &data), true).unwrap());
+    let column = world.column(3, 4).unwrap();
+    // Two states in 4 bits plus a two-entry palette; uniform block light; mixed sky light.
+    assert_eq!(column.heap_bytes(), 2048 + 4 + 2048);
+    assert!(column.heap_bytes() < (8192 + 2048 + 2048) / 2);
+    assert_eq!(world.light(48, 3, 64), (0, 0));
+    assert_eq!(world.light(48, 12, 64), (0, 15));
+    // Every distinct state a block change brings widens the palette, never loses a block.
+    for n in 0..300u16 {
+        let (x, z) = (48 + i32::from(n % 16), 64 + i32::from(n / 16 % 16));
+        let y = 8 + i32::from(n / 256);
+        assert!(world.set_block(x, y, z, BlockState((n + 2) << 4)));
+    }
+    for n in 0..300u16 {
+        let (x, z) = (48 + i32::from(n % 16), 64 + i32::from(n / 16 % 16));
+        let y = 8 + i32::from(n / 256);
+        assert_eq!(world.block(x, y, z), Some(BlockState((n + 2) << 4)));
+    }
+    assert_eq!(world.block(50, 2, 70), Some(BlockState(1 << 4)));
+    assert_eq!(world.block(50, 15, 70), Some(BlockState(0)));
+    // A change in a section the server never sent makes an empty, sky-lit one.
+    assert!(world.set_block(48, 200, 64, BlockState(1 << 4)));
+    let made = world.column(3, 4).unwrap().section(12).unwrap();
+    assert_eq!(made.light(1, 8, 0), Some((0, 15)));
+    assert_eq!(made.heap_bytes(), 2048 + 4);
+}

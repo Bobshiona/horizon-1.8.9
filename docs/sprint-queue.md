@@ -68,7 +68,9 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       (lobby / flyover).
 
 ### 1.2 OptiFine-class native engine and GPU pipeline
-- [ ] Palette-compressed sections (4/8-bit indirect palettes, shared immutable state tables).
+- [x] Palette-compressed sections (4/8-bit indirect palettes, shared immutable state tables).
+      HANDOFF 69: 263 + 12 tests. Peak RSS 311 -> 268 MB; mesh p99 flyover 66.7 -> 34.3 ms
+      (with the world-map hash); FPS within noise of 81428beeae.
 - [ ] Greedy meshing and face culling that respects AO and light boundaries.
 - [ ] Bit-packed 8-12 byte chunk vertices and bindless Metal argument buffers.
 - [ ] Distance/frustum-prioritized async meshing; QoS pinning (USER_INTERACTIVE for tick, raw

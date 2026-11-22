@@ -42,34 +42,22 @@ fn column(
         if mask & (1 << index) == 0 {
             continue;
         }
-        let states = data[ordinal * 8192..(ordinal + 1) * 8192]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|state| u16::from_le_bytes([state[0], state[1]]))
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-            .try_into()
-            .expect("4096 states");
-        let light_offset = count * 8192 + ordinal * 2048;
-        let block_light = data[light_offset..light_offset + 2048]
-            .to_vec()
-            .into_boxed_slice()
-            .try_into()
-            .expect("2048 light bytes");
-        let sky_light = sky_light.then(|| {
-            let offset = count * (8192 + 2048) + ordinal * 2048;
+        let mut states = [0u16; 4096];
+        for (state, bytes) in states.iter_mut().zip(
+            data[ordinal * 8192..(ordinal + 1) * 8192]
+                .as_chunks::<2>()
+                .0,
+        ) {
+            *state = u16::from_le_bytes(*bytes);
+        }
+        let plane = |offset: usize| -> &[u8; 2048] {
             data[offset..offset + 2048]
-                .to_vec()
-                .into_boxed_slice()
                 .try_into()
-                .expect("2048 sky bytes")
-        });
-        *section = Some(Section {
-            states,
-            block_light,
-            sky_light,
-        });
+                .expect("2048 light bytes")
+        };
+        let block_light = plane(count * 8192 + ordinal * 2048);
+        let sky = sky_light.then(|| plane(count * (8192 + 2048) + ordinal * 2048));
+        *section = Some(Section::new(&states, block_light, sky));
         ordinal += 1;
     }
     let biomes = full.then(|| {
