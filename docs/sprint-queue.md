@@ -94,7 +94,7 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       (Interactive render/input + tick; Utility mesh/decoder/background workers). Physical core
       placement remains with macOS. 309 scoped + 12 trace + 5 gate tests; live-camera smoke required.
       Paired frame p50 -0.51% / -0.57%, CPU p99 +1.35% / -11.28%; captures match below distant water.
-- [x] Persistent GPU terrain render regions with disjoint reusable leases and bounded idle pages.
+- [x] Persistent GPU terrain render regions (`2da5b095bc`) with reusable leases and bounded idle pages.
       311 scoped + 12 trace + 5 gate tests; submitted-data lifetime verified by Metal readback.
       Paired frame p50 -10.97% / -12.80%; CPU p99 +18.48% / -9.96%; captures pixel-identical.
       One CPU-tail outlier retained and profiled; peak RSS median 274 -> 255 MiB.

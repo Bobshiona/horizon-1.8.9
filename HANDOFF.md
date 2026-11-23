@@ -2402,7 +2402,7 @@ No public-server or account action. Next: persistent GPU terrain render regions,
 compute frustum/occlusion culling and actual native MTLIndirectCommandBuffer execution.
 
 
-## 76. Persistent terrain render regions
+## 76. Persistent terrain render regions — 2da5b095bc
 
 Previous checkpoint: b895d0be5d / 4ea22f3b83. Terrain passes now lease disjoint quad-aligned
 ranges inside persistent 3 MiB GPU pages instead of allocating one Metal buffer per column/pass.
