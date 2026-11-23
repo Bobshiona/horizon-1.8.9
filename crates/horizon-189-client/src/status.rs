@@ -144,6 +144,7 @@ impl Pinger {
             let _ = std::thread::Builder::new()
                 .name("Server status".into())
                 .spawn(move || {
+                    crate::scheduling::apply("server-status", crate::scheduling::Class::Utility);
                     let state = match query(&host, port, TIMEOUT) {
                         Ok(info) => State::Online(info),
                         Err(_) => State::Offline,

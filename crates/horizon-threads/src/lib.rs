@@ -916,6 +916,24 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    #[cfg(target_vendor = "apple")]
+    fn utility_work_requests_the_native_utility_class() {
+        std::thread::spawn(|| {
+            assert!(super::far_terrain_current());
+            let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+            let mut relative = 0;
+            // SAFETY: reads the calling test thread's requested class into local variables.
+            let result = unsafe {
+                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut relative)
+            };
+            assert_eq!(result, 0);
+            assert!(matches!(class, libc::qos_class_t::QOS_CLASS_UTILITY));
+        })
+        .join()
+        .unwrap();
+    }
+
     /// A helper goes behind only once a dedicated server asks for it, and
     /// then, on Linux and Android, 10 nice levels below the process or in the idle class.
     #[test]

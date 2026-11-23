@@ -24,7 +24,7 @@ SERVER_URL = f"https://launcher.mojang.com/v1/objects/{SERVER_SHA1}/server.jar"
 PACKAGES = [
     "horizon-189-client", "horizon-protocol-47", "horizon-auth",
     "horizon-world-189", "horizon-assets-189", "horizon-physics-189",
-    "horizon-client-platform",
+    "horizon-client-platform", "horizon-threads",
 ]
 
 
@@ -189,6 +189,8 @@ def main() -> None:
                 child.wait(timeout=60)
             if child.returncode:
                 raise RuntimeError("Native Metal smoke failed")
+            if "MESH_VIEW_READY source=live-camera" not in (ROOT / "reference-gate-metal.log").read_text(errors="replace"):
+                raise AssertionError("Native camera did not reach the mesh scheduler")
             if "<NativeMetal> native chat check" not in server_log.read_text(errors="replace"):
                 raise AssertionError("Server did not receive the chat sent through the chat screen")
             flags = [line for line in server_log.read_text(errors="replace").splitlines() if "moved wrongly" in line or "moved too quickly" in line]

@@ -90,8 +90,10 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       + 12 trace + 5 gate tests. GPU readback matches 260 materials across pages byte for byte.
       Paired frame p50 +0.24% / +1.21%, CPU p99 +1.67% / +3.00%; one CPU-tail outlier profiled.
       Counted allocations rise by about twelve/frame and remain a target for the hot-loop work.
-- [ ] Distance/frustum-prioritized async meshing; QoS pinning (USER_INTERACTIVE for tick, raw
-      mouse and submission; UTILITY for meshing, decoding and pack rebuilds).
+- [x] Distance/frustum-prioritized async meshing with bounded fair service; macOS QoS requests
+      (Interactive render/input + tick; Utility mesh/decoder/background workers). Physical core
+      placement remains with macOS. 309 scoped + 12 trace + 5 gate tests; live-camera smoke required.
+      Paired frame p50 -0.51% / -0.57%, CPU p99 +1.35% / -11.28%; captures match below distant water.
 - [ ] Persistent GPU render regions; Metal compute frustum/occlusion culling into
       `MTLIndirectCommandBuffer`.
 - [ ] Vanilla VisGraph cave occlusion, entity culling, Smart Animations.

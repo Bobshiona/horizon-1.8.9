@@ -68,6 +68,11 @@ struct Dispatch {
     dirty: HashSet<(i32, i32)>,
     busy: HashSet<(i32, i32)>,
     origin: Option<[i64; 3]>,
+    view: Option<crate::mesh_priority::View>,
+    /// A fair-service turn every eight dispatches; hot columns keep their dirty age
+    /// but must not monopolize that turn after already receiving service.
+    dispatched: u64,
+    served: HashMap<(i32, i32), Instant>,
     /// When each waiting column first went dirty, for mesh latency.
     since: HashMap<(i32, i32), Instant>,
 }
@@ -83,19 +88,56 @@ impl Dispatch {
     }
 
     fn next(&mut self, center: (i64, i64)) -> Option<((i32, i32), [i64; 3])> {
+        self.next_at(center, Instant::now())
+    }
+
+    fn next_at(&mut self, center: (i64, i64), now: Instant) -> Option<((i32, i32), [i64; 3])> {
         let origin = self.origin?;
         let busy = &self.busy;
+        let aged_turn = self.dispatched & 7 == 7;
         let &key = self
             .dirty
             .iter()
             .filter(|key| !busy.contains(key))
             .min_by_key(|&&(x, z)| {
-                let dx = i64::from(x) - center.0;
-                let dz = i64::from(z) - center.1;
-                dx * dx + dz * dz
+                // u128 also covers hostile i32 column coordinates without overflow.
+                let dx = (i128::from(x) - i128::from(center.0)).unsigned_abs();
+                let dz = (i128::from(z) - i128::from(center.1)).unsigned_abs();
+                let aged = self.since.get(&(x, z)).copied().filter(|since| {
+                    now.saturating_duration_since(*since) >= Duration::from_millis(250)
+                });
+                let class = if aged_turn && aged.is_some() {
+                    0u8 // Reserve one slot in eight for aged work, least recently served first.
+                } else if dx <= 1 && dz <= 1 {
+                    1 // Keep nearby collision terrain first on the ordinary turns.
+                } else if aged.is_some() {
+                    2
+                } else if self.view.as_ref().is_none_or(|v| v.column_visible((x, z))) {
+                    3
+                } else {
+                    4
+                };
+                let old = class == 0 || class == 2;
+                (
+                    class,
+                    if old {
+                        self.served
+                            .get(&(x, z))
+                            .copied()
+                            .unwrap_or(aged.unwrap_or(now))
+                    } else {
+                        now
+                    },
+                    if old { aged.unwrap_or(now) } else { now },
+                    dx * dx + dz * dz,
+                    x,
+                    z,
+                )
             })?;
         self.dirty.remove(&key);
         self.busy.insert(key);
+        self.dispatched = self.dispatched.wrapping_add(1);
+        self.served.insert(key, now);
         Some((key, origin))
     }
 
@@ -104,10 +146,11 @@ impl Dispatch {
     fn finish(&mut self, mut update: MeshUpdate) -> Option<MeshUpdate> {
         self.busy.remove(&update.key);
         if Some(update.origin) == self.origin {
-            if !self.dirty.contains(&update.key)
-                && let Some(since) = self.since.remove(&update.key)
-            {
-                update.latency = since.elapsed();
+            if !self.dirty.contains(&update.key) {
+                if let Some(since) = self.since.remove(&update.key) {
+                    update.latency = since.elapsed();
+                }
+                self.served.remove(&update.key);
             }
             Some(update)
         } else {
@@ -215,6 +258,8 @@ const INBOX_LIMIT: usize = 512;
 /// F3's mesher numbers, written by the mesher thread.
 #[derive(Default)]
 pub struct MeshStats {
+    /// Latest rendered camera, overwritten without queueing or blocking the window.
+    view: RwLock<Option<crate::mesh_priority::View>>,
     /// Columns waiting or being meshed.
     pub pending: AtomicUsize,
     /// Meshers with no column.
@@ -237,6 +282,12 @@ pub struct Network {
 }
 
 impl Network {
+    pub fn prioritize(&self, view: Option<crate::mesh_priority::View>) {
+        if let Ok(mut latest) = self.mesh_stats.view.try_write() {
+            *latest = view;
+        }
+    }
+
     pub fn start(config: Config, registry: Arc<Registry>) -> io::Result<Self> {
         let (send, meshes) = mpsc::channel();
         let (commands, inbox) = mpsc::channel();
@@ -263,6 +314,7 @@ impl Network {
         let worker = thread::Builder::new()
             .name("Protocol 47".into())
             .spawn(move || {
+                crate::scheduling::apply("tick", crate::scheduling::Class::Interactive);
                 if let Err(error) = run(
                     config, &world, commands, &state, &cancel, &active, &language,
                 ) && !cancel.load(Ordering::Acquire)
@@ -320,6 +372,7 @@ fn mesh_columns(
     stop: &Arc<AtomicBool>,
     stats: &MeshStats,
 ) {
+    crate::scheduling::apply("mesh-coordinator", crate::scheduling::Class::Utility);
     let (jobs, queue) = mpsc::channel::<((i32, i32), [i64; 3])>();
     let queue = Arc::new(Mutex::new(queue));
     let workers = mesher_count();
@@ -335,6 +388,7 @@ fn mesh_columns(
         let spawned = thread::Builder::new()
             .name(format!("Legacy mesher {index}"))
             .spawn(move || {
+                crate::scheduling::apply("mesher", crate::scheduling::Class::Utility);
                 loop {
                     let job = match queue.lock() {
                         Ok(queue) => queue.recv(),
@@ -407,6 +461,12 @@ fn mesh_columns(
             (focus[0] / 16.0).floor() as i64,
             (focus[2] / 16.0).floor() as i64,
         );
+        if let Ok(view) = stats.view.try_read() {
+            if dispatch.view.is_none() && view.is_some() {
+                eprintln!("MESH_VIEW_READY source=live-camera");
+            }
+            dispatch.view = *view;
+        }
         while dispatch.busy.len() < handles.len() {
             let Some(job) = dispatch.next(center) else {
                 break;
@@ -505,6 +565,7 @@ fn run(
     let incoming = thread::Builder::new()
         .name("Protocol 47 reader".into())
         .spawn(move || {
+            crate::scheduling::apply("packet-decoder", crate::scheduling::Class::Utility);
             loop {
                 let packet = reader.receive();
                 let failed = packet.is_err();
@@ -1694,6 +1755,84 @@ mod dispatch_tests {
         let fresh = dispatch.finish(done(key, origin)).unwrap();
         assert!(fresh.latency >= std::time::Duration::from_millis(5));
         assert!(dispatch.since.is_empty());
+    }
+
+    #[test]
+    fn meshing_priority_handles_extreme_server_column_coordinates() {
+        let mut dispatch = Dispatch {
+            origin: Some([0; 3]),
+            ..Dispatch::default()
+        };
+        dispatch.mark([(i32::MIN, i32::MIN), (0, 2)]);
+        assert_eq!(dispatch.next((0, 0)), Some(((0, 2), [0; 3])));
+        assert_eq!(dispatch.next((0, 0)), Some(((i32::MIN, i32::MIN), [0; 3])));
+    }
+
+    #[test]
+    fn continuously_redirtied_nearby_work_cannot_starve_an_old_hidden_column() {
+        use std::time::{Duration, Instant};
+        let mut dispatch = Dispatch {
+            origin: Some([0; 3]),
+            ..Dispatch::default()
+        };
+        dispatch.mark([(1, 0), (0, -4)]);
+        let now = Instant::now() + Duration::from_millis(300);
+        let mut serviced_hidden = false;
+        for _ in 0..8 {
+            let (key, origin) = dispatch.next_at((0, 0), now).unwrap();
+            if key == (0, -4) {
+                serviced_hidden = true;
+                break;
+            }
+            // Another edit arrives before this nearby mesh completes, retaining its dirty age.
+            dispatch.mark([key]);
+            dispatch.finish(done(key, origin));
+        }
+        assert!(
+            serviced_hidden,
+            "reserve service for old work even under saturated nearby edits"
+        );
+    }
+
+    #[test]
+    fn frustum_priority_keeps_near_columns_first_and_ages_hidden_work() {
+        use glam::Vec4;
+        use std::time::{Duration, Instant};
+        for origin in [[0; 3], [30_000_000, 0, -30_000_000]] {
+            let center = (origin[0] / 16, origin[2] / 16);
+            let key = |x, z| ((center.0 + x) as i32, (center.1 + z) as i32);
+            let planes = [Vec4::new(0.0, 0.0, 1.0, 0.0); 5];
+            let mut dispatch = Dispatch {
+                origin: Some(origin),
+                view: crate::mesh_priority::View::new(origin, planes),
+                ..Dispatch::default()
+            };
+            dispatch.mark([key(1, 0), key(0, -2), key(0, 4)]);
+            assert_eq!(
+                dispatch.next(center).unwrap().0,
+                key(1, 0),
+                "near collision neighbourhood first"
+            );
+            assert_eq!(
+                dispatch.next(center).unwrap().0,
+                key(0, 4),
+                "visible before a nearer hidden column"
+            );
+            let now = Instant::now() + Duration::from_millis(300);
+            dispatch.mark([key(0, 3)]);
+            dispatch.since.insert(key(0, 3), now);
+            assert_eq!(
+                dispatch.next_at(center, now).unwrap().0,
+                key(0, -2),
+                "old hidden work cannot starve"
+            );
+            dispatch.view = crate::mesh_priority::View::new(origin, [Vec4::splat(f32::NAN); 5]);
+            assert!(
+                dispatch.view.is_none(),
+                "invalid camera falls back to distance ordering"
+            );
+            assert_eq!(dispatch.next(center).unwrap().0, key(0, 3));
+        }
     }
 
     #[test]

@@ -131,6 +131,7 @@ impl Updater {
             let spawned = std::thread::Builder::new()
                 .name("Updater".into())
                 .spawn(move || {
+                    crate::scheduling::apply("updater", crate::scheduling::Class::Utility);
                     let result = update(&support, &bundle, &shared);
                     let next = match result {
                         Ok(status) => status,

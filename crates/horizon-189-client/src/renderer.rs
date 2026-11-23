@@ -360,6 +360,11 @@ impl Renderer {
         Ok(())
     }
 
+    pub fn mesh_view(&self) -> Option<crate::mesh_priority::View> {
+        let scene = self.scene.as_ref()?;
+        crate::mesh_priority::View::new(scene.origin(), scene.planes(&self.config))
+    }
+
     /// Per-frame eye position, interpolated between simulation ticks.
     pub fn set_pose(&mut self, pose: PositionLook) {
         self.pose = pose;

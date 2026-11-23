@@ -21,6 +21,7 @@ mod items;
 mod keyboard;
 mod launcher;
 mod menu;
+mod mesh_priority;
 mod models;
 mod network;
 mod options;
@@ -33,6 +34,7 @@ mod renderer;
 mod scene;
 #[cfg(test)]
 mod scene_tests;
+mod scheduling;
 mod scoreboard;
 mod screenshot;
 mod settings;
@@ -1526,6 +1528,9 @@ impl ApplicationHandler for App {
                         });
                         renderer.set_fov(fov * self.zoom);
                         renderer.set_pose(camera);
+                        if let Some(network) = &self.network {
+                            network.prioritize(renderer.mesh_view());
+                        }
                         let empty = scoreboard::Scoreboard::default();
                         let (board, own_name) = snapshot
                             .as_ref()
@@ -2303,6 +2308,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         options::Startup::Complete => return Ok(()),
         options::Startup::Window(server) => server,
     };
+    scheduling::apply("render-input", scheduling::Class::Interactive);
     let smoke_frames = options.smoke_frames;
     let mut app = App {
         renderer: None,

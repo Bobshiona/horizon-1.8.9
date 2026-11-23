@@ -2325,3 +2325,78 @@ raw Instruments traces stay with the private trace data. Full source gate rerun:
 `VANILLA_189_REFERENCE_GATE_PASS`, and Watchdog parity. No public-server or account action.
 Next in order: distance/frustum-prioritized async meshing and macOS thread QoS requests. QoS is a
 scheduling request, not a guarantee of physical P/E-core affinity.
+
+
+## 75. View-prioritized asynchronous meshing and macOS QoS
+
+Previous checkpoint: `cd50e589b9` / `9618caed17`. The window publishes its actual current frustum
+(FOV, perspective and mesh origin included) into a latest-value mailbox using try_write. The mesher
+samples it using try_read: no render-thread wait, per-frame channel allocation or unbounded camera
+queue. Camera data and column/frustum math remain portable Rust. Invalid/nonfinite camera planes
+fall back to distance ordering.
+
+Ordinary dispatch turns keep the immediate 3x3 column neighbourhood first, then work waiting at least
+250 ms, then visible columns before off-camera columns. Distance and coordinates break ties.
+One turn in eight reserves service for aged jobs, ordered by least-recent service and dirty age;
+a continuously re-dirtied nearby column cannot monopolize that turn. Completed jobs release their
+service records. An additional stress regression caught starvation in the first priority draft;
+the final fair-service revision gets its own complete gate and A/B run. This only
+changes scheduling: no columns are discarded, one column is never meshed twice concurrently, and
+old-origin results are still rebuilt. A new regression reproduced signed distance overflow on
+(i32::MIN, i32::MIN); u128 distance arithmetic now orders every server column coordinate safely.
+Tests cover nearby terrain, view priority, starvation prevention, large rebased coordinates and
+invalid camera fallback without sleeping.
+
+A portable scheduling policy seam requests Interactive QoS for the render/input and tick threads,
+and Utility for mesh workers/coordinator, packet decoding, skin decoding, screenshots, server status
+and updater work. The macOS implementation calls the existing native backend; other targets retain
+a no-op policy. macOS accepted every observed request in the native smoke. An independent kernel
+getter test verifies the Utility class on a spawned thread; the existing Interactive getter test
+also passes. These are scheduling requests, not measured physical-core affinity: see Apple's
+[Apple silicon performance guide](https://developer.apple.com/documentation/apple-silicon/tuning-your-code-s-performance-for-apple-silicon).
+No protocol fields, simulation rules, TCP settings or player input bindings change.
+
+The managed reference gate now also runs horizon-threads tests. Scope is 273 legacy tests plus
+36 thread/backend tests (309 total), with 12 trace-tool tests and five Python gate tests separately.
+Source gate: strict Clippy (including alloc-count and thread tests), fmt, layers/public-tree, ARM64
+release, `VANILLA_189_REFERENCE_GATE_PASS`, and `WATCHDOG_PASS packets=235 windows=2`.
+Review also caught the camera publication attached to the launcher-only branch, where the network
+is absent. It now follows the live camera's final FOV and pose, including camera effects. The
+reference gate requires MESH_VIEW_READY from that live path, so a disconnected publication can no
+longer pass the native smoke. Earlier priority-fair timings/captures were pilots for the incomplete
+wiring and are not the shipped revision's evidence. The corrected live-camera revision receives
+a fresh full gate, three alternating A/B pairs, captures and counted telemetry before shipping.
+
+Final corrected live-camera evidence (three alternating pairs against the argument-buffer default):
+
+| Phase / metric | Previous default median | Priority / QoS median |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 546 / 253 | 545 / 253 |
+| Lobby frame p50 / CPU submit p99 (us) | 1765 / 1110 | 1715 / 1125 |
+| Lobby frame p99 / GPU p99 (us) | 3296 / 2305 | 3334 / 2176 |
+| Lobby mesh p99 (ms) / draws per frame | 7.8 / 743.1 | 8.9 / 743.4 |
+| Flyover average FPS / 1% low | 579 / 152 | 590 / 204 |
+| Flyover frame p50 / CPU submit p99 (us) | 1577 / 2013 | 1554 / 1756 |
+| Flyover frame p99 / GPU p99 (us) | 4624 / 2965 | 4140 / 3028 |
+| Flyover mesh p99 (ms) / draws per frame | 25.3 / 721 | 24.5 / 719.5 |
+| Peak / mean RSS (MiB) | 277 / 251 | 275 / 250 |
+
+The paired-ratio gate passes: lobby frame p50 -0.51%, CPU submit p99 +1.35%; flyover frame p50
+-0.57%, CPU p99 -11.28%; BENCH_REGRESSION=0. All six phase/pair CPU-tail deltas remain below the
++25% threshold; no performance gain beyond noise is claimed. The earlier incomplete-wiring pilot
+had a +43.92% lobby-tail pair; its two 20-second diagnostic profiles sampled 4,595 vs 4,620 ms on
+the main thread, without reproducing that sustained increase. Those pilot profiles are not used
+as the final revision's performance gate.
+
+Both corrected 960x600 release captures were inspected: below the top 100 rows every pixel is
+identical, and all 2,564 differences are in the previously variable distant-water band. Separate
+counted telemetry is 362.2 / 220.4 main-thread allocations per frame (lobby / flyover), peak/mean
+RSS 277/253 MiB. Default shipping binary restored and compared byte-for-byte with the captured
+and A/B-tested binary afterward. Zero-allocation rendering remains open.
+
+Final evidence is private under h189-nov23-priority-live-* (incomplete pilot: priority-fair-*).
+The full corrected source gate passes 309 scoped tests, 12 trace tests, five Python gate tests,
+strict Clippy both modes, fmt, layers/public-tree, ARM64 default release, native live-camera
+publication, VANILLA_189_REFERENCE_GATE_PASS and WATCHDOG_PASS packets=235 windows=2.
+No public-server or account action. Next: persistent GPU terrain render regions, followed by
+compute frustum/occlusion culling and actual native MTLIndirectCommandBuffer execution.

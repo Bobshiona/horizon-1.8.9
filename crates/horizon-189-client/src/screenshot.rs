@@ -104,6 +104,7 @@ pub fn write_png(path: &Path, pixels: &Pixels, opaque: bool) -> Result<(), Strin
 /// it failed.
 pub fn save(pixels: Pixels, dir: PathBuf, done: Sender<Result<String, String>>) {
     std::thread::spawn(move || {
+        crate::scheduling::apply("screenshot", crate::scheduling::Class::Utility);
         let unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);

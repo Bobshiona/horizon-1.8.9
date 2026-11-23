@@ -194,6 +194,7 @@ impl Loader {
         std::thread::Builder::new()
             .name("Legacy skins".into())
             .spawn(move || {
+                crate::scheduling::apply("skin-decoder", crate::scheduling::Class::Utility);
                 let agent = ureq::AgentBuilder::new()
                     .timeout_connect(Duration::from_secs(3))
                     .timeout_read(Duration::from_secs(5))
