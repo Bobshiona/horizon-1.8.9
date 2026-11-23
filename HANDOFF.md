@@ -2212,7 +2212,7 @@ rendering and held-item mesh caching are not complete. The final source gate was
 harness changes, including all five Python tests; no public server/account action was performed.
 
 
-## 73. Twelve-byte terrain vertices
+## 73. Twelve-byte terrain vertices — `b1fa6fb180`
 
 Previous checkpoint: `03fc5cfb16` / `4a37fcd98b`. Resumed the preserved partial packing diff and
 completed both sides of the format: CPU packer, Uint32x3 vertex layout, and the production Metal
