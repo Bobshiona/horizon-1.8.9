@@ -2327,7 +2327,7 @@ Next in order: distance/frustum-prioritized async meshing and macOS thread QoS r
 scheduling request, not a guarantee of physical P/E-core affinity.
 
 
-## 75. View-prioritized asynchronous meshing and macOS QoS
+## 75. View-prioritized asynchronous meshing and macOS QoS — b895d0be5d
 
 Previous checkpoint: `cd50e589b9` / `9618caed17`. The window publishes its actual current frustum
 (FOV, perspective and mesh origin included) into a latest-value mailbox using try_write. The mesher
