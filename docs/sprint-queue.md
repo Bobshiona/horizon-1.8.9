@@ -13,7 +13,9 @@ Baseline: b5a1582f95, 251 tests, Live Arena launcher.
   audio mixing, UI layout and state, and config schemas stay OS-agnostic. macOS APIs live behind
   traits in `#[cfg(target_os = "macos")]` modules. No Windows backends yet.
 - Performance gate: every UI or feature commit runs the deterministic release packet-trace
-  benchmark; a regression in 80-player p99 CPU submit or average FPS is profiled and fixed first.
+  benchmark; paired A/B median frame time (+5%) and CPU submit p99 (+25%) are gated for both phases.
+  Average FPS, 1% lows, mesh p99, draw calls, allocations and RAM remain diagnostic. Any
+  flagged delta is verified with `tools/bob-profile.sh` before proceeding.
 - Watchdog gate: an automated suite enables every PvP module at once and asserts vanilla 1.8.9
   packet parity (C03-C06 cadence, C0A before C02, no C0B while a menu or container is open, no
   packets from HUD, visual, audio or animation modules).
@@ -75,6 +77,10 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       HANDOFF 71: 268 + 12 tests. Lobby FPS +7.1%, flyover +6.3%, CPU p99 -10%, GPU p50 -6 to
       -8% vs fee37526cd; flyover mesh p50 +0.5 ms. Terrain is flat-lit (no AO yet); merging
       keys on the full colour, so smooth lighting/AO would split quads the same way.
+      Reverified November 23 (HANDOFF 72): 268 scoped + 12 trace + 5 gate tests; jar equivalence
+      is mandatory. Fresh paired frame p50 -4.61% / -5.68% (lobby / flyover), CPU submit p99
+      -12.02% / +11.66%; 29.0% fewer vertices/triangles in the hillside fixture. Mesh p99 and
+      RSS increases are recorded, not hidden by the faster frame median.
 - [ ] Bit-packed 8-12 byte chunk vertices and bindless Metal argument buffers.
 - [ ] Distance/frustum-prioritized async meshing; QoS pinning (USER_INTERACTIVE for tick, raw
       mouse and submission; UTILITY for meshing, decoding and pack rebuilds).

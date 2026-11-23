@@ -170,6 +170,11 @@ def main() -> None:
                 raise AssertionError("Server did not confirm both placement and mining")
             if server_log.read_text(errors="replace").count("Successfully found the block at 2,4,0") < 2:
                 raise AssertionError("Server did not confirm drag-split and collect contents")
+            # The jar-backed meshing regression is a required gate, not an optional skip.
+            required = "test terrain::tests::greedy_meshing_covers_exactly_the_cells_and_texels_of_per_block_faces ... ok"
+            if required not in test_log.read_text(errors="replace"):
+                raise RuntimeError("Jar-backed greedy equivalence test did not pass")
+
             build = ["cargo", "build", "--offline", "-p", "horizon-189-client", "--target", "aarch64-apple-darwin", "--target-dir", str(TARGET)]
             subprocess.run(build, cwd=REPO, env=env, check=True, timeout=300, stdout=subprocess.DEVNULL)
             binary = TARGET / "aarch64-apple-darwin/debug/horizon-189-client"

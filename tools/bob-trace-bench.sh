@@ -14,7 +14,7 @@
 # BIN, TRACE     the client and trace tool (default: release builds in
 #                $CARGO_TARGET_DIR, else target)
 # PORT           replay port (default 25571)
-set -u
+set -euo pipefail
 name=$1; shift
 DIR=${BOB_TRACE_DIR:-target/bob-trace}
 TARGET=${CARGO_TARGET_DIR:-target}/aarch64-apple-darwin/release
@@ -26,19 +26,27 @@ OUT=$DIR/bench-$name
   --crowd 80 --crowd-at 1500 --crowd-until 15300 --seed 1 \
   --phase lobby@4000 --phase flyover@15300 --log $OUT.client.bin > $OUT.serve.log 2>&1 &
 SERVE=$!
+CLIENT=
+cleanup() {
+  if [[ -n $CLIENT ]] && kill -0 $CLIENT 2>/dev/null; then kill $CLIENT 2>/dev/null || true; fi
+  if kill -0 $SERVE 2>/dev/null; then kill $SERVE 2>/dev/null || true; fi
+}
+trap cleanup EXIT INT TERM
 sleep 0.5
 "$BIN" --offline --username NativeBench --server 127.0.0.1 --port $PORT \
   --render-distance 16 --bench-trace "$@" > $OUT.log 2>&1 &
 CLIENT=$!
 max=0; total=0; n=0
 while kill -0 $CLIENT 2>/dev/null; do
-  rss=$(ps -o rss= -p $CLIENT 2>/dev/null | tr -d ' ')
+  rss=$(ps -o rss= -p $CLIENT 2>/dev/null | tr -d ' ' || true)
   if [[ -n "$rss" ]]; then
     (( rss > max )) && max=$rss
     (( total += rss, n += 1 ))
   fi
   sleep 0.5
 done
-wait $SERVE 2>/dev/null
+wait $CLIENT
+wait $SERVE
 grep -hE "BOBTRACE_|TRACE_ERROR|panicked" $OUT.log $OUT.serve.log
-(( n > 0 )) && echo "BOBTRACE_RSS max_mb=$(( max / 1024 )) mean_mb=$(( total / n / 1024 ))"
+(( n > 0 ))
+echo "BOBTRACE_RSS max_mb=$(( max / 1024 )) mean_mb=$(( total / n / 1024 ))"

@@ -1878,13 +1878,21 @@ mod tests {
             for (name, mut list) in ["greedy", "per-block"].into_iter().zip(times) {
                 list.sort_unstable();
                 eprintln!(
-                    "MESH_TIMING {name} p50_us={} p90_us={}",
+                    "MESH_TIMING {name} p50_us={} p90_us={} p99_us={}",
                     list[list.len() / 2],
-                    list[list.len() * 9 / 10]
+                    list[list.len() * 9 / 10],
+                    list[list.len() * 99 / 100]
                 );
             }
             registry.greedy = false;
         }
+        eprintln!(
+            "MESH_PARITY_PASS base_vertices={} merged_vertices={} base_triangles={} merged_triangles={}",
+            single.solid.vertices.len() + single.cutout.vertices.len(),
+            merged.solid.vertices.len() + merged.cutout.vertices.len(),
+            (single.solid.quads() + single.cutout.quads()) * 2,
+            (merged.solid.quads() + merged.cutout.quads()) * 2,
+        );
         // Patchy light keeps this terrain from merging much; flat lit floors merge far more.
         assert!(
             merged.solid.quads() * 4 < single.solid.quads() * 3,

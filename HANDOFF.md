@@ -2145,3 +2145,68 @@ translucent geometry and visibility, and fewer than three quarters of the solid 
 (`BOB_MESH_TIMING=1` prints the alternating mesh timings).
 
 Gate: 268 tests, 12 trace-tool tests, Watchdog pass.
+
+
+## 72. Greedy validation seal and paired latency gate
+
+Takeover baseline: `0b45b1d30c` already pushed greedy meshing; comparison baseline `fee37526cd`.
+The two dirty files were the following 12-byte packing milestone, not an unfinished greedy commit.
+That exact partial diff is preserved privately and will be resumed after this checkpoint. The current
+runtime still uses the validated 16-byte vertex layout; release-max remains opt-in.
+
+The owned-jar equivalence fixture is explicitly required by `tools/test_189_reference.py`: a skipped,
+filtered or failed greedy test now fails the gate. It decomposes merged and unmerged geometry into
+block cells with matching pass, plane, texture corners and colours, and separately compares liquid
+geometry and section visibility. The seeded hillside has 4,492 → 3,188 solid/cutout vertices and
+2,246 → 1,594 triangles (29.0% fewer). Alternating in-process release timing: greedy p50/p99
+1,344/2,269 us, per-block 1,247/2,072 us. This measures merge overhead, not an improvement in CPU
+meshing time. Lighting is still flat; future per-vertex AO remains Phase 2 work.
+
+`tools/bob-bench-ab.sh` runs three alternating A/B pairs with isolated runtime homes and a scratch game
+directory. `tools/bob_bench_compare.py` gates the median of paired ratios for both lobby and flyover:
+median frame interval at most +5%, CPU submit p99 at most +25%. Average FPS and 1% lows remain
+reported, together with mesh p99, draws, allocation counters and RSS. It rejects incomplete/nonfinite
+results and exits nonzero on a regression; five Python regressions cover verdicts and CLI exit status.
+The trace runner also propagates client/server failure and cleans up its own processes. Flagged
+latency deltas require `tools/bob-profile.sh` inspection, not a bypass based on average FPS.
+
+Validation so far: 268 scoped Rust tests, 12 trace-tool tests, five benchmark-gate Python tests, strict
+Clippy including alloc-count, fmt, layers/public-tree, ARM64 release build,
+`VANILLA_189_REFERENCE_GATE_PASS`, and `WATCHDOG_PASS packets=235 windows=2`.
+Fresh A/B against fee37526cd, three alternating pairs, default release allocator:
+
+| Phase / metric | Baseline median | Greedy median |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 435 / 89 | 522 / 224 |
+| Lobby frame p50 / CPU submit p99 (us) | 1,867 / 1,548 | 1,748 / 1,207 |
+| Lobby mesh p99 (ms) / draws per frame | 6.3 / 742.4 | 8.4 / 742.7 |
+| Flyover average FPS / 1% low | 528 / 139 | 557 / 147 |
+| Flyover frame p50 / CPU submit p99 (us) | 1,690 / 2,007 | 1,581 / 2,206 |
+| Flyover mesh p99 (ms) / draws per frame | 23.1 / 716.3 | 34.4 / 722.8 |
+| Session peak / mean RSS (MiB, median of runs) | 237 / 203 | 267 / 243 |
+
+Gate verdict uses the median of *paired ratios*, not the ratio of table medians: lobby frame
+p50 -4.61%, CPU p99 -12.02%; flyover frame p50 -5.68%, CPU p99 +11.66%.
+`BENCH_REGRESSION=0`. Mesh p99 and RSS rose, so this is a geometry/GPU improvement, not a claim of
+faster meshing or lower memory. Default-build allocation counters report n/a; the separate counted
+run below measures allocations without changing the latency gate's allocator configuration.
+Evidence stays private under the `h189-nov23-*` prefixes and `h189-trace/bench-nov23-greedy-*`.
+
+The prior palette/hash commits through fee37526cd do not include held-item mesh caching; that remains
+part of the zero-allocation work. The partial packing diff remains the next item after this seal.
+
+
+Section 72 capture/allocator evidence: both default ARM64 releases captured the same recorded lobby
+at 960x600, GUI hidden and pitch 35 degrees. Both images were inspected: no new surface holes,
+texture stretching or visible lighting seams. Of 3,089 pixels differing by more than 2/255, 3,023
+are in the top 100 rows over distant water; repeating each identical binary also changes that band
+(2,564 baseline / 4,129 greedy pixels), while the remaining 500 rows are byte-identical between
+same-binary repeats. The cross-build difference in those rows is 66 grazing-edge pixels. This does
+not claim AO coverage: the renderer still has flat face lighting. Captures and repeats remain private
+in `h189-nov23-captures` and `h189-nov23-captures-repeat`.
+
+A separate alloc-count release run reports 352.2 / 208.4 main-thread allocations per frame
+(lobby / flyover), peak RSS 278 MiB. It is telemetry, not a paired latency result. The default release
+was restored afterward and its SHA-256 matches the binary used for A/B and captures. Zero-allocation
+rendering and held-item mesh caching are not complete. The final source gate was rerun after the
+harness changes, including all five Python tests; no public server/account action was performed.
