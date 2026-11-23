@@ -81,7 +81,11 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       is mandatory. Fresh paired frame p50 -4.61% / -5.68% (lobby / flyover), CPU submit p99
       -12.02% / +11.66%; 29.0% fewer vertices/triangles in the hillside fixture. Mesh p99 and
       RSS increases are recorded, not hidden by the faster frame median.
-- [ ] Bit-packed 8-12 byte chunk vertices and bindless Metal argument buffers.
+- [x] Bit-packed 8-12 byte chunk vertices.
+      HANDOFF 73: 12-byte CPU/GPU format; 269 scoped + 12 trace + 5 gate tests, including a
+      production-decoder Metal readback. Vertex payload -25%; paired frame p50 -1.17% / +0.19%,
+      CPU p99 -12.39% / -3.71%. Captures match below the variable far-water band; RSS unchanged.
+- [ ] Bindless Metal argument buffers.
 - [ ] Distance/frustum-prioritized async meshing; QoS pinning (USER_INTERACTIVE for tick, raw
       mouse and submission; UTILITY for meshing, decoding and pack rebuilds).
 - [ ] Persistent GPU render regions; Metal compute frustum/occlusion culling into

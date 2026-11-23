@@ -287,3 +287,136 @@ fn owned_model_renders_non_background_pixels_on_metal() -> Result<(), Box<dyn Er
     eprintln!("METAL_CONNECTION_SCREEN_PASS");
     Ok(())
 }
+
+#[test]
+#[ignore = "Requires a Metal GPU"]
+fn packed_terrain_fields_decode_on_metal() -> Result<(), Box<dyn Error>> {
+    use crate::terrain::TerrainVertex;
+    use wgpu::util::DeviceExt;
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::METAL;
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+    let mut packed = Vec::new();
+    let mut expected = Vec::new();
+    for layer in [0, 1, 360, 1023, 1024, 2047] {
+        for (position, uv, color) in [
+            ([-8.0, -8.0, -8.0], [0.0, 0.0], [0.0, 0.0, 0.0]),
+            ([16.0, 256.0, 16.0], [16.0, 16.0], [1.0, 0.5, 0.25]),
+            ([23.9, 503.9, 1.25], [31.99, 0.125], [0.2, 0.0, 1.0]),
+            ([0.0, 63.0 + 8.0 / 9.0, 0.0], [0.5, 0.75], [0.8; 3]),
+        ] {
+            packed.extend(TerrainVertex::new(position, uv, layer, color).packed);
+            let p = position.map(|v| ((v + 8.0) * 64.0).round() / 64.0 - 8.0);
+            let uv = uv.map(|v| (v * 128.0).round() / 128.0);
+            let color = color.map(|v| (v * 255.0).round() / 255.0);
+            expected.push([
+                p[0],
+                p[1],
+                p[2],
+                uv[0],
+                uv[1],
+                layer as f32,
+                color[0],
+                color[1],
+                color[2],
+            ]);
+        }
+    }
+    let input = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Packed terrain inputs"),
+        contents: bytemuck::cast_slice(&packed),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let bytes = (expected.len() * 9 * 4) as u64;
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Decoded terrain output"),
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Decoded terrain readback"),
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    // Execute the production decoder, not a test copy of its masks/shifts.
+    let source = format!(
+        "{}{}",
+        include_str!("scene.wgsl"),
+        r#"
+@group(0) @binding(3) var<storage, read> probe_input: array<u32>;
+@group(0) @binding(4) var<storage, read_write> probe_output: array<f32>;
+@compute @workgroup_size(1)
+fn packing_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    let decoded = decode_terrain(vec3<u32>(probe_input[i*3u], probe_input[i*3u+1u], probe_input[i*3u+2u]));
+    for (var c = 0u; c < 3u; c++) {
+        probe_output[i*9u+c] = decoded.position[c];
+        probe_output[i*9u+6u+c] = decoded.color[c];
+    }
+    probe_output[i*9u+3u] = decoded.uv.x;
+    probe_output[i*9u+4u] = decoded.uv.y;
+    probe_output[i*9u+5u] = f32(decoded.layer);
+}
+"#
+    );
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Production terrain decoder probe"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Terrain packing parity"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("packing_probe"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Terrain probe buffers"),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: input.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: output.as_entire_binding(),
+            },
+        ],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bindings, &[]);
+        pass.dispatch_workgroups(expected.len() as u32, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+    let submission = queue.submit([encoder.finish()]);
+    let (send, receive) = std::sync::mpsc::channel();
+    readback.map_async(wgpu::MapMode::Read, .., move |result| {
+        let _ = send.send(result);
+    });
+    device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission),
+        timeout: Some(Duration::from_secs(5)),
+    })?;
+    receive.recv_timeout(Duration::from_secs(5))??;
+    let mapped = readback.get_mapped_range(..)?;
+    let actual: &[f32] = bytemuck::cast_slice(&mapped);
+    for (index, (&actual, expected)) in actual.iter().zip(expected.iter().flatten()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 0.00001,
+            "decoded component {index}: {actual} != {expected}"
+        );
+    }
+    drop(mapped);
+    readback.unmap();
+    eprintln!("METAL_TERRAIN_PACKING_PASS cases={}", expected.len());
+    Ok(())
+}

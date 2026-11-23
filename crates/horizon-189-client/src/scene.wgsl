@@ -39,17 +39,33 @@ struct TerrainOut {
     @location(3) relative: vec3<f32>,
 }
 
-// Packed terrain: column-local position in 1/128 blocks biased by 8 blocks,
-// the sprite layer, texture coordinates, and the column's offset from the mesh origin.
+// Three words shared with TerrainVertex: positions in 1/64 blocks,
+// tiled UVs in 1/128 sprites, an 11-bit texture layer and three colour bytes.
+struct TerrainDecoded {
+    position: vec3<f32>,
+    uv: vec2<f32>,
+    layer: u32,
+    color: vec3<f32>,
+}
+fn decode_terrain(words: vec3<u32>) -> TerrainDecoded {
+    var out: TerrainDecoded;
+    let xyz = vec3<u32>(words.x & 2047u, words.y & 32767u, (words.x >> 11u) & 2047u);
+    out.position = vec3<f32>(xyz) / 64.0 - 8.0;
+    let uv = vec2<u32>((words.y >> 16u) & 4095u, (words.y >> 28u) | ((words.z & 255u) << 4u));
+    out.uv = vec2<f32>(uv) / 128.0;
+    out.layer = (words.x >> 22u) | (((words.y >> 15u) & 1u) << 10u);
+    out.color = vec3<f32>(vec3<u32>((words.z >> 8u) & 255u, (words.z >> 16u) & 255u, words.z >> 24u)) / 255.0;
+    return out;
+}
 @vertex
-fn terrain_vertex(@location(0) packed: vec4<u32>, @location(1) uv: vec2<u32>, @location(2) color: vec4<f32>, @location(3) base: vec3<f32>) -> TerrainOut {
+fn terrain_vertex(@location(0) words: vec3<u32>, @location(3) base: vec3<f32>) -> TerrainOut {
+    let decoded = decode_terrain(words);
     var out: TerrainOut;
-    let position = vec3<f32>(packed.xyz) / 128.0 - 8.0 + base;
+    let position = decoded.position + base;
     out.position = camera.view_projection * vec4<f32>(position, 1.0);
-    // 1/2048 sprites; a greedy-merged quad runs past 1 and the sampler repeats.
-    out.uv = vec2<f32>(uv) / 2048.0;
-    out.layer = packed.w;
-    out.color = srgb_to_linear(color.rgb);
+    out.uv = decoded.uv;
+    out.layer = decoded.layer;
+    out.color = srgb_to_linear(decoded.color);
     out.relative = position - camera.eye.xyz;
     return out;
 }

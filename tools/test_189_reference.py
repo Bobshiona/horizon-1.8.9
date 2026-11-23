@@ -171,9 +171,14 @@ def main() -> None:
             if server_log.read_text(errors="replace").count("Successfully found the block at 2,4,0") < 2:
                 raise AssertionError("Server did not confirm drag-split and collect contents")
             # The jar-backed meshing regression is a required gate, not an optional skip.
-            required = "test terrain::tests::greedy_meshing_covers_exactly_the_cells_and_texels_of_per_block_faces ... ok"
-            if required not in test_log.read_text(errors="replace"):
-                raise RuntimeError("Jar-backed greedy equivalence test did not pass")
+            required = [
+                "terrain::tests::greedy_meshing_covers_exactly_the_cells_and_texels_of_per_block_faces",
+                "scene_tests::packed_terrain_fields_decode_on_metal",
+            ]
+            results = test_log.read_text(errors="replace")
+            for name in required:
+                if f"test {name} ... ok" not in results:
+                    raise RuntimeError(f"Required meshing regression did not pass: {name}")
 
             build = ["cargo", "build", "--offline", "-p", "horizon-189-client", "--target", "aarch64-apple-darwin", "--target-dir", str(TARGET)]
             subprocess.run(build, cwd=REPO, env=env, check=True, timeout=300, stdout=subprocess.DEVNULL)

@@ -433,7 +433,7 @@ impl Scene {
                         Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<TerrainVertex>() as u64,
                             step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![0=>Uint16x4, 1=>Uint16x2, 2=>Unorm8x4],
+                            attributes: &wgpu::vertex_attr_array![0=>Uint32x3],
                         }),
                         Some(wgpu::VertexBufferLayout {
                             array_stride: 12,

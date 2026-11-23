@@ -64,48 +64,82 @@ struct Model {
     total: i32,
 }
 
-/// Packed terrain corner, 16 bytes: column-local position in 1/128 blocks
-/// (biased by `BIAS` blocks) with the sprite layer, normalized UV, and the
-/// gamma-space colour (tint x face shade x light) as vanilla's 8-bit vertex
-/// colour. Quads are four corners drawn through the shared quad index list.
+/// Packed terrain corner, 12 bytes in three words:
+///
+/// - word 0: x (11 bits) | z (11) | sprite layer bits 0-9
+/// - word 1: y (15 bits) | layer bit 10 | u (12) | v bits 0-3
+/// - word 2: v bits 4-11 | red | green | blue
+///
+/// Positions are column-local in 1/64 blocks biased by 8 blocks (x and z
+/// -8..24, y -8..504); model geometry is in sixteenths, liquid heights in
+/// ninths (within 1/128). Texture coordinates are 1/128 sprites up to 32 so a
+/// greedy quad can repeat its sprite across a section. The colour is the
+/// gamma-space tint x face shade x light, as vanilla's 8-bit vertex colour.
+/// Quads are four corners drawn through the shared quad index list.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub struct TerrainVertex {
-    pub position: [u16; 4],
-    pub uv: [u16; 2],
-    pub color: [u8; 4],
+    pub packed: [u32; 3],
 }
 
 impl TerrainVertex {
-    pub const SCALE: f32 = 128.0;
+    pub const SCALE: f32 = 64.0;
     pub const BIAS: f32 = 8.0;
-    /// Texture coordinates in 1/2048 sprites, up to 31 sprites: a greedy quad
-    /// repeats its sprite once per block across a section.
-    pub const UV_SCALE: f32 = 2048.0;
+    /// Texture coordinates in 1/128 sprites, up to 32 sprites.
+    pub const UV_SCALE: f32 = 128.0;
+    /// Sprite layers the format holds.
+    pub const LAYERS: u32 = 1 << 11;
 
     pub fn new(local: [f32; 3], uv: [f32; 2], layer: u32, color: [f32; 3]) -> Self {
-        let axis = |value: f32| {
+        let axis = |value: f32, bits: u32| {
             ((value + Self::BIAS) * Self::SCALE)
                 .round()
-                .clamp(0.0, 65535.0) as u16
+                .clamp(0.0, ((1 << bits) - 1) as f32) as u32
         };
-        let unit = |value: f32| (value.clamp(0.0, 31.0) * Self::UV_SCALE).round() as u16;
-        let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let unit = |value: f32| (value * Self::UV_SCALE).round().clamp(0.0, 4095.0) as u32;
+        let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let (x, y, z) = (axis(local[0], 11), axis(local[1], 15), axis(local[2], 11));
+        let layer = layer.min(Self::LAYERS - 1);
+        let (u, v) = (unit(uv[0]), unit(uv[1]));
         Self {
-            position: [
-                axis(local[0]),
-                axis(local[1]),
-                axis(local[2]),
-                u16::try_from(layer).unwrap_or(0),
+            packed: [
+                x | z << 11 | (layer & 1023) << 22,
+                y | (layer >> 10) << 15 | u << 16 | (v & 15) << 28,
+                v >> 4 | byte(color[0]) << 8 | byte(color[1]) << 16 | byte(color[2]) << 24,
             ],
-            uv: uv.map(unit),
-            color: [byte(color[0]), byte(color[1]), byte(color[2]), 255],
         }
+    }
+
+    /// x, y, z in 1/`SCALE` blocks (biased) and the sprite layer.
+    #[cfg(test)]
+    pub fn position(&self) -> [u16; 4] {
+        let [a, b, _] = self.packed;
+        [
+            (a & 2047) as u16,
+            (b & 32767) as u16,
+            (a >> 11 & 2047) as u16,
+            ((a >> 22) | (b >> 15 & 1) << 10) as u16,
+        ]
+    }
+
+    /// u, v in 1/`UV_SCALE` sprites.
+    #[cfg(test)]
+    pub fn uv(&self) -> [u16; 2] {
+        let [_, b, c] = self.packed;
+        [(b >> 16 & 4095) as u16, ((b >> 28) | (c & 255) << 4) as u16]
+    }
+
+    /// The gamma-space colour bytes.
+    #[cfg(test)]
+    pub fn color(&self) -> [u8; 3] {
+        let c = self.packed[2];
+        [(c >> 8) as u8, (c >> 16) as u8, (c >> 24) as u8]
     }
 
     #[cfg(test)]
     fn local(&self) -> [f32; 3] {
-        std::array::from_fn(|axis| f32::from(self.position[axis]) / Self::SCALE - Self::BIAS)
+        let position = self.position();
+        std::array::from_fn(|axis| f32::from(position[axis]) / Self::SCALE - Self::BIAS)
     }
 }
 
@@ -773,6 +807,9 @@ impl Registry {
         let foliage = colormap("minecraft:colormap/foliage")?;
         let water = layer_for("minecraft:blocks/water_still", &mut textures);
         let lava = layer_for("minecraft:blocks/lava_still", &mut textures);
+        if textures.len() > TerrainVertex::LAYERS as usize {
+            return Err("Terrain texture layers exceed the packed vertex format".into());
+        }
         let gui = crate::ui::Resources::load(&assets)?;
         let mut registry = Self {
             models,
@@ -1590,13 +1627,21 @@ mod tests {
         for local in [[0.0, 0.0, 0.0], [16.0, 256.0, 16.0], [-0.5, 255.9375, 16.5]] {
             let vertex = TerrainVertex::new(local, [0.0, 1.0], 360, [1.0, 0.5, 0.0]);
             assert_eq!(vertex.local(), local);
-            assert_eq!(vertex.position[3], 360);
-            assert_eq!(vertex.uv, [0, 2048]);
-            assert_eq!(vertex.color, [255, 128, 0, 255]);
+            assert_eq!(vertex.position()[3], 360);
+            assert_eq!(vertex.uv(), [0, 128]);
+            assert_eq!(vertex.color(), [255, 128, 0]);
         }
         let liquid = TerrainVertex::new([0.0, 63.0 + 8.0 / 9.0, 0.0], [0.5; 2], 1, [0.8; 3]);
         assert!((liquid.local()[1] - (63.0 + 8.0 / 9.0)).abs() <= 0.5 / TerrainVertex::SCALE);
-        assert_eq!(std::mem::size_of::<TerrainVertex>(), 16);
+        assert_eq!(std::mem::size_of::<TerrainVertex>(), 12);
+        // Every field at its limits survives the packing.
+        let far = TerrainVertex::new([23.9, 503.9, -8.0], [31.99, 16.0], 2047, [0.2, 0.0, 1.0]);
+        assert_eq!(far.local(), [23.90625, 503.90625, -8.0]);
+        assert_eq!(far.uv(), [4095, 2048]);
+        assert_eq!(far.position()[3], 2047);
+        assert_eq!(far.color(), [51, 0, 255]);
+        let mixed = TerrainVertex::new([1.0, 2.0, 3.0], [0.5, 0.125], 1024, [0.0; 3]);
+        assert_eq!((mixed.position()[3], mixed.uv()), (1024, [64, 16]));
     }
 
     #[test]
@@ -1721,7 +1766,7 @@ mod tests {
                             .flatten()
                             .all(|v| (-1.0..=2.0).contains(v))
                     );
-                    assert!(face.layer < 65536);
+                    assert!(face.layer < TerrainVertex::LAYERS);
                 }
             }
         }
@@ -1743,31 +1788,32 @@ mod tests {
 
     /// Every quad cut into its block-sized cells: pass, normal axis, plane, cell,
     /// sprite, colour and the texture at the cell's corners (whole sprites dropped).
-    fn cells(mesh: &ColumnMesh) -> Vec<(u8, usize, u16, [u16; 2], u16, [u8; 4], [[i32; 2]; 3])> {
+    fn cells(mesh: &ColumnMesh) -> Vec<(u8, usize, u16, [u16; 2], u16, [u8; 3], [[i32; 2]; 3])> {
         let mut out = Vec::new();
         for (pass, terrain) in [(0u8, &mesh.solid), (1, &mesh.cutout)] {
             for quad in terrain.vertices.chunks(4) {
                 let normal = (0..3)
                     .find(|&axis| {
                         quad.iter()
-                            .all(|v| v.position[axis] == quad[0].position[axis])
+                            .all(|v| v.position()[axis] == quad[0].position()[axis])
                     })
                     .expect("axis-aligned full faces only");
                 let across: Vec<usize> = (0..3).filter(|&axis| axis != normal).collect();
-                let block = |value: u16| i32::from(value) / 128;
+                let block = |value: u16| i32::from(value) / TerrainVertex::SCALE as i32;
                 let low = across
                     .iter()
-                    .map(|&a| quad.iter().map(|v| block(v.position[a])).min().unwrap())
+                    .map(|&a| quad.iter().map(|v| block(v.position()[a])).min().unwrap())
                     .collect::<Vec<_>>();
                 let high = across
                     .iter()
-                    .map(|&a| quad.iter().map(|v| block(v.position[a])).max().unwrap())
+                    .map(|&a| quad.iter().map(|v| block(v.position()[a])).max().unwrap())
                     .collect::<Vec<_>>();
                 // The quad's texture as an affine function of the two positions.
                 let corner = |a: i32, b: i32| {
                     quad.iter()
                         .find(|v| {
-                            block(v.position[across[0]]) == a && block(v.position[across[1]]) == b
+                            block(v.position()[across[0]]) == a
+                                && block(v.position()[across[1]]) == b
                         })
                         .unwrap()
                 };
@@ -1775,24 +1821,24 @@ mod tests {
                 let (along_a, along_b) = (corner(high[0], low[1]), corner(low[0], high[1]));
                 let uv_at = |a: i32, b: i32| -> [i32; 2] {
                     std::array::from_fn(|i| {
-                        let o = i32::from(origin.uv[i]);
-                        let da = (i32::from(along_a.uv[i]) - o) / (high[0] - low[0]);
-                        let db = (i32::from(along_b.uv[i]) - o) / (high[1] - low[1]);
+                        let o = i32::from(origin.uv()[i]);
+                        let da = (i32::from(along_a.uv()[i]) - o) / (high[0] - low[0]);
+                        let db = (i32::from(along_b.uv()[i]) - o) / (high[1] - low[1]);
                         o + da * (a - low[0]) + db * (b - low[1])
                     })
                 };
                 for a in low[0]..high[0] {
                     for b in low[1]..high[1] {
                         let corners = [uv_at(a, b), uv_at(a + 1, b), uv_at(a, b + 1)];
-                        let shift = corners[0].map(|v| v.div_euclid(2048) * 2048);
+                        let shift = corners[0].map(|v| v.div_euclid(128) * 128);
                         let corners = corners.map(|c| [c[0] - shift[0], c[1] - shift[1]]);
                         out.push((
                             pass,
                             normal,
-                            quad[0].position[normal],
+                            quad[0].position()[normal],
                             [a as u16, b as u16],
-                            quad[0].position[3],
-                            quad[0].color,
+                            quad[0].position()[3],
+                            quad[0].color(),
                             corners,
                         ));
                     }

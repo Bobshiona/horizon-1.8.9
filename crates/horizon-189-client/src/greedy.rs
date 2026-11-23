@@ -387,12 +387,17 @@ mod tests {
         let one = floor(|_, _| [0.8; 3]);
         assert_eq!(one.quads(), 1);
         // The quad spans the section and repeats the sprite once per block.
-        let corners: Vec<_> = one.vertices.iter().map(|v| (v.position, v.uv)).collect();
-        let at = |x: f32, z: f32| TerrainVertex::new([x, 65.0, z], [0.0; 2], 0, [0.0; 3]).position;
+        let corners: Vec<_> = one
+            .vertices
+            .iter()
+            .map(|v| (v.position(), v.uv()))
+            .collect();
+        let at =
+            |x: f32, z: f32| TerrainVertex::new([x, 65.0, z], [0.0; 2], 0, [0.0; 3]).position();
         assert!(
             corners
                 .iter()
-                .any(|&(p, uv)| p[..3] == at(16.0, 16.0)[..3] && uv == [16 * 2048, 16 * 2048])
+                .any(|&(p, uv)| p[..3] == at(16.0, 16.0)[..3] && uv == [16 * 128, 16 * 128])
         );
         assert!(
             corners
@@ -410,7 +415,7 @@ mod tests {
         let bright = lit
             .vertices
             .chunks(4)
-            .filter(|quad| quad[0].color[0] == 255)
+            .filter(|quad| quad[0].color()[0] == 255)
             .count();
         assert_eq!(bright, 1);
         assert!(lit.quads() <= 5, "{}", lit.quads());
@@ -419,8 +424,8 @@ mod tests {
             .vertices
             .chunks(4)
             .map(|quad| {
-                let xs = quad.iter().map(|v| f32::from(v.position[0]));
-                let zs = quad.iter().map(|v| f32::from(v.position[2]));
+                let xs = quad.iter().map(|v| f32::from(v.position()[0]));
+                let zs = quad.iter().map(|v| f32::from(v.position()[2]));
                 let span = |values: Vec<f32>| {
                     (values.iter().cloned().fold(f32::MIN, f32::max)
                         - values.iter().cloned().fold(f32::MAX, f32::min))
@@ -455,19 +460,19 @@ mod tests {
         merger.flush(&mut solid, &mut cutout);
         assert_eq!((solid.quads(), cutout.quads()), (0, 1));
         // u spans three sprites; the corner at x = 0 keeps its larger value.
-        let us: Vec<u16> = cutout.vertices.iter().map(|v| v.uv[0]).collect();
+        let us: Vec<u16> = cutout.vertices.iter().map(|v| v.uv()[0]).collect();
         assert_eq!(
             *us.iter().max().unwrap() - *us.iter().min().unwrap(),
-            3 * 2048
+            3 * 128
         );
         let at_origin = cutout
             .vertices
             .iter()
             .find(|v| {
-                v.position[0] == TerrainVertex::new([0.0; 3], [0.0; 2], 0, [0.0; 3]).position[0]
+                v.position()[0] == TerrainVertex::new([0.0; 3], [0.0; 2], 0, [0.0; 3]).position()[0]
             })
             .unwrap();
-        assert_eq!(at_origin.uv[0], 3 * 2048);
+        assert_eq!(at_origin.uv()[0], 3 * 128);
     }
 
     #[test]
@@ -485,7 +490,7 @@ mod tests {
         let layers: Vec<u16> = solid
             .vertices
             .chunks(4)
-            .map(|quad| quad[0].position[3])
+            .map(|quad| quad[0].position()[3])
             .collect();
         assert_eq!(layers, [1, 2]);
     }

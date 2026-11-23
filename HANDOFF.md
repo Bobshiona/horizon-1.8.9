@@ -2210,3 +2210,55 @@ A separate alloc-count release run reports 352.2 / 208.4 main-thread allocations
 was restored afterward and its SHA-256 matches the binary used for A/B and captures. Zero-allocation
 rendering and held-item mesh caching are not complete. The final source gate was rerun after the
 harness changes, including all five Python tests; no public server/account action was performed.
+
+
+## 73. Twelve-byte terrain vertices
+
+Previous checkpoint: `03fc5cfb16` / `4a37fcd98b`. Resumed the preserved partial packing diff and
+completed both sides of the format: CPU packer, Uint32x3 vertex layout, and the production Metal
+shader decoder. Each corner is three u32 words instead of sixteen bytes (25% less vertex payload).
+Positions use 1/64 blocks, texture coordinates 1/128 sprites (including sixteen-block greedy spans),
+colour retains three 8-bit gamma channels, and texture-layer indices have 11 bits. Ordinary model
+sixteenths remain exact; liquid heights round within 1/128 block. Excess texture-layer counts are
+rejected before upload rather than silently selecting a different material. No native OS API enters
+meshing/storage, and release-max remains opt-in.
+
+`packed_terrain_fields_decode_on_metal` executes the actual production WGSL decoder through Metal
+compute, reads the results back and compares 24 cases against independent position/UV/colour values,
+including the layer bit crossing at 1023/1024 and the format's bounds. The existing jar-backed
+cell/texel equivalence test still runs with the new quantization; both ignored GPU/meshing tests are
+now explicitly required by the managed reference gate. The test helpers' block-index scaling and
+position access were completed rather than weakening their assertions.
+
+Source gate: 269 scoped Rust tests, 12 trace-tool tests, five benchmark-gate Python tests, strict
+Clippy with and without alloc-count, fmt, layers/public-tree, ARM64 release,
+`VANILLA_189_REFERENCE_GATE_PASS`, and `WATCHDOG_PASS packets=235 windows=2`.
+Paired A/B against the default 16-byte release from the previous checkpoint (three pairs):
+
+| Phase / metric | 16-byte median | 12-byte median |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 526 / 229 | 509 / 186 |
+| Lobby frame p50 / CPU submit p99 (us) | 1,788 / 1,350 | 1,766 / 1,485 |
+| Lobby mesh p99 (ms) / draws per frame | 9.9 / 743.3 | 6.8 / 742.9 |
+| Flyover average FPS / 1% low | 543 / 163 | 572 / 163 |
+| Flyover frame p50 / CPU submit p99 (us) | 1,597 / 1,970 | 1,566 / 1,897 |
+| Flyover mesh p99 (ms) / draws per frame | 21.4 / 718.5 | 22.9 / 718.3 |
+| Session peak / mean RSS (MiB, median of runs) | 270 / 248 | 273 / 251 |
+
+The gate's paired ratios: lobby frame p50 -1.17%, CPU p99 -12.39%; flyover frame p50 +0.19%,
+CPU p99 -3.71%; `BENCH_REGRESSION=0`. The first lobby CPU-tail pair was +57.12%, the other two
+-43.04% and -12.39%; the verdict uses all three as specified, with no selected reruns. No FPS or
+whole-app RAM improvement is claimed from packing alone.
+
+Both 960x600 release captures were inspected: every pixel below the top 100 rows is identical;
+1,565 differing pixels are in the distant-water band that also varies in same-binary repeats
+(Section 72). No new visible holes, seams, light or texture changes. Private evidence:
+`h189-nov23-packed-*` and `h189-trace/bench-nov23-packed-*`. Default-build allocation fields remain
+n/a; the separate counted measurement is recorded below. Bindless Metal argument buffers are the
+next separate sub-milestone; the existing texture array is not counted as that work.
+
+
+Section 73 counted telemetry: 352.3 / 208.0 main-thread allocations per frame (lobby / flyover),
+peak/mean RSS 275/253 MiB, in a separate alloc-count release replay. These are not mixed into the
+paired default-release verdict. The restored default binary's SHA-256 matches the A/B/capture build.
+The complete source gate was rerun after requiring the production decoder test in the runner.
