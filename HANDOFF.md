@@ -2264,7 +2264,7 @@ paired default-release verdict. The restored default binary's SHA-256 matches th
 The complete source gate was rerun after requiring the production decoder test in the runner.
 
 
-## 74. Paged Metal argument-buffer terrain resources
+## 74. Paged Metal argument-buffer terrain resources — `cd50e589b9`
 
 Previous checkpoint: `b1fa6fb180` / `e2bf2f5579`. Terrain now capability-selects a persistent binding
 array, encoded by the existing Metal HAL as an argument buffer of GPU resource IDs. Each resource

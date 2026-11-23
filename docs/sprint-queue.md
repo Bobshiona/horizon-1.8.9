@@ -86,7 +86,7 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       production-decoder Metal readback. Vertex payload -25%; paired frame p50 -1.17% / +0.19%,
       CPU p99 -12.39% / -3.71%. Captures match below the variable far-water band; RSS unchanged.
 - [x] Bindless Metal argument buffers.
-      HANDOFF 74: capability-selected persistent 128-sprite pages, fallback retained; 270 scoped
+      `cd50e589b9` (HANDOFF 74): capability-selected persistent 128-sprite pages, fallback retained; 270 scoped
       + 12 trace + 5 gate tests. GPU readback matches 260 materials across pages byte for byte.
       Paired frame p50 +0.24% / +1.21%, CPU p99 +1.67% / +3.00%; one CPU-tail outlier profiled.
       Counted allocations rise by about twelve/frame and remain a target for the hot-loop work.
