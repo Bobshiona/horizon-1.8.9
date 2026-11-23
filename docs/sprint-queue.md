@@ -77,7 +77,7 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       HANDOFF 71: 268 + 12 tests. Lobby FPS +7.1%, flyover +6.3%, CPU p99 -10%, GPU p50 -6 to
       -8% vs fee37526cd; flyover mesh p50 +0.5 ms. Terrain is flat-lit (no AO yet); merging
       keys on the full colour, so smooth lighting/AO would split quads the same way.
-      Reverified November 23 (HANDOFF 72): 268 scoped + 12 trace + 5 gate tests; jar equivalence
+      Reverified November 23 in `03fc5cfb16` (HANDOFF 72): 268 scoped + 12 trace + 5 gate tests; jar equivalence
       is mandatory. Fresh paired frame p50 -4.61% / -5.68% (lobby / flyover), CPU submit p99
       -12.02% / +11.66%; 29.0% fewer vertices/triangles in the hillside fixture. Mesh p99 and
       RSS increases are recorded, not hidden by the faster frame median.

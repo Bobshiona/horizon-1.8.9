@@ -2147,7 +2147,7 @@ translucent geometry and visibility, and fewer than three quarters of the solid 
 Gate: 268 tests, 12 trace-tool tests, Watchdog pass.
 
 
-## 72. Greedy validation seal and paired latency gate
+## 72. Greedy validation seal and paired latency gate — `03fc5cfb16`
 
 Takeover baseline: `0b45b1d30c` already pushed greedy meshing; comparison baseline `fee37526cd`.
 The two dirty files were the following 12-byte packing milestone, not an unfinished greedy commit.
