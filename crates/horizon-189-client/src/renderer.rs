@@ -90,13 +90,20 @@ impl Renderer {
             info.backend,
             horizon_protocol_47::VERSION
         );
+        let terrain_features = crate::terrain_bindings::requested_features(&adapter);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Horizon 1.8.9 Metal"),
+                required_features: terrain_features,
                 // The legacy terrain atlas is one array layer per sprite
                 // (361 in 1.8.9); Metal devices allow 2048.
                 required_limits: wgpu::Limits {
                     max_texture_array_layers: adapter.limits().max_texture_array_layers,
+                    max_binding_array_elements_per_shader_stage: if terrain_features.is_empty() {
+                        0
+                    } else {
+                        crate::terrain_bindings::MAX_PAGES
+                    },
                     ..Default::default()
                 },
                 ..Default::default()

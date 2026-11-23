@@ -173,6 +173,7 @@ pub struct Scene {
     columns: HashMap<(i32, i32), GpuColumn>,
     origin: [i64; 3],
     bindings: wgpu::BindGroup,
+    terrain_bindings: Option<wgpu::BindGroup>,
     entity_bindings: wgpu::BindGroup,
     entity_texture: wgpu::Texture,
     pub skin_base: u32,
@@ -333,9 +334,12 @@ impl Scene {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let terrain_layout = crate::terrain_bindings::layout(device, layers);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Native legacy terrain"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::terrain_bindings::shader_source(terrain_layout.is_some()).into(),
+            ),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Legacy terrain resources"),
@@ -421,10 +425,20 @@ impl Scene {
             })
         };
         let pipeline = make_pipeline(false);
+        let mut terrain_layouts = vec![Some(&layout)];
+        if let Some(layout) = &terrain_layout {
+            terrain_layouts.push(Some(layout));
+        }
+        let terrain_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Paged terrain pipeline layout"),
+                bind_group_layouts: &terrain_layouts,
+                ..Default::default()
+            });
         let make_terrain = |label: &str, entry: &str, translucent: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(&terrain_pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("terrain_vertex"),
@@ -616,6 +630,22 @@ impl Scene {
         // GL_NEAREST_MIPMAP_LINEAR, as vanilla's mipmapped terrain atlas. Each sprite
         // is its own layer, so repeating tiles a greedy-merged quad's sprite once per
         // block; with nearest texels a 0-1 quad samples exactly as with clamping.
+        let terrain_bindings = terrain_layout
+            .as_ref()
+            .map(|layout| crate::terrain_bindings::bind(device, layout, &texture, layers));
+        eprintln!(
+            "TERRAIN_RESOURCES mode={} pages={} layers={layers}",
+            if terrain_bindings.is_some() {
+                "argument-buffer"
+            } else {
+                "array"
+            },
+            if terrain_bindings.is_some() {
+                layers.div_ceil(crate::terrain_bindings::PAGE_LAYERS)
+            } else {
+                1
+            }
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Legacy terrain sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -819,6 +849,7 @@ impl Scene {
             columns: HashMap::new(),
             origin: [0; 3],
             bindings,
+            terrain_bindings,
             entity_bindings,
             entity_texture,
             skin_base,
@@ -1506,6 +1537,9 @@ impl Scene {
 
     fn draw_terrain(&self, pass: &mut wgpu::RenderPass<'_>, which: usize, order: &[usize]) {
         pass.set_pipeline(&self.terrain_pipelines[which]);
+        if let Some(bindings) = &self.terrain_bindings {
+            pass.set_bind_group(1, bindings, &[]);
+        }
         for &instance in order {
             let (key, mask) = self.frame[instance];
             let Some(gpu) = self

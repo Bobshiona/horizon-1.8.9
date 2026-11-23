@@ -2262,3 +2262,66 @@ Section 73 counted telemetry: 352.3 / 208.0 main-thread allocations per frame (l
 peak/mean RSS 275/253 MiB, in a separate alloc-count release replay. These are not mixed into the
 paired default-release verdict. The restored default binary's SHA-256 matches the A/B/capture build.
 The complete source gate was rerun after requiring the production decoder test in the runner.
+
+
+## 74. Paged Metal argument-buffer terrain resources
+
+Previous checkpoint: `b1fa6fb180` / `e2bf2f5579`. Terrain now capability-selects a persistent binding
+array, encoded by the existing Metal HAL as an argument buffer of GPU resource IDs. Each resource
+is a 128-sprite view of the same owned texture storage: vanilla's 361 sprites use three pages, not
+361 individually tracked resources. The existing 11-bit material index selects page and layer;
+no mesh format, texture upload, lighting or protocol semantics change. The table is constructed once
+per scene and reused by solid, cutout and translucent terrain. Entity, hand and UI texture bindings
+remain separate. No new C dependency or direct OS API enters the client/core modules.
+
+Only supported devices request texture binding arrays, non-uniform sampled-texture indexing and the
+required array-element limit. Missing capabilities/limits choose the existing array path; no new
+player-facing flag is needed. Shader assembly enables wgpu's binding-array extension only for the
+native path. The initial GPU probe caught the missing extension declaration; it was fixed before
+any release gate or push.
+
+`bindless_terrain_pages_match_array_sampling_on_metal` runs both production sampling helpers on
+Metal across 260 distinct materials, crossing both page boundaries and a partially populated final
+page. Both paths match the independent reference colours and each other byte for byte. The managed
+reference gate now explicitly requires this test as well as the prior decoder and jar equivalence
+checks. Its normal native smoke logs `TERRAIN_RESOURCES mode=argument-buffer pages=3 layers=361`,
+so the integrated path is exercised, not merely a helper. The old no-array-feature device tests
+continue to compile/render the fallback shader.
+
+Source gate: 270 scoped Rust tests, 12 trace-tool tests, five benchmark-gate Python tests, strict
+Clippy including alloc-count, fmt, layer/public-tree checks, ARM64 release,
+`VANILLA_189_REFERENCE_GATE_PASS`, and `WATCHDOG_PASS packets=235 windows=2`.
+Paired A/B versus the preceding 12-byte array build, three alternating pairs:
+
+| Phase / metric | Array median | Argument-buffer median |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 576 / 298 | 575 / 309 |
+| Lobby frame p50 / CPU submit p99 (us) | 1,678 / 783 | 1,682 / 764 |
+| Lobby mesh p99 (ms) / draws per frame | 6.1 / 742.7 | 6.2 / 743.0 |
+| Flyover average FPS / 1% low | 630 / 266 | 631 / 270 |
+| Flyover frame p50 / CPU submit p99 (us) | 1,484 / 1,649 | 1,502 / 1,613 |
+| Flyover mesh p99 (ms) / draws per frame | 18.7 / 720.1 | 20.3 / 719.9 |
+| Session peak / mean RSS (MiB, median of runs) | 274 / 251 | 272 / 248 |
+
+The paired-ratio gate passes: lobby frame p50 +0.24%, CPU p99 +1.67%; flyover frame p50 +1.21%,
+CPU p99 +3.00%; `BENCH_REGRESSION=0`. Lobby CPU-tail pairs were +1.67%, -2.43%, +433.21%.
+That last outlier is retained, not replaced with a selected rerun. It triggered two fresh 20-second
+Time Profiler recordings through `tools/bob-profile.sh`, excluding startup before 4 s: sampled
+main-thread CPU 4,426 ms array vs 4,416 ms argument-buffer; Renderer::render total 2,470 vs 2,406 ms,
+Scene::draw_terrain total 370 vs 345 ms. The profiles do not reproduce a sustained CPU cost increase;
+they do not identify the cause of the earlier tail spike or certify an absence of hitches. The
+existing item-mesh rebuild remains the largest own self-time hotspot (12-13%). No FPS gain is claimed.
+
+Both 960x600 release captures were inspected: all pixels below the top 100 rows match exactly;
+1,555 pixels differ only in the already-variable distant-water band. The new capture logs the
+argument-buffer path with three pages. Separate counted telemetry is 364.1 / 219.9 main-thread
+allocations per frame (lobby / flyover), peak/mean RSS 272/250 MiB: about twelve more allocations per
+frame than the preceding counted build, so zero-allocation work remains open. The default binary
+was restored and SHA-256 checked against the A/B/capture build afterward.
+
+Evidence is private under `h189-nov23-bindless-*`, including captures and both profiler summaries;
+raw Instruments traces stay with the private trace data. Full source gate rerun: 270 scoped tests,
+12 trace tests, five Python tests, strict Clippy both modes, fmt, layers/public-tree,
+`VANILLA_189_REFERENCE_GATE_PASS`, and Watchdog parity. No public-server or account action.
+Next in order: distance/frustum-prioritized async meshing and macOS thread QoS requests. QoS is a
+scheduling request, not a guarantee of physical P/E-core affinity.

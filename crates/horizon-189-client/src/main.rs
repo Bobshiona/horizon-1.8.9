@@ -41,6 +41,7 @@ mod status;
 mod style;
 mod sysfont;
 mod terrain;
+mod terrain_bindings;
 mod tooltip;
 mod trace_bench;
 mod ui;

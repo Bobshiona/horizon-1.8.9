@@ -85,7 +85,11 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       `b1fa6fb180` (HANDOFF 73): 12-byte CPU/GPU format; 269 scoped + 12 trace + 5 gate tests, including a
       production-decoder Metal readback. Vertex payload -25%; paired frame p50 -1.17% / +0.19%,
       CPU p99 -12.39% / -3.71%. Captures match below the variable far-water band; RSS unchanged.
-- [ ] Bindless Metal argument buffers.
+- [x] Bindless Metal argument buffers.
+      HANDOFF 74: capability-selected persistent 128-sprite pages, fallback retained; 270 scoped
+      + 12 trace + 5 gate tests. GPU readback matches 260 materials across pages byte for byte.
+      Paired frame p50 +0.24% / +1.21%, CPU p99 +1.67% / +3.00%; one CPU-tail outlier profiled.
+      Counted allocations rise by about twelve/frame and remain a target for the hot-loop work.
 - [ ] Distance/frustum-prioritized async meshing; QoS pinning (USER_INTERACTIVE for tick, raw
       mouse and submission; UTILITY for meshing, decoding and pack rebuilds).
 - [ ] Persistent GPU render regions; Metal compute frustum/occlusion culling into

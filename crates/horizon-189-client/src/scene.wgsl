@@ -83,12 +83,12 @@ fn terrain_shade(in: TerrainOut, texel: vec4<f32>) -> vec4<f32> {
 // reject hidden fragments before shading.
 @fragment
 fn terrain_solid(in: TerrainOut) -> @location(0) vec4<f32> {
-    return terrain_shade(in, textureSample(block_texture, block_sampler, in.uv, in.layer));
+    return terrain_shade(in, sample_terrain(in.uv, in.layer));
 }
 
 @fragment
 fn terrain_cutout(in: TerrainOut) -> @location(0) vec4<f32> {
-    let texel = textureSample(block_texture, block_sampler, in.uv, in.layer);
+    let texel = sample_terrain(in.uv, in.layer);
     if texel.a < 0.1 { discard; }
     return terrain_shade(in, texel);
 }

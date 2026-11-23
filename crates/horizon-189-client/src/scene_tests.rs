@@ -345,7 +345,7 @@ fn packed_terrain_fields_decode_on_metal() -> Result<(), Box<dyn Error>> {
     // Execute the production decoder, not a test copy of its masks/shifts.
     let source = format!(
         "{}{}",
-        include_str!("scene.wgsl"),
+        crate::terrain_bindings::shader_source(false),
         r#"
 @group(0) @binding(3) var<storage, read> probe_input: array<u32>;
 @group(0) @binding(4) var<storage, read_write> probe_output: array<f32>;
@@ -418,5 +418,238 @@ fn packing_probe(@builtin(global_invocation_id) id: vec3<u32>) {
     drop(mapped);
     readback.unmap();
     eprintln!("METAL_TERRAIN_PACKING_PASS cases={}", expected.len());
+    Ok(())
+}
+
+#[test]
+#[ignore = "Requires a Metal GPU with Tier 2 argument buffers"]
+fn bindless_terrain_pages_match_array_sampling_on_metal() -> Result<(), Box<dyn Error>> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::METAL;
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
+    let features = crate::terrain_bindings::requested_features(&adapter);
+    assert!(
+        !features.is_empty(),
+        "Tier 2 required for this ignored GPU regression"
+    );
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features: features,
+        required_limits: wgpu::Limits {
+            max_texture_array_layers: adapter.limits().max_texture_array_layers,
+            max_binding_array_elements_per_shader_stage: crate::terrain_bindings::MAX_PAGES,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))?;
+    let layers = 260u32; // Three pages, including a partially populated last page.
+    let colors: Vec<[u8; 4]> = (0..layers)
+        .map(|i| [(i * 71) as u8, (i * 37) as u8, (i * 19) as u8, 255])
+        .collect();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Argument page reference colours"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        texture.as_image_copy(),
+        bytemuck::cast_slice(&colors),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        texture.size(),
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let sampler = device.create_sampler(&Default::default());
+    let common = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Probe texture sampling resources"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Probe fallback resources"),
+        layout: &common,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let width = 384u32; // A 256-byte aligned readback row.
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Argument page probe target"),
+        size: wgpu::Extent3d {
+            width,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&Default::default());
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Argument page probe readback"),
+        size: u64::from(width * 4),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut reference = Vec::new();
+    for bindless in [false, true] {
+        let pages = bindless
+            .then(|| crate::terrain_bindings::layout(&device, layers).expect("argument layout"));
+        let resources = pages
+            .as_ref()
+            .map(|layout| crate::terrain_bindings::bind(&device, layout, &texture, layers));
+        let mut layouts = vec![Some(&common)];
+        if let Some(layout) = &pages {
+            layouts.push(Some(layout));
+        }
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Argument page probe layout"),
+            bind_group_layouts: &layouts,
+            ..Default::default()
+        });
+        let source = format!(
+            "{}{}",
+            crate::terrain_bindings::shader_source(bindless),
+            r#"
+@vertex fn texture_probe_vertex(@builtin(vertex_index) id: u32) -> @builtin(position) vec4<f32> {
+    let xy = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    return vec4<f32>(xy[id], 0.0, 1.0);
+}
+@fragment fn texture_probe_fragment(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
+    return sample_terrain(vec2<f32>(0.5), min(u32(pixel.x), 259u));
+}
+"#
+        );
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Production terrain sampling probe"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Argument page probe"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("texture_probe_vertex"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("texture_probe_fragment"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Argument page colours"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bindings, &[]);
+            if let Some(resources) = &resources {
+                pass.set_bind_group(1, resources, &[]);
+            }
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: None,
+                },
+            },
+            target.size(),
+        );
+        let submission = queue.submit([encoder.finish()]);
+        let (send, receive) = std::sync::mpsc::channel();
+        readback.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = send.send(result);
+        });
+        device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(Duration::from_secs(5)),
+        })?;
+        receive.recv_timeout(Duration::from_secs(5))??;
+        let mapped = readback.get_mapped_range(..)?;
+        for (i, pixel) in mapped.as_chunks::<4>().0.iter().enumerate() {
+            let expected = &colors[i.min(layers as usize - 1)];
+            assert!(
+                pixel.iter().zip(expected).all(|(a, b)| a.abs_diff(*b) <= 1),
+                "mode={bindless} layer={i} {pixel:?} != {expected:?}"
+            );
+        }
+        if bindless {
+            assert_eq!(&*mapped, reference.as_slice());
+        } else {
+            reference.extend_from_slice(&mapped);
+        }
+        drop(mapped);
+        readback.unmap();
+    }
+    eprintln!("METAL_TERRAIN_ARGUMENT_BUFFER_PASS pages=3 layers={layers}");
     Ok(())
 }
