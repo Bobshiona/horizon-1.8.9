@@ -30,6 +30,7 @@ mod pacing;
 mod particles;
 mod pause;
 mod pvp_metrics;
+mod render_regions;
 mod renderer;
 mod scene;
 #[cfg(test)]

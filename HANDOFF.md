@@ -2400,3 +2400,62 @@ strict Clippy both modes, fmt, layers/public-tree, ARM64 default release, native
 publication, VANILLA_189_REFERENCE_GATE_PASS and WATCHDOG_PASS packets=235 windows=2.
 No public-server or account action. Next: persistent GPU terrain render regions, followed by
 compute frustum/occlusion culling and actual native MTLIndirectCommandBuffer execution.
+
+
+## 76. Persistent terrain render regions
+
+Previous checkpoint: b895d0be5d / 4ea22f3b83. Terrain passes now lease disjoint quad-aligned
+ranges inside persistent 3 MiB GPU pages instead of allocating one Metal buffer per column/pass.
+Larger passes get a suitably sized page, bounded by device limits and signed base-vertex range.
+The portable free-range allocator coalesces adjacent holes; RAII leases return space after mesh
+replacement/removal and on partial construction failure. Live meshes retain their pages. Trimming
+keeps at most one spare standard empty page, while disconnect drops all terrain pages. Surface
+format recreation transfers geometry and its page pool together.
+
+Drawing uses the shared quad indices plus each lease's base vertex. Consecutive meshes in the
+same page share a vertex binding; near-to-far solid/cutout order and far-to-near translucent order
+remain intact. Page pooling does not yet implement compute culling or MTLIndirectCommandBuffer;
+those remain the next ordered work. Block-entity/entity buffers are unchanged.
+
+A 10,000-operation fragmented allocate/free regression checks that live ranges never overlap,
+free plus live ranges exactly cover capacity, and final releases coalesce to the full page.
+A required native Metal readback regression submits a copy of old geometry, releases its lease,
+uploads replacement bytes into the same range, and verifies the earlier submission retains its
+original bytes while the replacement and adjacent live geometry remain correct. It also checks
+page spill, reuse, empty-page trimming and invalid quad payload rejection. Terrain uploads occur
+outside render-pass encoding, after the preceding frame was submitted; queue ordering protects
+those earlier frames. Both new regressions pass. Full verification is recorded below.
+
+
+Final source gate: 311 scoped Rust tests (including the required region Metal readback), 12
+trace-tool tests, five benchmark-gate Python tests, strict Clippy including alloc-count, fmt,
+layer/public-tree checks, ARM64 default release, VANILLA_189_REFERENCE_GATE_PASS and
+WATCHDOG_PASS packets=235 windows=2. Three alternating A/B pairs against the preceding priority/QoS
+default give:
+
+| Phase / metric | Previous default median | Persistent regions median |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 547 / 288 | 622 / 280 |
+| Lobby frame p50 / CPU submit p99 (us) | 1767 / 970 | 1542 / 891 |
+| Lobby frame p99 / GPU p99 (us) | 3113 / 2293 | 3075 / 2350 |
+| Lobby mesh p99 (ms) / draws per frame | 6.6 / 742.8 | 6.3 / 742.7 |
+| Flyover average FPS / 1% low | 580 / 179 | 661 / 203 |
+| Flyover frame p50 / CPU submit p99 (us) | 1570 / 1847 | 1370 / 1663 |
+| Flyover frame p99 / GPU p99 (us) | 4292 / 3113 | 4066 / 2966 |
+| Flyover mesh p99 (ms) / draws per frame | 25.9 / 720.1 | 25.8 / 718.2 |
+| Peak / mean RSS (MiB) | 274 / 251 | 255 / 239 |
+
+The paired-ratio gate passes: lobby frame p50 -10.97%, CPU submit p99 +18.48%; flyover frame
+p50 -12.80%, CPU p99 -9.96%; BENCH_REGRESSION=0. Lobby CPU-tail pairs were +18.48%, -56.21%,
++56.08%; all are retained. Fresh 20-second Time Profiler recordings (excluding startup before
+4 s) sample 4,350 ms of main-thread CPU in each build; Renderer::render total 2,408 vs 2,215 ms,
+Scene::draw_terrain total 297 vs 270 ms. The profiles do not reproduce a sustained CPU increase;
+the earlier tail spike remains unexplained, and no absence-of-hitches claim is made. Draw counts
+stay essentially unchanged: this is resource reuse, not compute culling or indirect execution.
+
+Both 960x600 default release captures were inspected and are pixel-identical, including the
+water band. Counted telemetry is 361.0 / 212.9 main-thread allocations per frame (lobby / flyover),
+peak/mean RSS 262/242 MiB; the zero-allocation milestone remains open. The default binary was
+restored and compared byte-for-byte with the captured/A/B-tested build. Private evidence prefix:
+h189-nov23-regions-*. No public-server/account action. Next: genuine Metal compute frustum culling
+into native indirect command buffers, followed by conservative GPU occlusion.

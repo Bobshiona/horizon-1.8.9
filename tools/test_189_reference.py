@@ -175,6 +175,7 @@ def main() -> None:
                 "terrain::tests::greedy_meshing_covers_exactly_the_cells_and_texels_of_per_block_faces",
                 "scene_tests::packed_terrain_fields_decode_on_metal",
                 "scene_tests::bindless_terrain_pages_match_array_sampling_on_metal",
+                "render_regions::metal_tests::reused_regions_preserve_submitted_data_and_neighboring_live_ranges_on_metal",
             ]
             results = test_log.read_text(errors="replace")
             for name in required:

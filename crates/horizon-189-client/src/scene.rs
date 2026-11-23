@@ -1,5 +1,5 @@
 //! Persistent Metal resources for the baked-model fixture and live terrain.
-//! Terrain lives in packed column-local buffers per column and pass, drawn
+//! Terrain lives in leased ranges of persistent GPU pages per column/pass, drawn
 //! through one shared quad index list with the column's offset as instance
 //! data. Each 16-block section is frustum-culled per frame; solid then cutout
 //! columns draw near to far, translucent columns far to near. Depth is
@@ -58,7 +58,7 @@ struct GpuMesh {
 }
 
 struct GpuPass {
-    buffer: wgpu::Buffer,
+    storage: crate::render_regions::Lease,
     sections: [u32; 17],
 }
 
@@ -171,6 +171,7 @@ pub struct Scene {
     hand_glint_count: u32,
     fixture: Option<GpuMesh>,
     columns: HashMap<(i32, i32), GpuColumn>,
+    regions: crate::render_regions::Pool,
     origin: [i64; 3],
     bindings: wgpu::BindGroup,
     terrain_bindings: Option<wgpu::BindGroup>,
@@ -847,6 +848,7 @@ impl Scene {
             hand_glint_count: 0,
             fixture: None,
             columns: HashMap::new(),
+            regions: Default::default(),
             origin: [0; 3],
             bindings,
             terrain_bindings,
@@ -930,7 +932,6 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pass: &TerrainPass,
-        label: &str,
     ) -> Result<Option<GpuPass>, Box<dyn Error>> {
         if pass.vertices.is_empty() {
             return Ok(None);
@@ -943,15 +944,9 @@ impl Scene {
             self.quad_capacity = pass.quads().next_power_of_two();
             self.quads = Self::quad_buffer(device, queue, self.quad_capacity);
         }
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&buffer, 0, bytes);
+        let storage = self.regions.upload(device, queue, bytes)?;
         Ok(Some(GpuPass {
-            buffer,
+            storage,
             sections: pass.sections,
         }))
     }
@@ -988,9 +983,9 @@ impl Scene {
                 let column = GpuColumn {
                     visibility: mesh.visibility,
                     passes: [
-                        self.pass_buffer(device, queue, &mesh.solid, "Column solid")?,
-                        self.pass_buffer(device, queue, &mesh.cutout, "Column cutout")?,
-                        self.pass_buffer(device, queue, &mesh.translucent, "Column translucent")?,
+                        self.pass_buffer(device, queue, &mesh.solid)?,
+                        self.pass_buffer(device, queue, &mesh.cutout)?,
+                        self.pass_buffer(device, queue, &mesh.translucent)?,
                     ],
                     entity: Self::mesh_buffer(
                         device,
@@ -1002,6 +997,7 @@ impl Scene {
                 self.columns.insert(update.key, column);
             }
         }
+        self.regions.trim();
         Ok(())
     }
 
@@ -1321,6 +1317,7 @@ impl Scene {
     /// Keep another scene's geometry after a surface format change.
     pub fn adopt(&mut self, old: Scene) {
         self.columns = old.columns;
+        self.regions = old.regions;
         self.reached = None;
         self.quads = old.quads;
         self.quad_capacity = old.quad_capacity;
@@ -1331,6 +1328,7 @@ impl Scene {
     /// Drop all geometry from a finished connection while retaining GPU resources.
     pub fn clear_world(&mut self) {
         self.columns.clear();
+        self.regions = Default::default();
         self.frame.clear();
         self.reached = None;
         self.fixture = None;
@@ -1540,6 +1538,7 @@ impl Scene {
         if let Some(bindings) = &self.terrain_bindings {
             pass.set_bind_group(1, bindings, &[]);
         }
+        let mut page = None;
         for &instance in order {
             let (key, mask) = self.frame[instance];
             let Some(gpu) = self
@@ -1549,11 +1548,19 @@ impl Scene {
             else {
                 continue;
             };
-            pass.set_vertex_buffer(0, gpu.buffer.slice(..));
+            let id = gpu.storage.page_id();
+            if page != Some(id) {
+                pass.set_vertex_buffer(0, gpu.storage.buffer().slice(..));
+                page = Some(id);
+            }
             let instance = instance as u32;
             for (start, end) in section_runs(mask, &gpu.sections) {
                 self.draws.set(self.draws.get() + 1);
-                pass.draw_indexed(start * 6..end * 6, 0, instance..instance + 1);
+                pass.draw_indexed(
+                    start * 6..end * 6,
+                    gpu.storage.first_vertex(),
+                    instance..instance + 1,
+                );
             }
         }
     }
