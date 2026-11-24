@@ -378,7 +378,9 @@ impl Renderer {
         (
             (self.config.width, self.config.height),
             self.adapter.get_info().name,
-            self.scene.as_ref().map_or(0, Scene::drawn_sections),
+            self.scene
+                .as_ref()
+                .map_or(0, |scene| scene.drawn_sections(&self.config)),
             self.view_distance,
         )
     }
@@ -859,45 +861,62 @@ impl Renderer {
             scene.prepare(&self.device, &self.queue, &self.config);
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Native frame"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Native surface clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: SKY[0],
-                            g: SKY[1],
-                            b: SKY[2],
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: self.scene.as_ref().map(|scene| {
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view: &scene.depth,
-                        depth_ops: Some(wgpu::Operations {
-                            // Reversed-Z: far is zero.
-                            load: wgpu::LoadOp::Clear(0.0),
+        let native = self
+            .scene
+            .as_mut()
+            .map(|scene| scene.encode_native(&self.device, &self.queue, &self.config, &view))
+            .transpose()?
+            .flatten();
+        let mut encoder = if let Some(native) = native {
+            native.render(|pass| {
+                if let Some(scene) = &self.scene {
+                    scene.draw(pass);
+                }
+            })
+        } else {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Native frame"),
+                });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Native surface clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: {
+                                wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: SKY[0],
+                                    g: SKY[1],
+                                    b: SKY[2],
+                                    a: 1.0,
+                                })
+                            },
                             store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }
-                }),
-                ..Default::default()
-            });
-            if let Some(scene) = &self.scene {
-                scene.draw(&mut pass);
+                        },
+                    })],
+                    depth_stencil_attachment: self.scene.as_ref().map(|scene| {
+                        wgpu::RenderPassDepthStencilAttachment {
+                            view: &scene.depth,
+                            depth_ops: Some(wgpu::Operations {
+                                // Reversed-Z: far is zero.
+                                load: { wgpu::LoadOp::Clear(0.0) },
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }
+                    }),
+                    ..Default::default()
+                });
+                if let Some(scene) = &self.scene {
+                    scene.draw(&mut pass);
+                }
             }
-        }
+            encoder
+        };
         let plain = texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.config.format.remove_srgb_suffix()),
             ..Default::default()

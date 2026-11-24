@@ -2607,3 +2607,50 @@ but paired frame p50 +0.53% / -0.08% (lobby/flyover) shows no useful speedup. On
 CPU-tail pair is retained; paired median +8.73%. Fresh profiles sample main-thread CPU
 4,257 -> 4,278 ms and do not reproduce that sustained increase. The spike remains unexplained.
 No energy or latency benefit is claimed for that private candidate.
+
+## 82. Native GPU-driven terrain: frustum, facing and occlusion culling into indirect commands
+
+Previous commit: 4ea200cdf3. Sprint 1.2 row "Metal compute frustum/occlusion culling into
+actual native MTLIndirectCommandBuffer".
+
+- **Native terrain leaf** (`horizon-metal-terrain`, macOS/Metal only behind `cfg`; every other
+  adapter keeps the WGSL renderer). A compute kernel tests each section draw against the five
+  frustum planes and writes or resets its indexed command in a real `MTLIndirectCommandBuffer`;
+  pages of terrain geometry are bound through a Tier 2 argument table, so terrain is at most a
+  handful of executions per frame (draw calls 743 -> about 11 in the lobby, 720 -> 8 in flight).
+  Vendored source-only wgpu / wgpu-core 30.0.1 add the opt-in native-hooks seam
+  (`third_party/wgpu-core/NATIVE_HOOKS.md` records upstream checksums, patch scope and the
+  safety contracts); callbacks hold only immutable native handles and are retained through the
+  submission fence.
+- **Facing groups**: the mesher groups each section's solid and cutout quads by winding normal
+  (six axis directions, then any). A group whose every face lies behind its own plane range as
+  seen from the eye is never submitted; back faces were culled by the pipeline anyway, so this
+  only removes work. The owned jar's 12,235 cull faces all file under their own side.
+- **GPU occlusion**, same frame only: solid terrain within two chunks is drawn first; a depth
+  pyramid (farthest depth per texel, padded texels far) is built from it; every later command
+  whose whole box, projected with this frame's camera, lies behind every pyramid texel it
+  touches is reset. Boxes reaching the eye plane always stay. No history, so nothing pops.
+- Kernel resets culled commands itself (no reset blit); Metal's optimize pass stays on.
+
+Measurements (three alternating pairs against 4ea200cdf3, hidden 960 x 600, all pairs kept):
+lobby frame p50 +2.54% (pairs +8.29%, -2.22%, +2.54%), CPU p99 +7.74% (one pair +65.84%,
+profiled: sampled main-thread CPU 3,959 ms against 4,202 ms, not reproduced); flyover frame p50
+-5.16% (+1.47%, -8.15%, -5.16%), CPU p99 -20.96%. 1% lows: lobby 230 -> 345 FPS, flyover
+205 -> 288 FPS (medians); mesh p99 11.7 -> 6.2 ms lobby. Terrain captures pixel-identical with
+occlusion active (`NATIVE_OCCLUSION_ACTIVE`); crowd captures render players, labels, items and
+water correctly (crowd poses differ by capture time). Counted build: main-thread allocations
+246 -> 275 per frame lobby, 204 -> 234 flyover; peak RSS 263 -> 295 MB (pyramid, command and
+input slots). GPU p50 in the lobby is still about 0.1 ms above the WGSL path in single runs:
+the extra compute/blit encoders cost more there than culling saves; occlusion and facing win
+in the flyover.
+
+Measured along the way (not shipped): cutout terrain is about 45% of GPU frame time in the
+lobby and Fancy leaves alone about 37% (skip experiments); ordering faces nearest-first per
+facing group made GPU time worse (+45 to +60 us) and was dropped.
+
+Regressions: native frustum include/cull/reset across frames, page alternation and growth,
+translucency after entities with producer teardown, packed-vertex boundaries over 2,048 layers,
+occlusion drops only commands hidden behind occluders (pixels identical with it off), near-plane
+boxes, occluder holes, rectangular depth reduction, mapped-input rejection; facing groups and
+runs; jar winding check. Gate: 336 scoped tests, 12 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.

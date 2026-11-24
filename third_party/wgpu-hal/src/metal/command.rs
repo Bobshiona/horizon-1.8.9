@@ -157,6 +157,19 @@ impl super::CommandEncoder {
         self.raw_cmd_buf.as_deref()
     }
 
+    /// Borrows the enclosing render encoder without changing its lifetime.
+    pub fn raw_render_encoder(&self) -> Option<&ProtocolObject<dyn MTLRenderCommandEncoder>> {
+        self.state.render.as_deref()
+    }
+
+    /// Ends implicit copy/AS encoders before externally encoded standalone work.
+    /// The caller must not invoke this inside a render or compute pass.
+    pub unsafe fn prepare_native_commands(&mut self) {
+        assert!(self.state.render.is_none() && self.state.compute.is_none());
+        self.leave_blit();
+        self.leave_acceleration_structure_builder();
+    }
+
     fn enter_blit(&mut self) -> Retained<ProtocolObject<dyn MTLBlitCommandEncoder>> {
         if self.state.blit.is_none() {
             self.leave_acceleration_structure_builder();

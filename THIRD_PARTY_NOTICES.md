@@ -92,7 +92,8 @@ where WebGL2's minimum 16 was reported before), so a pipeline layout the driver 
 not refused. Its GL backend copies depth and stencil textures with a framebuffer blit, where
 `glCopyTexSubImage` read only colour and left the copy empty. Its DirectX 12 backend leaves out
 an adapter that offers neither `IDXGIAdapter4` nor `IDXGIAdapter3`, where an `unwrap` ended the
-program. It is licensed under MIT or
+program. Its Metal backend also exposes borrowed buffer and texture-view handles for the
+native terrain encoder; resource retention stays in the Rust native leaf. It is licensed under MIT or
 Apache-2.0; both licenses are in that folder
 (`LICENSE.MIT`, `LICENSE.APACHE`).
 
@@ -452,3 +453,13 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FO
 OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
+
+## wgpu and wgpu-core
+
+`third_party/wgpu` and `third_party/wgpu-core` contain source-only gfx-rs wgpu 30.0.1
+(MIT OR Apache-2.0; both licenses included). The opt-in `native-hooks` extension records
+external Metal work in deferred command order and retains its owned resources through
+submission completion. Render hooks reset pipeline and bindings like render bundles.
+Native commands are rejected during wgpu tracing, since they cannot be serialized.
+The Metal HAL also exposes the borrowed active render encoder and flushes implicit copy
+encoders before standalone external work; it keeps its normal high-level/raw API guard.

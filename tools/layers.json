@@ -20,6 +20,7 @@
     "crates/horizon-telemetry-server/Cargo.toml"
   ],
   "crates": {
+    "horizon-metal-terrain": "engine",
     "horizon-189-client": "engine",
     "horizon-189-trace": "tool",
     "horizon-assets-189": "engine",

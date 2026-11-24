@@ -24,7 +24,7 @@ SERVER_URL = f"https://launcher.mojang.com/v1/objects/{SERVER_SHA1}/server.jar"
 PACKAGES = [
     "horizon-189-client", "horizon-protocol-47", "horizon-auth",
     "horizon-world-189", "horizon-assets-189", "horizon-physics-189",
-    "horizon-client-platform", "horizon-threads",
+    "horizon-client-platform", "horizon-threads", "horizon-metal-terrain",
 ]
 
 
@@ -176,6 +176,13 @@ def main() -> None:
                 "scene_tests::packed_terrain_fields_decode_on_metal",
                 "scene_tests::bindless_terrain_pages_match_array_sampling_on_metal",
                 "render_regions::metal_tests::reused_regions_preserve_submitted_data_and_neighboring_live_ranges_on_metal",
+                "tests::native_indexed_frustum_commands_preserve_pixels_and_reset_between_frames",
+                "tests::native_translucency_follows_entities_and_survives_producer_teardown",
+                "tests::native_packed_vertex_fields_cover_layer_uv_and_position_boundaries",
+                "tests::native_occlusion_drops_only_commands_hidden_behind_the_occluders",
+                "tests::native_occlusion_preserves_commands_visible_through_an_occluder_hole",
+                "tests::native_occlusion_preserves_eye_and_near_plane_crossing_commands",
+                "macos::deferred_tests::hiz_reduce_preserves_minimum_when_one_source_axis_is_one",
             ]
             results = test_log.read_text(errors="replace")
             for name in required:
@@ -192,6 +199,8 @@ def main() -> None:
                 raise RuntimeError("Native Metal smoke failed")
             if "MESH_VIEW_READY source=live-camera" not in (ROOT / "reference-gate-metal.log").read_text(errors="replace"):
                 raise AssertionError("Native camera did not reach the mesh scheduler")
+            if "NATIVE_TERRAIN_SUBMIT candidates=" not in (ROOT / "reference-gate-metal.log").read_text(errors="replace"):
+                raise AssertionError("Native indirect terrain path was not exercised")
             if "<NativeMetal> native chat check" not in server_log.read_text(errors="replace"):
                 raise AssertionError("Server did not receive the chat sent through the chat screen")
             flags = [line for line in server_log.read_text(errors="replace").splitlines() if "moved wrongly" in line or "moved too quickly" in line]

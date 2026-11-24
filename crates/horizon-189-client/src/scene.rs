@@ -58,15 +58,107 @@ struct GpuMesh {
 }
 
 struct GpuPass {
+    bounds: [[f32; 6]; 16],
+    /// Per section: quad offsets of each facing group (`TerrainPass::buckets`).
+    facing: [[u32; 8]; 16],
     storage: crate::render_regions::Lease,
     sections: [u32; 17],
 }
 
 /// Solid, cutout and translucent terrain, then block entities.
 struct GpuColumn {
+    terrain_bounds: Option<[f32; 6]>,
     passes: [Option<GpuPass>; 3],
     entity: Option<GpuMesh>,
     visibility: [u64; 16],
+}
+
+/// Exact conservative union, cached on mesh replacement. Empty sections do not
+/// inject zero bounds. This is only a column broad phase; native compute still
+/// applies the five frustum planes independently to every candidate section.
+fn terrain_envelope(passes: [&TerrainPass; 3]) -> Option<[f32; 6]> {
+    let mut envelope = None::<[f32; 6]>;
+    for pass in passes {
+        for section in 0..16 {
+            if pass.sections[section] == pass.sections[section + 1] {
+                continue;
+            }
+            let bounds = pass.bounds[section];
+            if let Some(union) = &mut envelope {
+                for axis in 0..3 {
+                    union[axis] = union[axis].min(bounds[axis]);
+                    union[axis + 3] = union[axis + 3].max(bounds[axis + 3]);
+                }
+            } else {
+                envelope = Some(bounds);
+            }
+        }
+    }
+    envelope
+}
+
+/// Whether any face of facing group `group` (a `FACES` direction) inside
+/// `low..high` can face the eye. A face along +axis is front-facing only from
+/// beyond its plane, so a group is hidden when the eye is on the far side of
+/// every plane it could lie on; 1/64 block (the packing step) keeps edge-on
+/// faces and rounding conservative.
+fn facing_visible(group: usize, eye: [f32; 3], low: [f32; 3], high: [f32; 3]) -> bool {
+    let direction = crate::terrain::FACES[group];
+    let axis = direction
+        .iter()
+        .position(|&d| d != 0)
+        .expect("axis direction");
+    const MARGIN: f32 = 1.0 / 64.0;
+    if direction[axis] > 0 {
+        eye[axis] > low[axis] - MARGIN
+    } else {
+        eye[axis] < high[axis] + MARGIN
+    }
+}
+
+/// Horizontal distance (blocks, to column centres) within which solid terrain is
+/// drawn first as the occluders for GPU occlusion culling. Two chunks covers the
+/// ground and walls around the player; `BOB_OCCLUDER_REACH` overrides it for
+/// measurement (0 turns occlusion off).
+fn occluder_reach() -> f32 {
+    static REACH: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *REACH.get_or_init(|| {
+        std::env::var("BOB_OCCLUDER_REACH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(32.0)
+    })
+}
+
+/// Calls `emit` with each run of quads (`TerrainPass::buckets` offsets) whose
+/// facing groups can be seen from `eye`; empty groups never split a run. For
+/// translucent passes every quad is in `ANY_FACING`, so the whole section is one run.
+fn facing_runs(
+    groups: [u32; 8],
+    eye: [f32; 3],
+    low: [f32; 3],
+    high: [f32; 3],
+    mut emit: impl FnMut(std::ops::Range<u32>),
+) {
+    let mut run: Option<u32> = None;
+    for group in 0..=crate::terrain::ANY_FACING {
+        let (start, end) = (groups[group], groups[group + 1]);
+        if start == end {
+            continue;
+        }
+        let visible = group == crate::terrain::ANY_FACING || facing_visible(group, eye, low, high);
+        match (visible, run) {
+            (true, None) => run = Some(start),
+            (false, Some(first)) => {
+                emit(first..start);
+                run = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(first) = run {
+        emit(first..groups[7]);
+    }
 }
 
 /// `RenderGlobal.setupTerrain`'s occlusion walk: breadth-first from the
@@ -172,6 +264,13 @@ pub struct Scene {
     fixture: Option<GpuMesh>,
     columns: HashMap<(i32, i32), GpuColumn>,
     regions: crate::render_regions::Pool,
+    native: Option<Box<dyn horizon_metal_terrain::TerrainEncoder>>,
+    native_draws: Vec<horizon_metal_terrain::Draw>,
+    native_active: bool,
+    native_reported: bool,
+    /// Commands GPU occlusion has dropped so far (from completed frames).
+    occluded: u64,
+    entity_frame: Vec<(i32, i32)>,
     origin: [i64; 3],
     bindings: wgpu::BindGroup,
     terrain_bindings: Option<wgpu::BindGroup>,
@@ -828,6 +927,8 @@ impl Scene {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let native = horizon_metal_terrain::create(device, &texture, config.format)?;
+        eprintln!("NATIVE_TERRAIN_READY enabled={}", native.is_some());
         let mut scene = Self {
             draws: std::cell::Cell::new(0),
             pipeline,
@@ -849,6 +950,12 @@ impl Scene {
             fixture: None,
             columns: HashMap::new(),
             regions: Default::default(),
+            native,
+            native_draws: Vec::new(),
+            native_active: false,
+            native_reported: false,
+            occluded: 0,
+            entity_frame: Vec::new(),
             origin: [0; 3],
             bindings,
             terrain_bindings,
@@ -946,6 +1053,8 @@ impl Scene {
         }
         let storage = self.regions.upload(device, queue, bytes)?;
         Ok(Some(GpuPass {
+            bounds: pass.bounds,
+            facing: std::array::from_fn(|section| pass.buckets(section)),
             storage,
             sections: pass.sections,
         }))
@@ -981,6 +1090,11 @@ impl Scene {
                     self.reached = None;
                 }
                 let column = GpuColumn {
+                    terrain_bounds: terrain_envelope([
+                        &mesh.solid,
+                        &mesh.cutout,
+                        &mesh.translucent,
+                    ]),
                     visibility: mesh.visibility,
                     passes: [
                         self.pass_buffer(device, queue, &mesh.solid)?,
@@ -1330,6 +1444,9 @@ impl Scene {
         self.columns.clear();
         self.regions = Default::default();
         self.frame.clear();
+        self.native_draws.clear();
+        self.entity_frame.clear();
+        self.native_active = false;
         self.reached = None;
         self.fixture = None;
         self.origin = [0; 3];
@@ -1342,19 +1459,33 @@ impl Scene {
     }
 
     /// F3's `C:`: sections drawn this frame that have geometry.
-    pub fn drawn_sections(&self) -> u32 {
+    pub fn drawn_sections(&self, config: &wgpu::SurfaceConfiguration) -> u32 {
+        let planes = self.planes(config);
         self.frame
             .iter()
-            .filter_map(|(key, mask)| Some((self.columns.get(key)?, *mask)))
-            .map(|(column, mask)| {
+            .filter_map(|(key, mask)| Some((*key, self.columns.get(key)?, *mask)))
+            .map(|(key, column, mask)| {
+                let base = Vec3::new(
+                    (i64::from(key.0) * 16 - self.origin[0]) as f32,
+                    -(self.origin[1] as f32),
+                    (i64::from(key.1) * 16 - self.origin[2]) as f32,
+                );
                 (0..16)
                     .filter(|&s| {
                         mask & (1 << s) != 0
-                            && column
-                                .passes
-                                .iter()
-                                .flatten()
-                                .any(|pass| pass.sections[s + 1] > pass.sections[s])
+                            && column.passes.iter().flatten().any(|pass| {
+                                pass.sections[s + 1] > pass.sections[s]
+                                    && (self.native.is_none()
+                                        || Self::visible(
+                                            &planes,
+                                            base + Vec3::from_array(
+                                                pass.bounds[s][..3].try_into().expect("xyz"),
+                                            ),
+                                            base + Vec3::from_array(
+                                                pass.bounds[s][3..].try_into().expect("xyz"),
+                                            ),
+                                        ))
+                            })
                     })
                     .count() as u32
             })
@@ -1384,7 +1515,9 @@ impl Scene {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                // Readable so GPU occlusion can build its depth pyramid from it.
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
             .create_view(&Default::default())
@@ -1467,6 +1600,9 @@ impl Scene {
         config: &wgpu::SurfaceConfiguration,
     ) {
         let planes = self.planes(config);
+        self.native_active = false;
+        self.entity_frame.clear();
+        let native = self.native.is_some();
         let camera = [
             ((f64::from(self.eye.x) + self.origin[0] as f64) / 16.0).floor() as i32,
             ((f64::from(self.eye.y) + self.origin[1] as f64) / 16.0).floor() as i32,
@@ -1494,15 +1630,30 @@ impl Scene {
                 -self.origin[1] as f32,
                 (i64::from(z) * 16 - self.origin[2]) as f32,
             );
-            if !Self::visible(&planes, min, min + Vec3::new(16.0, 256.0, 16.0)) {
+            let column_visible = Self::visible(&planes, min, min + Vec3::new(16.0, 256.0, 16.0));
+            let terrain_visible = if native {
+                column.terrain_bounds.is_some_and(|bounds| {
+                    let low = min + Vec3::from_array(bounds[..3].try_into().expect("xyz"))
+                        - Vec3::splat(1.0 / 64.0);
+                    let high = min
+                        + Vec3::from_array(bounds[3..].try_into().expect("xyz"))
+                        + Vec3::splat(1.0 / 64.0);
+                    Self::visible(&planes, low, high)
+                })
+            } else {
+                column_visible
+            };
+            if !terrain_visible && !(column_visible && column.entity.is_some()) {
                 continue;
             }
             let reach = occlusion.map_or(u16::MAX, |walk| walk.get(&(x, z)).copied().unwrap_or(0));
             let mut mask = 0u16;
-            for section in (0..16).filter(|section| reach & (1 << section) != 0) {
-                let low = min + Vec3::new(0.0, section as f32 * 16.0, 0.0);
-                if Self::visible(&planes, low, low + Vec3::splat(16.0)) {
-                    mask |= 1 << section;
+            if terrain_visible {
+                for section in (0..16).filter(|section| reach & (1 << section) != 0) {
+                    let low = min + Vec3::new(0.0, section as f32 * 16.0, 0.0);
+                    if native || Self::visible(&planes, low, low + Vec3::splat(16.0)) {
+                        mask |= 1 << section;
+                    }
                 }
             }
             // Block entities are culled with the column, not by section.
@@ -1515,6 +1666,12 @@ impl Scene {
             visible.push((distance, (x, z), mask, min));
         }
         visible.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.entity_frame
+            .extend(visible.iter().filter_map(|&(_, key, _, base)| {
+                (self.columns.get(&key)?.entity.is_some()
+                    && Self::visible(&planes, base, base + Vec3::new(16.0, 256.0, 16.0)))
+                .then_some(key)
+            }));
         if visible.len() as u64 > self.base_capacity {
             self.base_capacity = (visible.len() as u64).next_power_of_two();
             self.bases = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1531,6 +1688,123 @@ impl Scene {
         self.frame.clear();
         self.frame
             .extend(visible.iter().map(|&(_, key, mask, _)| (key, mask)));
+    }
+
+    /// Build portable metadata after the conservative column broad phase. The
+    /// GPU refines section frustum visibility; VisGraph and ordering stay in Rust.
+    pub fn encode_native(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+        target: &wgpu::TextureView,
+    ) -> Result<Option<horizon_metal_terrain::Encoded>, Box<dyn Error>> {
+        let planes = self.planes(config).map(|plane| plane.to_array());
+        let Some(native) = self.native.as_mut() else {
+            return Ok(None);
+        };
+        self.native_draws.clear();
+        let eye = self.eye.to_array();
+        let reach = occluder_reach();
+        let mut occluders = None;
+        let mut spans = std::array::from_fn(|_| 0..0);
+        for (which, span) in spans.iter_mut().enumerate() {
+            let first = self.native_draws.len();
+            for order in 0..self.frame.len() {
+                let instance = if which == 2 {
+                    self.frame.len() - 1 - order
+                } else {
+                    order
+                };
+                let (key, mask) = self.frame[instance];
+                // Columns come nearest first: the solid commands of the columns
+                // within reach are drawn first and occlude everything after them.
+                if which == 0 && occluders.is_none() {
+                    let dx = (i64::from(key.0) * 16 + 8 - self.origin[0]) as f32 - eye[0];
+                    let dz = (i64::from(key.1) * 16 + 8 - self.origin[2]) as f32 - eye[2];
+                    if dx.hypot(dz) > reach {
+                        occluders = Some(self.native_draws.len() - first);
+                    }
+                }
+                let Some(gpu) = self
+                    .columns
+                    .get(&key)
+                    .and_then(|c| c.passes[which].as_ref())
+                else {
+                    continue;
+                };
+                let base = [
+                    (i64::from(key.0) * 16 - self.origin[0]) as f32,
+                    -(self.origin[1] as f32),
+                    (i64::from(key.1) * 16 - self.origin[2]) as f32,
+                ];
+                for section in 0..16 {
+                    let (start, end) = (gpu.sections[section], gpu.sections[section + 1]);
+                    if mask & (1 << section) == 0 || start == end {
+                        continue;
+                    }
+                    let low: [f32; 3] =
+                        std::array::from_fn(|axis| base[axis] + gpu.bounds[section][axis]);
+                    let high: [f32; 3] =
+                        std::array::from_fn(|axis| base[axis] + gpu.bounds[section][axis + 3]);
+                    // Back faces are culled, so a facing group wholly behind its
+                    // own plane range is invisible: skip it and draw each run of
+                    // facing groups that can be seen.
+                    let vertices = gpu.storage.buffer();
+                    let draws = &mut self.native_draws;
+                    facing_runs(gpu.facing[section], eye, low, high, |quads| {
+                        draws.push(horizon_metal_terrain::Draw {
+                            vertices: vertices.clone(),
+                            low,
+                            high,
+                            indices: quads.start * 6..quads.end * 6,
+                            base_vertex: gpu.storage.first_vertex(),
+                            instance: instance as u32,
+                        });
+                    });
+                }
+            }
+            if which == 0 {
+                occluders.get_or_insert(self.native_draws.len() - first);
+            }
+            *span = first..self.native_draws.len();
+        }
+        let occluders = occluders.unwrap_or(0);
+        let encoded = native.encode(
+            device,
+            queue,
+            &horizon_metal_terrain::Frame {
+                target,
+                depth: &self.depth,
+                size: [config.width, config.height],
+                clear: [SKY[0], SKY[1], SKY[2], 1.0],
+                camera: &self.camera,
+                bases: &self.bases,
+                planes: &planes,
+                draws: &self.native_draws,
+                passes: spans,
+                occluders,
+            },
+        )?;
+        self.native_active = true;
+        let before = self.occluded;
+        self.occluded += u64::from(native.take_occluded());
+        if before == 0 && self.occluded > 0 {
+            eprintln!(
+                "NATIVE_OCCLUSION_ACTIVE occluders={occluders} dropped={}",
+                self.occluded
+            );
+        }
+        if !self.native_reported && !self.native_draws.is_empty() {
+            self.native_reported = true;
+            eprintln!(
+                "NATIVE_TERRAIN_SUBMIT candidates={} executions={}",
+                self.native_draws.len(),
+                encoded.calls()
+            );
+        }
+        self.draws.set(self.draws.get() + encoded.calls());
+        Ok(Some(encoded))
     }
 
     fn draw_terrain(&self, pass: &mut wgpu::RenderPass<'_>, which: usize, order: &[usize]) {
@@ -1579,7 +1853,7 @@ impl Scene {
             pass.draw(0..fixture.count, 0..1);
         }
         let near_to_far: Vec<usize> = (0..self.frame.len()).collect();
-        if !near_to_far.is_empty() {
+        if !self.native_active && !near_to_far.is_empty() {
             pass.set_index_buffer(self.quads.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(1, self.bases.slice(..));
             self.draw_terrain(pass, 0, &near_to_far);
@@ -1587,7 +1861,7 @@ impl Scene {
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.entity_bindings, &[]);
-        for (key, _) in &self.frame {
+        for key in &self.entity_frame {
             if let Some(mesh) = self.columns.get(key).and_then(|c| c.entity.as_ref()) {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 self.draws.set(self.draws.get() + 1);
@@ -1600,7 +1874,7 @@ impl Scene {
             pass.draw(0..self.entity_count, 0..1);
         }
         pass.set_bind_group(0, &self.bindings, &[]);
-        if !near_to_far.is_empty() {
+        if !self.native_active && !near_to_far.is_empty() {
             pass.set_vertex_buffer(1, self.bases.slice(..));
             let far_to_near: Vec<usize> = near_to_far.into_iter().rev().collect();
             self.draw_terrain(pass, 2, &far_to_near);
@@ -1746,6 +2020,115 @@ mod tests {
         assert_eq!(beside[&(0, 0)] & 0b1111, 0);
         assert!(reachable([0, 16, 0], world).is_empty());
         assert!(reachable([9, 4, 0], world).is_empty());
+    }
+
+    #[test]
+    fn column_broad_phase_contains_all_nonempty_pass_geometry() {
+        let mut solid = TerrainPass::default();
+        let mut cutout = TerrainPass::default();
+        let mut translucent = TerrainPass::default();
+        assert_eq!(terrain_envelope([&solid, &cutout, &translucent]), None);
+        solid.sections[2..].fill(1);
+        solid.bounds[1] = [-3.0, 16.0, 4.0, 2.0, 20.0, 7.0];
+        cutout.sections[5..].fill(1);
+        cutout.bounds[4] = [20.0, 60.0, -6.0, 23.0, 70.0, 2.0];
+        translucent.sections[16] = 1;
+        translucent.bounds[15] = [1.0, 250.0, 1.0, 4.0, 260.0, 4.0];
+        let union = terrain_envelope([&solid, &cutout, &translucent]).unwrap();
+        assert_eq!(union, [-3.0, 16.0, -6.0, 23.0, 260.0, 7.0]);
+        let low = Vec3::from_array(union[..3].try_into().unwrap());
+        let high = Vec3::from_array(union[3..].try_into().unwrap());
+        for yaw in (0..360).step_by(5) {
+            let angle = (yaw as f32).to_radians();
+            let eye = Vec3::new(40.0 * angle.sin(), 66.0, 40.0 * angle.cos());
+            let view = Mat4::look_at_rh(eye, Vec3::new(8.0, 66.0, 0.0), Vec3::Y);
+            let m = (Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), 1.6, 0.05) * view)
+                .transpose();
+            let (r0, r1, r2, r3) = (m.x_axis, m.y_axis, m.z_axis, m.w_axis);
+            let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 - r2];
+            for bounds in [solid.bounds[1], cutout.bounds[4], translucent.bounds[15]] {
+                let visible = Scene::visible(
+                    &planes,
+                    Vec3::from_array(bounds[..3].try_into().unwrap()),
+                    Vec3::from_array(bounds[3..].try_into().unwrap()),
+                );
+                assert!(
+                    !visible || Scene::visible(&planes, low, high),
+                    "coarse rejection lost fine geometry at yaw {yaw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn facing_groups_are_skipped_only_when_every_face_in_them_faces_away() {
+        // Brute force: random axis faces inside random bounds, random eyes.
+        let mut seed = 0x9e37_79b9u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 10_000) as f32 / 10_000.0
+        };
+        for _ in 0..20_000 {
+            let low = [next() * 16.0, next() * 256.0, next() * 16.0];
+            let high = [
+                low[0] + next() * 16.0,
+                low[1] + next() * 16.0,
+                low[2] + next() * 16.0,
+            ];
+            let group = (next() * 6.0) as usize % 6;
+            let direction = crate::terrain::FACES[group];
+            let axis = direction.iter().position(|&d| d != 0).unwrap();
+            // A face point inside the bounds, on a plane quantised like the packed format.
+            let mut point: [f32; 3] = std::array::from_fn(|i| low[i] + (high[i] - low[i]) * next());
+            point[axis] = (point[axis] * 64.0).round() / 64.0;
+            point[axis] = point[axis].clamp(low[axis], high[axis]);
+            let eye = [
+                next() * 48.0 - 16.0,
+                next() * 300.0 - 20.0,
+                next() * 48.0 - 16.0,
+            ];
+            let front = (eye[axis] - point[axis]) * direction[axis] as f32 > 0.0;
+            if front {
+                assert!(
+                    facing_visible(group, eye, low, high),
+                    "group {group} eye {eye:?} face at {point:?} in {low:?}..{high:?}"
+                );
+            }
+        }
+        // From above, a section's down faces are all hidden; its up faces are not.
+        let (low, high) = ([0.0, 16.0, 0.0], [16.0, 32.0, 16.0]);
+        assert!(!facing_visible(0, [8.0, 40.0, 8.0], low, high));
+        assert!(facing_visible(1, [8.0, 40.0, 8.0], low, high));
+        // Inside the section, every group can be seen.
+        assert!((0..6).all(|group| facing_visible(group, [8.0, 20.0, 8.0], low, high)));
+    }
+
+    #[test]
+    fn facing_runs_join_visible_groups_and_skip_hidden_ones() {
+        let runs = |groups, eye| {
+            let mut out = Vec::new();
+            facing_runs(groups, eye, [0.0, 0.0, 0.0], [16.0, 16.0, 16.0], |r| {
+                out.push(r)
+            });
+            out
+        };
+        // down 0..2, up 2..5, north 5..5 (empty), south 5..6, west 6..8, east 8..9, any 9..10.
+        let groups = [0, 2, 5, 5, 6, 8, 9, 10];
+        // Above, south-east of the section: up, south, east and any are visible;
+        // the empty north group does not split up from south.
+        assert_eq!(runs(groups, [30.0, 40.0, 30.0]), vec![2..6, 8..10]);
+        // Below, north-west: down, (north empty), west and any.
+        assert_eq!(runs(groups, [-5.0, -5.0, -5.0]), vec![0..2, 6..8, 9..10]);
+        // Inside: one run of everything.
+        assert_eq!(runs(groups, [8.0, 8.0, 8.0]), vec![0..10]);
+        // An unsorted (translucent) section is one group: always drawn whole.
+        assert_eq!(
+            runs([4, 4, 4, 4, 4, 4, 4, 9], [30.0, 40.0, 30.0]),
+            vec![4..9]
+        );
+        assert!(runs([3; 8], [0.0; 3]).is_empty());
     }
 
     #[test]

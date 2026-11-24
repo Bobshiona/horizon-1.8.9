@@ -111,7 +111,6 @@ impl TerrainVertex {
     }
 
     /// x, y, z in 1/`SCALE` blocks (biased) and the sprite layer.
-    #[cfg(test)]
     pub fn position(&self) -> [u16; 4] {
         let [a, b, _] = self.packed;
         [
@@ -150,6 +149,47 @@ pub struct TerrainPass {
     pub vertices: Vec<TerrainVertex>,
     /// Quad index where each section starts; `sections[16]` is the total.
     pub sections: [u32; 17],
+    /// Exact decoded positions per nonempty section: min xyz, max xyz.
+    /// Computed once by the mesher, including model overhangs, not per frame.
+    pub bounds: [[f32; 6]; 16],
+    /// Per section, where each facing group starts (`buckets`), once
+    /// `sort_by_facing` has grouped the quads.
+    facing: [[u32; 8]; 16],
+    faced: bool,
+}
+
+/// Facing groups of a section's quads: the six axis directions in `FACES`
+/// order, then every quad whose normal is not along an axis.
+pub const ANY_FACING: usize = 6;
+
+/// The group of a quad: its winding normal (counter-clockwise is the front, as
+/// the terrain pipelines cull) along one axis, else `ANY_FACING`.
+pub fn facing(quad: &[TerrainVertex]) -> usize {
+    let corner = |index: usize| {
+        let position = quad[index].position();
+        [0, 1, 2].map(|axis| i64::from(position[axis]))
+    };
+    let (a, b, c) = (corner(0), corner(1), corner(2));
+    let (u, v) = (
+        [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+        [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+    );
+    let normal = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let axis = match normal.map(|value| value != 0) {
+        [true, false, false] => 0,
+        [false, true, false] => 1,
+        [false, false, true] => 2,
+        _ => return ANY_FACING,
+    };
+    let positive = normal[axis] > 0;
+    FACES
+        .iter()
+        .position(|face| face[axis] == if positive { 1 } else { -1 })
+        .expect("an axis direction")
 }
 
 impl TerrainPass {
@@ -157,8 +197,70 @@ impl TerrainPass {
         (self.vertices.len() / 4) as u32
     }
 
+    /// Quad offsets where each facing group of `section` starts, and its end
+    /// (`[7]`). Unsorted passes hold everything in `ANY_FACING`.
+    pub fn buckets(&self, section: usize) -> [u32; 8] {
+        if self.faced {
+            return self.facing[section];
+        }
+        let (start, end) = (self.sections[section], self.sections[section + 1]);
+        [start, start, start, start, start, start, start, end]
+    }
+
+    /// Group each section's quads by facing, keeping their order within a group
+    /// (an overlay stays after the face it covers). Only for passes drawn with
+    /// back faces culled: a group facing away from the camera is then invisible.
+    pub fn sort_by_facing(&mut self) {
+        let mut sorted = vec![TerrainVertex { packed: [0; 3] }; self.vertices.len()];
+        let mut groups = Vec::<u8>::new();
+        for section in 0..16 {
+            let (start, end) = (
+                self.sections[section] as usize,
+                self.sections[section + 1] as usize,
+            );
+            groups.clear();
+            let mut counts = [0u32; 7];
+            for quad in start..end {
+                let group = facing(&self.vertices[quad * 4..quad * 4 + 4]);
+                groups.push(group as u8);
+                counts[group] += 1;
+            }
+            let mut starts = [start as u32; 8];
+            for group in 0..7 {
+                starts[group + 1] = starts[group] + counts[group];
+            }
+            let mut next = starts;
+            // Seven-bucket stable counting sort: one classification per quad,
+            // no allocation per face or comparison-sort scratch per section.
+            for (quad, &group) in (start..end).zip(&groups) {
+                let target = next[group as usize] as usize * 4;
+                sorted[target..target + 4].copy_from_slice(&self.vertices[quad * 4..quad * 4 + 4]);
+                next[group as usize] += 1;
+            }
+            self.facing[section] = starts;
+        }
+        self.vertices = sorted;
+        self.faced = true;
+    }
+
     fn close_section(&mut self, section: usize) {
         let quads = self.quads();
+        let vertices = &self.vertices[self.sections[section] as usize * 4..quads as usize * 4];
+        if !vertices.is_empty() {
+            let mut low = [u16::MAX; 3];
+            let mut high = [0u16; 3];
+            for vertex in vertices {
+                let xyz = vertex.position();
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(xyz[axis]);
+                    high[axis] = high[axis].max(xyz[axis]);
+                }
+            }
+            self.bounds[section] = std::array::from_fn(|axis| {
+                let value = if axis < 3 { low[axis] } else { high[axis - 3] };
+                f32::from(value) / TerrainVertex::SCALE - TerrainVertex::BIAS
+            });
+        }
         for start in &mut self.sections[section + 1..] {
             *start = quads;
         }
@@ -1495,6 +1597,9 @@ impl Registry {
             merger.flush(&mut mesh.solid, &mut mesh.cutout);
             mesh.close_section(section_y);
         }
+        // Translucent faces keep their order (blending) and are drawn two-sided.
+        mesh.solid.sort_by_facing();
+        mesh.cutout.sort_by_facing();
         mesh
     }
 
@@ -1900,6 +2005,40 @@ mod tests {
     }
 
     #[test]
+    fn culling_bounds_include_quantized_model_overhangs_without_neighbor_sections() {
+        let mut pass = TerrainPass::default();
+        for position in [
+            [-7.5, 15.5, -2.25],
+            [22.25, 15.5, -2.25],
+            [22.25, 17.125, 23.984375],
+            [-7.5, 17.125, 23.984375],
+        ] {
+            pass.vertices
+                .push(TerrainVertex::new(position, [31.0, 7.0], 2047, [1.0; 3]));
+        }
+        pass.close_section(0);
+        pass.close_section(1);
+        for position in [
+            [0.0, 32.0, 0.0],
+            [1.0, 32.0, 0.0],
+            [1.0, 33.0, 1.0],
+            [0.0, 33.0, 1.0],
+        ] {
+            pass.vertices
+                .push(TerrainVertex::new(position, [0.0; 2], 1024, [1.0; 3]));
+        }
+        pass.close_section(2);
+        assert_eq!(
+            pass.bounds[0],
+            [-7.5, 15.5, -2.25, 22.25, 17.125, 23.984375]
+        );
+        assert_eq!(pass.bounds[1], [0.0; 6]);
+        assert_eq!(pass.bounds[2], [0.0, 32.0, 0.0, 1.0, 33.0, 1.0]);
+        assert_eq!(&pass.sections[..4], &[0, 1, 1, 2]);
+        assert!(pass.bounds.iter().flatten().all(|n| n.is_finite()));
+    }
+
+    #[test]
     fn position_random_keeps_java_int_overflow_before_widening() {
         let x = 1000i32.wrapping_mul(3_129_871);
         assert_ne!(i64::from(x), 1000i64 * 3_129_871);
@@ -1956,6 +2095,149 @@ mod tests {
         assert_eq!(far.color(), [51, 0, 255]);
         let mixed = TerrainVertex::new([1.0, 2.0, 3.0], [0.5, 0.125], 1024, [0.0; 3]);
         assert_eq!((mixed.position()[3], mixed.uv()), (1024, [64, 16]));
+    }
+
+    /// A unit face of the block at `at` facing `FACES[group]`, wound
+    /// counter-clockwise when seen from outside, plus a tag in its colour.
+    fn unit_face(group: usize, at: [f32; 3], tag: f32) -> [TerrainVertex; 4] {
+        let normal = FACES[group].map(|d| d as f32);
+        let axis = normal.iter().position(|&d| d != 0.0).unwrap();
+        let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+        let plane = if normal[axis] > 0.0 { 1.0 } else { 0.0 };
+        let corner = |u: f32, v: f32| {
+            let mut p = at;
+            p[axis] += plane;
+            p[a] += u;
+            p[b] += v;
+            TerrainVertex::new(p, [u, v], 1, [tag, 0.0, 0.0])
+        };
+        // (a, b, normal) is right-handed, so a -> b turns counter-clockwise
+        // about +axis; reverse it for a face along -axis.
+        if normal[axis] > 0.0 {
+            [
+                corner(0.0, 0.0),
+                corner(1.0, 0.0),
+                corner(1.0, 1.0),
+                corner(0.0, 1.0),
+            ]
+        } else {
+            [
+                corner(0.0, 0.0),
+                corner(0.0, 1.0),
+                corner(1.0, 1.0),
+                corner(1.0, 0.0),
+            ]
+        }
+    }
+
+    #[test]
+    fn quads_group_by_winding_normal_and_keep_their_order_within_a_group() {
+        for group in 0..6 {
+            assert_eq!(facing(&unit_face(group, [3.0, 70.0, 5.0], 0.0)), group);
+        }
+        // A cross-shaped plant quad is diagonal: it can face anywhere.
+        let diagonal = [
+            TerrainVertex::new([0.0, 0.0, 0.0], [0.0; 2], 1, [0.0; 3]),
+            TerrainVertex::new([1.0, 0.0, 1.0], [0.0; 2], 1, [0.0; 3]),
+            TerrainVertex::new([1.0, 1.0, 1.0], [0.0; 2], 1, [0.0; 3]),
+            TerrainVertex::new([0.0, 1.0, 0.0], [0.0; 2], 1, [0.0; 3]),
+        ];
+        assert_eq!(facing(&diagonal), ANY_FACING);
+        let mut pass = TerrainPass::default();
+        pass.close_section(0);
+        // Section 1: an up face, a diagonal, a west face, a second up face
+        // (an overlay), a down face. Section 2 is empty, section 3 has one east face.
+        for quad in [
+            unit_face(1, [0.0, 16.0, 0.0], 0.1),
+            diagonal,
+            unit_face(4, [0.0, 16.0, 0.0], 0.3),
+            unit_face(1, [0.0, 16.0, 0.0], 0.4),
+            unit_face(0, [0.0, 17.0, 0.0], 0.5),
+        ] {
+            pass.vertices.extend_from_slice(&quad);
+        }
+        pass.close_section(1);
+        pass.close_section(2);
+        pass.vertices
+            .extend_from_slice(&unit_face(5, [2.0, 50.0, 2.0], 0.9));
+        for section in 3..16 {
+            pass.close_section(section);
+        }
+        let before = pass.vertices.len();
+        pass.sort_by_facing();
+        assert_eq!(pass.vertices.len(), before);
+        // down, up, up, west, any; buckets: down 0..1, up 1..3, west 3..4, any 4..5.
+        assert_eq!(pass.buckets(1), [0, 1, 3, 3, 3, 4, 4, 5]);
+        let red: Vec<u8> = pass.vertices[0..20]
+            .chunks(4)
+            .map(|q| q[0].color()[0])
+            .collect();
+        let byte = |v: f32| (v * 255.0).round() as u8;
+        assert_eq!(red, [byte(0.5), byte(0.1), byte(0.4), byte(0.3), 0]);
+        assert_eq!(pass.buckets(2), [5; 8]);
+        assert_eq!(pass.buckets(3), [5, 5, 5, 5, 5, 5, 6, 6]);
+        // Sorting moves quads only within their section: the bounds still hold.
+        assert_eq!(pass.sections[16], 6);
+        // An unsorted pass keeps everything in one group.
+        let mut plain = TerrainPass::default();
+        plain
+            .vertices
+            .extend_from_slice(&unit_face(1, [0.0; 3], 0.0));
+        for section in 0..16 {
+            plain.close_section(section);
+        }
+        assert_eq!(plain.buckets(0), [0, 0, 0, 0, 0, 0, 0, 1]);
+    }
+
+    #[test]
+    #[ignore = "Requires HORIZON_189_TEST_JAR pointing at an owned 1.8.9 jar"]
+    fn every_baked_cull_face_groups_under_its_own_side() -> Result<(), Box<dyn Error>> {
+        // Vanilla faces draw front-facing (counter-clockwise, as the pipelines
+        // cull) from the side they cull against: facing groups must agree, which
+        // pins the winding convention to the jar's 12,000-odd cull faces.
+        let jar = std::env::var_os("HORIZON_189_TEST_JAR").ok_or("Set HORIZON_189_TEST_JAR")?;
+        let registry = Registry::open(Path::new(&jar))?;
+        let mut checked = 0;
+        let mut mismatched = 0;
+        for model in &registry.models {
+            for (faces, _) in &model.alternatives {
+                for face in faces {
+                    let Some(cull) = face.cull else {
+                        continue;
+                    };
+                    let mut quad = Vec::new();
+                    append(
+                        &mut quad,
+                        face.positions,
+                        face.uv,
+                        face.layer,
+                        [1.0; 3],
+                        [4.0, 64.0, 4.0],
+                    );
+                    let side = FACES.iter().position(|&f| f == cull).unwrap();
+                    let group = facing(&quad);
+                    if group != side && group != ANY_FACING {
+                        // A few vanilla faces (pane bars) carry a cull side they do
+                        // not lie on; their winding, which the GPU culls by, decides.
+                        let axis = cull.iter().position(|&d| d != 0).unwrap();
+                        let boundary = if cull[axis] > 0 { 1.0 } else { 0.0 };
+                        assert!(
+                            face.positions
+                                .iter()
+                                .any(|p| (p[axis] - boundary).abs() > 1e-4),
+                            "face on its cull side {cull:?} groups as {group}"
+                        );
+                        mismatched += 1;
+                    }
+                    checked += usize::from(group == side);
+                }
+            }
+        }
+        assert!(
+            checked > 10_000 && mismatched < 32,
+            "{checked} / {mismatched}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -2268,10 +2550,12 @@ mod tests {
             solid: TerrainPass {
                 vertices: mesh.solid.vertices.clone(),
                 sections: [0; 17],
+                ..TerrainPass::default()
             },
             cutout: TerrainPass {
                 vertices: mesh.cutout.vertices.clone(),
                 sections: [0; 17],
+                ..TerrainPass::default()
             },
             ..ColumnMesh::default()
         };

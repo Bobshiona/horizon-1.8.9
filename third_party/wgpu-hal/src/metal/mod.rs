@@ -855,6 +855,11 @@ unsafe impl Sync for Buffer {}
 impl crate::DynBuffer for Buffer {}
 
 impl Buffer {
+    /// Borrow the native allocation. A native retain may extend its lifetime.
+    pub fn raw_handle(&self) -> &ProtocolObject<dyn MTLBuffer> {
+        &self.raw
+    }
+
     fn as_raw(&self) -> NonNull<ProtocolObject<dyn MTLBuffer>> {
         unsafe { NonNull::new_unchecked(Retained::as_ptr(&self.raw) as *mut _) }
     }
@@ -906,6 +911,11 @@ unsafe impl Send for TextureView {}
 unsafe impl Sync for TextureView {}
 
 impl TextureView {
+    /// Native interop view, retaining the view's format and array slice range.
+    pub fn raw_handle(&self) -> &ProtocolObject<dyn MTLTexture> {
+        &self.raw
+    }
+
     fn as_raw(&self) -> NonNull<ProtocolObject<dyn MTLTexture>> {
         unsafe { NonNull::new_unchecked(Retained::as_ptr(&self.raw) as *mut _) }
     }

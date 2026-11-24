@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Native Metal client entry point for Minecraft 1.8.9"
 
 [dependencies]
+horizon-metal-terrain = { path = "../horizon-metal-terrain" }
 arboard = { version = "3.6.1", default-features = false }
 ab_glyph = "0.2.32"
 base64 = "0.22"
