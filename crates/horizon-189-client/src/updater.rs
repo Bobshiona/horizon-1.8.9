@@ -386,7 +386,10 @@ pub fn program() -> std::io::Result<PathBuf> {
     Ok(locate(&std::env::current_exe()?))
 }
 
-/// `Info.plist` for the bundle.
+/// `Info.plist` for the bundle. The games category plus `LSSupportsGameMode`
+/// (macOS 26 and later) and `GCSupportsGameMode` (macOS 14 and 15) let macOS
+/// turn Game Mode on in full screen: CPU and GPU priority for the game and
+/// doubled Bluetooth sampling for wireless mice, controllers and headphones.
 pub fn info_plist(version: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -413,12 +416,16 @@ pub fn info_plist(version: &str) -> String {
 	<string>{version}</string>
 	<key>CFBundleVersion</key>
 	<string>{version}</string>
+	<key>GCSupportsGameMode</key>
+	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
 	<key>LSArchitecturePriority</key>
 	<array><string>arm64</string></array>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>LSSupportsGameMode</key>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
@@ -571,6 +578,15 @@ mod tests {
         assert_eq!(names, [std::ffi::OsString::from(EXECUTABLE)]);
         assert_eq!(std::fs::read(macos.join(EXECUTABLE)).unwrap(), b"two");
         assert!(info_plist("1.0").contains("<string>horizon-189</string>"));
+        // Game Mode: the games category and both opt-in keys, as booleans.
+        let plist = info_plist("1.0");
+        assert!(plist.contains("<string>public.app-category.games</string>"));
+        for key in ["LSSupportsGameMode", "GCSupportsGameMode"] {
+            assert!(
+                plist.contains(&format!("<key>{key}</key>\n\t<true/>")),
+                "{key}"
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }

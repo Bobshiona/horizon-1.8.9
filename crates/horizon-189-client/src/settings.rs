@@ -123,6 +123,9 @@ pub struct Video {
     /// Vanilla's Graphics: Fancy (default) or Fast. Fast draws leaves as opaque
     /// cubes, which removes most of their GPU cost.
     pub fancy_graphics: bool,
+    /// Render scale, percent of the window's pixels the world draws at (50 to
+    /// 100 in steps of 5); the interface always draws at full resolution.
+    pub render_scale: u8,
 }
 
 impl Default for Video {
@@ -135,6 +138,7 @@ impl Default for Video {
             view_bobbing: true,
             fullscreen: false,
             fancy_graphics: true,
+            render_scale: 100,
         }
     }
 }
@@ -278,6 +282,8 @@ impl Settings {
                 view_bobbing: flag("view_bobbing", d.view_bobbing),
                 fullscreen: flag("fullscreen", d.fullscreen),
                 fancy_graphics: flag("fancy_graphics", d.fancy_graphics),
+                render_scale: number("render_scale")
+                    .map_or(d.render_scale, crate::upscale::percent),
             };
         }
         if let Some(Value::Object(t)) = root.get("toggles") {
@@ -338,6 +344,7 @@ impl Settings {
                 "view_bobbing": self.video.view_bobbing,
                 "fullscreen": self.video.fullscreen,
                 "fancy_graphics": self.video.fancy_graphics,
+                "render_scale": self.video.render_scale,
             },
             "toggles": {
                 "zoom": t.zoom,
@@ -454,5 +461,17 @@ mod tests {
             .unwrap()
             .remove("fancy_graphics");
         assert!(Settings::parse(&old.to_string()).video.fancy_graphics);
+    }
+
+    #[test]
+    fn render_scale_defaults_to_full_and_saves_in_steps() {
+        assert_eq!(Settings::default().video.render_scale, 100);
+        let mut settings = Settings::default();
+        settings.video.render_scale = 65;
+        assert_eq!(Settings::parse(&settings.to_json()).video.render_scale, 65);
+        for (saved, loaded) in [("20", 50), ("72", 70), ("999", 100), ("\"x\"", 100)] {
+            let json = format!(r#"{{"video":{{"render_scale":{saved}}}}}"#);
+            assert_eq!(Settings::parse(&json).video.render_scale, loaded, "{saved}");
+        }
     }
 }

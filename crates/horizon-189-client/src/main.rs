@@ -49,6 +49,7 @@ mod tooltip;
 mod trace_bench;
 mod ui;
 mod updater;
+mod upscale;
 mod view;
 mod watchdog;
 
@@ -293,6 +294,7 @@ impl App {
         if let Some(renderer) = &mut self.renderer {
             renderer.set_view_distance(video.render_distance);
             renderer.set_gui_scale(video.gui_scale);
+            renderer.set_render_scale(video.render_scale);
             if renderer.window.fullscreen().is_some() != video.fullscreen {
                 renderer.window.set_fullscreen(
                     video
@@ -1175,11 +1177,13 @@ impl ApplicationHandler for App {
                 .map_err(|error| error.to_string())
             });
         match result {
-            Ok(renderer) => {
-                // Meshing starts with the saved Graphics setting.
+            Ok(mut renderer) => {
+                // Meshing starts with the saved Graphics setting, the first
+                // frame with the saved render scale.
                 if let Some(registry) = &renderer.registry {
                     registry.set_fancy_graphics(self.settings.video.fancy_graphics);
                 }
+                renderer.set_render_scale(self.settings.video.render_scale);
                 if let Some(config) = self.server.clone() {
                     let Some(registry) = renderer.registry.clone() else {
                         self.fail(event_loop, "Connected viewport requires owned assets");
@@ -2445,6 +2449,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             if options.fast_graphics {
                 settings.video.fancy_graphics = false;
+            }
+            if let Some(percent) = options.render_scale {
+                settings.video.render_scale = percent;
             }
             if options.pvp_hud {
                 settings.hud_mut(settings::HudKind::Fps).enabled = true;

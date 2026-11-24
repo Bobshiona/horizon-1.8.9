@@ -129,9 +129,13 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       retained and profiled, terrain captures pixel-identical, crowd labels inspected.
 
 ### 1.3 macOS display, scaling, hardware and thermal efficiency
-- [ ] Direct-to-display `CAMetalLayer` (opaque, framebufferOnly when no menu blur), VSync toggle
+- [x] Direct-to-display `CAMetalLayer` (opaque, framebufferOnly when no menu blur), VSync toggle
       through `displaySyncEnabled`, `LSApplicationCategoryType` games.
-- [ ] Decoupled 3D render scale (50-100%) under a full-resolution 2D layer.
+      HANDOFF 86: `LSSupportsGameMode` + `GCSupportsGameMode` added to the games category; VSync
+      and the opaque layer already in place. `framebufferOnly` kept off (screenshots and glass
+      copy the drawable; toggling reconfigures the surface on menu open).
+- [x] Decoupled 3D render scale (50-100%) under a full-resolution 2D layer.
+      HANDOFF 86: 3440x1440 lobby 411 -> 435 (75%) -> 534 FPS (50%); 100% path unchanged.
 - [ ] Background FPS throttling (15-30 FPS, paused uploads when unfocused, minimized, occluded).
 - [ ] Notch safe-area clearance in fullscreen, 60-240 Hz display hotplug, scroll and trackpad
       debouncing for single-slot hotbar steps.

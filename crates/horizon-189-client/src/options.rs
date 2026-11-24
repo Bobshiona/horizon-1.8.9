@@ -18,6 +18,8 @@ pub struct Options {
     pub pvp_hud: bool,
     /// Start with Graphics: Fast (opaque leaves) instead of the saved setting.
     pub fast_graphics: bool,
+    /// Render scale for this run, percent (50 to 100).
+    pub render_scale: Option<u8>,
     /// Requested view distance in chunks (vanilla default 8 here, 2..=16).
     pub view_distance: u8,
     /// Vanilla `guiScale`: 0 automatic, otherwise the largest allowed scale.
@@ -120,6 +122,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-pitch DEGREES         With --smoke-frames, look down (or up, negative) once in the world\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
     --fast-graphics               Graphics: Fast (opaque leaves) for this run\n\
+    --render-scale PERCENT        World resolution, 50-100% of the window\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
     --render-distance N           View distance in chunks, 2-16 (default 8)\n\
@@ -262,6 +265,13 @@ impl Options {
                 "--capture" => options.capture = Some(value()?.into()),
                 "--pvp-hud" => options.pvp_hud = true,
                 "--fast-graphics" => options.fast_graphics = true,
+                "--render-scale" => {
+                    let percent: f64 = value()?.parse()?;
+                    if !(50.0..=100.0).contains(&percent) {
+                        return Err("--render-scale must be between 50 and 100".into());
+                    }
+                    options.render_scale = Some(crate::upscale::percent(percent));
+                }
                 "--fov" => {
                     let fov: f32 = value()?.parse()?;
                     if !(30.0..=110.0).contains(&fov) {
@@ -681,6 +691,14 @@ mod tests {
         let tuned = parse(&["--pvp-hud", "--fov", "90", "--fast-graphics"]).unwrap();
         assert!(tuned.pvp_hud && tuned.fast_graphics);
         assert_eq!(tuned.fov, 90.0);
+        assert_eq!(defaults.render_scale, None);
+        assert_eq!(
+            parse(&["--render-scale", "73"]).unwrap().render_scale,
+            Some(75)
+        );
+        for value in ["49", "101", "x"] {
+            assert!(parse(&["--render-scale", value]).is_err());
+        }
     }
 
     #[test]

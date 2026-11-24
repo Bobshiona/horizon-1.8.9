@@ -60,6 +60,14 @@ pub struct Renderer {
     skin_loader: crate::skins::Loader,
     skins: crate::skins::Bindings,
     skin_images: std::collections::HashMap<u128, crate::skins::Loaded, horizon_world_189::Keys>,
+    /// Render scale (percent): the world draws at this share of the drawable's
+    /// size (`world_config`) and is stretched over it; the interface stays sharp.
+    render_scale: u8,
+    world_config: wgpu::SurfaceConfiguration,
+    upscale: crate::upscale::Upscale,
+    /// Full-resolution depth for the inventory's player model when the world's
+    /// depth is scaled.
+    interface_depth: Option<wgpu::Texture>,
 }
 
 impl Renderer {
@@ -132,13 +140,14 @@ impl Renderer {
             .as_ref()
             .map(|jar| Registry::open(jar).map(Arc::new))
             .transpose()?;
+        let world_config = config.clone();
         let scene = registry
             .as_ref()
             .map(|registry| {
                 Scene::from_registry(
                     &device,
                     &queue,
-                    &config,
+                    &world_config,
                     registry,
                     !world_view,
                     view_distance,
@@ -153,6 +162,7 @@ impl Renderer {
             scene.as_ref(),
         );
         let glass = crate::glass::GlassPass::new(&device, config.format);
+        let upscale = crate::upscale::Upscale::new(&device, config.format);
         let mut renderer = Self {
             window,
             instance,
@@ -191,6 +201,10 @@ impl Renderer {
             skin_loader: crate::skins::Loader::new()?,
             skins: Default::default(),
             skin_images: Default::default(),
+            render_scale: crate::upscale::MAX_PERCENT,
+            world_config,
+            upscale,
+            interface_depth: None,
         };
         renderer.resize(size);
         Ok(renderer)
@@ -247,7 +261,7 @@ impl Renderer {
     pub fn set_view_distance(&mut self, chunks: u8) {
         self.view_distance = chunks;
         if let Some(scene) = &mut self.scene {
-            scene.set_view_distance(&self.queue, &self.config, chunks);
+            scene.set_view_distance(&self.queue, &self.world_config, chunks);
         }
     }
 
@@ -264,9 +278,31 @@ impl Renderer {
         if fov.is_finite() && (fov - self.fov).abs() > 1e-4 {
             self.fov = fov.clamp(1.0, 170.0);
             if let Some(scene) = &mut self.scene {
-                scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
+                scene.set_camera(&self.queue, &self.world_config, self.pose, self.fov);
             }
         }
+    }
+
+    /// The world's target: the drawable's configuration at the render scale.
+    fn sync_world(&mut self) {
+        let (width, height) =
+            crate::upscale::world_size((self.config.width, self.config.height), self.render_scale);
+        self.world_config.clone_from(&self.config);
+        self.world_config.width = width;
+        self.world_config.height = height;
+    }
+
+    /// Render scale in percent (`upscale::percent` steps); returns whether it
+    /// changed.
+    pub fn set_render_scale(&mut self, percent: u8) -> bool {
+        let percent = crate::upscale::percent(f64::from(percent));
+        if percent == self.render_scale {
+            return false;
+        }
+        self.render_scale = percent;
+        eprintln!("RENDER_SCALE percent={percent}");
+        self.resize(self.window.inner_size());
+        true
     }
 
     /// Vsync on (FIFO), or immediate presentation for uncapped frame rates.
@@ -354,21 +390,21 @@ impl Renderer {
         let origin_changed = update.origin != scene.origin();
         scene.apply(&self.device, &self.queue, update)?;
         if origin_changed {
-            scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
+            scene.set_camera(&self.queue, &self.world_config, self.pose, self.fov);
         }
         Ok(())
     }
 
     pub fn mesh_view(&self) -> Option<crate::mesh_priority::View> {
         let scene = self.scene.as_ref()?;
-        crate::mesh_priority::View::new(scene.origin(), scene.planes(&self.config))
+        crate::mesh_priority::View::new(scene.origin(), scene.planes(&self.world_config))
     }
 
     /// Per-frame eye position, interpolated between simulation ticks.
     pub fn set_pose(&mut self, pose: PositionLook) {
         self.pose = pose;
         if let Some(scene) = &mut self.scene {
-            scene.set_camera(&self.queue, &self.config, pose, self.fov);
+            scene.set_camera(&self.queue, &self.world_config, pose, self.fov);
         }
     }
 
@@ -380,7 +416,7 @@ impl Renderer {
             self.adapter.get_info().name,
             self.scene
                 .as_ref()
-                .map_or(0, |scene| scene.drawn_sections(&self.config)),
+                .map_or(0, |scene| scene.drawn_sections(&self.world_config)),
             self.view_distance,
         )
     }
@@ -480,7 +516,7 @@ impl Renderer {
                 }
             }
         }
-        let planes = scene.planes(&self.config);
+        let planes = scene.planes(&self.world_config);
         let origin = scene.origin();
         scene.refresh_walk();
         let walk = scene.walk();
@@ -614,7 +650,13 @@ impl Renderer {
         if let Some(frame) = frame {
             crate::hand::draw(&mut vertices, &mut glint, frame, registry);
         }
-        scene.set_hand(&self.device, &self.queue, &self.config, &vertices, &glint)
+        scene.set_hand(
+            &self.device,
+            &self.queue,
+            &self.world_config,
+            &vertices,
+            &glint,
+        )
     }
 
     pub fn clear_world(&mut self) {
@@ -628,7 +670,7 @@ impl Renderer {
         self.skin_loader.retain(std::iter::empty());
         if let Some(scene) = &mut self.scene {
             scene.clear_world();
-            scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
+            scene.set_camera(&self.queue, &self.world_config, self.pose, self.fov);
         }
     }
 
@@ -658,8 +700,9 @@ impl Renderer {
                 self.gui_scale,
             );
             self.surface.configure(&self.device, &self.config);
+            self.sync_world();
             if let Some(scene) = &mut self.scene {
-                scene.resize(&self.device, &self.queue, &self.config);
+                scene.resize(&self.device, &self.queue, &self.world_config);
             }
             eprintln!(
                 "drawable={}x{} backing_scale={}",
@@ -799,10 +842,12 @@ impl Renderer {
                 {
                     // Pipelines depend on the surface format; column buffers
                     // and the camera carry over to the rebuilt scene.
+                    self.sync_world();
+                    self.upscale = crate::upscale::Upscale::new(&self.device, self.config.format);
                     let mut scene = Scene::from_registry(
                         &self.device,
                         &self.queue,
-                        &self.config,
+                        &self.world_config,
                         &registry,
                         !self.world_view,
                         self.view_distance,
@@ -810,7 +855,7 @@ impl Renderer {
                     if let Some(old) = self.scene.take() {
                         scene.adopt(old);
                     }
-                    scene.set_camera(&self.queue, &self.config, self.pose, self.fov);
+                    scene.set_camera(&self.queue, &self.world_config, self.pose, self.fov);
                     for (uuid, image) in &self.skin_images {
                         if let Some(binding) = self.skins.get(uuid) {
                             scene.upload_skin(&self.queue, binding.skin, image);
@@ -861,15 +906,28 @@ impl Renderer {
                 .expect("smoke target was initialized")
         };
         if let Some(scene) = &mut self.scene {
-            scene.prepare(&self.device, &self.queue, &self.config);
+            scene.prepare(&self.device, &self.queue, &self.world_config);
             // Texture animations step with 20 Hz client ticks.
             scene.animate(&self.queue, crate::models::millis() / 50);
         }
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Below 100% the world (and its labels and the hand) draws into the
+        // scaled target, which is then stretched over the drawable.
+        let scaled = (self.world_config.width, self.world_config.height)
+            != (self.config.width, self.config.height);
+        let world_texture = self
+            .upscale
+            .target(
+                &self.device,
+                &self.config,
+                scaled.then_some((self.world_config.width, self.world_config.height)),
+            )
+            .map(|target| target.texture.clone());
+        let world_texture = world_texture.as_ref().unwrap_or(texture);
+        let view = world_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let native = self
             .scene
             .as_mut()
-            .map(|scene| scene.encode_native(&self.device, &self.queue, &self.config, &view))
+            .map(|scene| scene.encode_native(&self.device, &self.queue, &self.world_config, &view))
             .transpose()?
             .flatten();
         let mut encoder = if let Some(native) = native {
@@ -922,7 +980,7 @@ impl Renderer {
             }
             encoder
         };
-        let plain = texture.create_view(&wgpu::TextureViewDescriptor {
+        let plain = world_texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.config.format.remove_srgb_suffix()),
             ..Default::default()
         });
@@ -979,6 +1037,44 @@ impl Renderer {
             });
             scene.draw_hand(&mut pass);
         }
+        // The interface and glass draw on the drawable itself, at full size.
+        let (view, plain) = if scaled {
+            let full = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.upscale.draw(&mut encoder, &full);
+            let full_plain = texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(self.config.format.remove_srgb_suffix()),
+                ..Default::default()
+            });
+            (full, full_plain)
+        } else {
+            (view, plain)
+        };
+        if scaled
+            && self.scene.as_ref().is_some_and(Scene::has_inventory_model)
+            && self.interface_depth.as_ref().is_none_or(|depth| {
+                (depth.width(), depth.height()) != (self.config.width, self.config.height)
+            })
+        {
+            self.interface_depth = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Interface model depth"),
+                size: wgpu::Extent3d {
+                    width: self.config.width,
+                    height: self.config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            }));
+        }
+        let interface_depth = self
+            .interface_depth
+            .as_ref()
+            .filter(|_| scaled)
+            .map(|depth| depth.create_view(&wgpu::TextureViewDescriptor::default()));
         // Glass under the interface, the interface, then glass under the
         // overlay (which frosts the interface too) and the overlay.
         let copyable = texture.usage().contains(wgpu::TextureUsages::COPY_SRC);
@@ -999,7 +1095,7 @@ impl Renderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &scene.depth,
+                        view: interface_depth.as_ref().unwrap_or(&scene.depth),
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(0.0),
                             store: wgpu::StoreOp::Discard,

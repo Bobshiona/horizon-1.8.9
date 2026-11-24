@@ -2762,3 +2762,42 @@ Previous commit: 3a167b6527. Not a sprint row: found by profiling while closing 
 Regressions: the native packed-vertex, occlusion and translucency Metal tests (9) pass on the
 new outputs; captures inspected. Gate: 322 scoped tests, 12 trace-tool tests, 7 Python gate
 tests, VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.
+
+## 86. Game Mode keys and render scale
+
+Previous commit: 8abad91ba9. Sprint rows 1.3 (direct-to-display/VSync/Game Mode) and
+(render scale).
+
+- **Game Mode.** The bundle already declared `public.app-category.games`. macOS 26 and later
+  also look for `LSSupportsGameMode` (macOS 14-15: `GCSupportsGameMode`); without it Game Mode
+  "might not turn on" (Apple DTS). Both are now `true` in the generated `Info.plist`, which the
+  updater rewrites on the next update. Game Mode applies in macOS full screen, which the
+  Fullscreen setting uses (`Fullscreen::Borderless`, the native Space). It gives the game CPU
+  and GPU priority and doubles Bluetooth sampling (wireless mice, controllers, AirPods).
+- VSync: already a setting; Immediate presentation turns the layer's `displaySyncEnabled` off
+  (wgpu-hal) and frames in flight are minimal (HANDOFF 84). The layer is opaque.
+  `framebufferOnly` stays off: screenshots and menu glass copy the drawable, and toggling it
+  would reconfigure the surface (a dropped frame) on every menu open. Direct-to-display needs
+  a real full-screen display, so it could not be verified from the benchmark.
+- **Render scale** (Video settings, both menu styles, 50-100% in steps of 5, default 100%;
+  `--render-scale N`; saved as `video.render_scale`). Below 100% the world, its labels and the
+  hand draw into a smaller target that one full-screen triangle stretches over the drawable
+  (bilinear, in linear light); the HUD, menus, glass and the inventory model draw on top at
+  full resolution (the inventory model gets a full-size depth buffer). At 100% the frame path
+  is unchanged. The glass settings sheet now fits nine rows in a 640x480 window (rows tighten
+  to 18 GUI pixels, controls centred).
+- Measured at 3440x1440 (`BOB_BENCH_SIZE`), single runs: 100% lobby 411 / flyover 469 FPS,
+  75% 435 / 499, 50% 534 / 592. The gain is smaller than the pixel count suggests because the
+  terrain pass is bound by its vertex stage (HANDOFF 85), which does not scale with resolution.
+- Captures: 100% matches 8abad91ba9 except the animated water band; 75% and 50% inspected
+  (world softer, aspect and orientation correct), and at 50% the HUD, hotbar, chat and the
+  inventory with its player model are sharp.
+- A/B against 8abad91ba9 at 100%, three alternating pairs: frame p50 lobby -0.60%, flyover
+  +1.55%; CPU p99 -12.26% / +9.58%. Background `mediaanalysisd` used about two cores during
+  these runs, so absolute FPS was lower and pairs were noisy; no regression.
+
+Regressions: render-scale steps, clamping and target sizes; settings default, round trip and
+clamping of saved values; the slider (left end 50%, middle 75%) and its label; `--render-scale`
+validation; the glass sheet fits 640x480; `Info.plist` carries both Game Mode keys. Gate: 324
+scoped tests, 12 trace-tool tests, 7 Python gate tests, VANILLA_189_REFERENCE_GATE_PASS,
+WATCHDOG_PASS packets=235 windows=2.

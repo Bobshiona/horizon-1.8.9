@@ -43,6 +43,8 @@ enum Slider {
     Fov,
     Sensitivity,
     Distance,
+    /// Render scale: the world's resolution, 50 to 100%.
+    Scale,
 }
 
 impl Slider {
@@ -52,6 +54,7 @@ impl Slider {
             Slider::Fov => (video.fov - 30.0) / 80.0,
             Slider::Sensitivity => video.sensitivity,
             Slider::Distance => f32::from(video.render_distance - 2) / 14.0,
+            Slider::Scale => f32::from(video.render_scale.saturating_sub(50)) / 50.0,
         }
     }
 
@@ -61,6 +64,9 @@ impl Slider {
             Slider::Fov => video.fov = (30.0 + t * 80.0).round(),
             Slider::Sensitivity => video.sensitivity = (t * 200.0).round() / 200.0,
             Slider::Distance => video.render_distance = (2.0 + t * 14.0).round() as u8,
+            Slider::Scale => {
+                video.render_scale = crate::upscale::percent(50.0 + f64::from(t) * 50.0);
+            }
         }
     }
 
@@ -89,6 +95,7 @@ impl Slider {
                 translate("options.renderDistance"),
                 video.render_distance
             ),
+            Slider::Scale => format!("Render Scale: {}%", video.render_scale),
         }
     }
 }
@@ -155,6 +162,7 @@ fn vanilla_geometry(page: Page, layout: Layout) -> Geometry {
                 Target::Fullscreen,
                 Target::Graphics,
                 Target::MenuStyle,
+                Target::Slider(Slider::Scale),
             ];
             for (i, target) in rows.into_iter().enumerate() {
                 let i = i as i32;
@@ -197,18 +205,22 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
                 Target::Fullscreen,
                 Target::Graphics,
                 Target::MenuStyle,
+                Target::Slider(Slider::Scale),
             ];
             let width = 300.0f32.min(layout.width - 8.0);
-            // Rows tighten (never below a button's height) to fit short windows.
+            // Rows tighten (never below the GUI-scale picker's 18) to fit short
+            // windows; each control stays centred in its row.
             let fixed = 34.0 + 8.0 + BUTTON_H + PAD;
             let row_h = ROW_H
                 .min((layout.height - 4.0 - fixed) / rows.len() as f32)
-                .max(BUTTON_H);
+                .max(18.0);
+            let inset = (ROW_H - row_h) / 2.0;
             let height = fixed + rows.len() as f32 * row_h;
             let sheet = centred(layout, width, height);
             let mut targets = Vec::new();
             for (index, target) in rows.into_iter().enumerate() {
                 let y = sheet[1] + 34.0 + index as f32 * row_h;
+                let y = y - inset;
                 let rect = match target {
                     Target::Slider(_) => {
                         [sheet[2] - PAD - TRACK, y + 4.0, sheet[2] - PAD, y + 18.0]
@@ -680,6 +692,21 @@ mod tests {
         pause.press(layout, (distance[0], distance[1] + 2.0), &mut settings);
         assert_eq!(settings.video.render_distance, 2);
         pause.release();
+        // Render scale: the left end is 50%, the middle 75%, steps of 5.
+        let world = rect(Page::Settings, layout, Target::Slider(Slider::Scale));
+        pause.press(layout, (world[0], world[1] + 2.0), &mut settings);
+        assert_eq!(settings.video.render_scale, 50);
+        pause.moved(
+            layout,
+            ((world[0] + world[2]) / 2.0, world[1]),
+            &mut settings,
+        );
+        assert_eq!(settings.video.render_scale, 75);
+        pause.release();
+        assert_eq!(
+            Slider::Scale.label(&settings.video, &|key: &str| key.to_owned()),
+            "Render Scale: 75%"
+        );
         let bobbing = rect(Page::Settings, layout, Target::Bobbing);
         pause.press(layout, centre(bobbing), &mut settings);
         assert!(!settings.video.view_bobbing);
