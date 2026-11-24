@@ -427,6 +427,7 @@ fn mesh_columns(
     }
     eprintln!("MESHER_THREADS count={}", handles.len());
     let mut dispatch = Dispatch::default();
+    let mut graphics = registry.graphics_epoch();
     let mut focus = [0.0f64; 3];
     let mut meshed = 0u64;
     let mut started: Option<Instant> = None;
@@ -436,6 +437,14 @@ fn mesh_columns(
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        // The Graphics setting changed how leaves mesh: every column again.
+        let epoch = registry.graphics_epoch();
+        if epoch != graphics {
+            graphics = epoch;
+            if let Ok(world) = world.read() {
+                dispatch.mark(world.columns().map(|(key, _)| key));
+            }
+        }
         for command in first.into_iter().chain(inbox.try_iter()) {
             match command {
                 MeshCommand::Dirty(keys) => dispatch.mark(keys),

@@ -274,6 +274,11 @@ impl App {
         self.sensitivity = video.sensitivity;
         self.view_bobbing = video.view_bobbing;
         self.gui_scale = video.gui_scale;
+        if let Some(registry) = self.renderer.as_ref().and_then(|r| r.registry.as_ref())
+            && registry.set_fancy_graphics(video.fancy_graphics)
+        {
+            eprintln!("GRAPHICS fancy={}", video.fancy_graphics);
+        }
         if video.render_distance != self.view_distance {
             self.view_distance = video.render_distance;
             if let Some(network) = &self.network
@@ -1160,6 +1165,10 @@ impl ApplicationHandler for App {
             });
         match result {
             Ok(renderer) => {
+                // Meshing starts with the saved Graphics setting.
+                if let Some(registry) = &renderer.registry {
+                    registry.set_fancy_graphics(self.settings.video.fancy_graphics);
+                }
                 if let Some(config) = self.server.clone() {
                     let Some(registry) = renderer.registry.clone() else {
                         self.fail(event_loop, "Connected viewport requires owned assets");
@@ -2422,6 +2431,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
             if options.smoke_vanilla_menu {
                 settings.toggles.vanilla_menu = true;
+            }
+            if options.fast_graphics {
+                settings.video.fancy_graphics = false;
             }
             if options.pvp_hud {
                 settings.hud_mut(settings::HudKind::Fps).enabled = true;

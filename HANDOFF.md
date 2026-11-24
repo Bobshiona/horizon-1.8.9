@@ -2654,3 +2654,32 @@ occlusion drops only commands hidden behind occluders (pixels identical with it 
 boxes, occluder holes, rectangular depth reduction, mapped-input rejection; facing groups and
 runs; jar winding check. Gate: 336 scoped tests, 12 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.
+
+## 83. Vanilla Graphics: Fast / Fancy
+
+Previous commit: 05b2106276. Not a sprint row: added because leaves dominate GPU time.
+
+- Skip experiments on 26b5baca5a (single runs, lobby GPU p50): cutout terrain about 470 us of
+  1,080 us per frame; Fancy leaves alone about 400 us; plants about 30 us; solid terrain about
+  270 us; translucent and entities about 30 us each; no world at all about 310 us.
+- **Graphics: Fancy / Fast**, vanilla's setting, in the Video settings (both menu styles),
+  saved as `video.fancy_graphics`, default Fancy; `--fast-graphics` for runs. Verified from the
+  1.8.9 jar (`ahs`/`akg`): `setGraphicsLevel(fancy)` makes `isOpaqueCube` `!fancy` and the
+  block layer CUTOUT_MIPPED when fancy, SOLID when fast. `leaves.json` has no cullface, so
+  vanilla draws every leaf face in both modes; Fast draws them opaque (no alpha test, so the
+  GPU's hidden-surface removal skips covered layers), culls neighbours' faces against leaves
+  and treats leaves as opaque in VisGraph. The mesher reads the setting atomically; changing it
+  bumps an epoch and the mesh coordinator re-meshes every loaded column.
+- Fast against Fancy, same binary, three alternating runs: lobby 641/633 -> 690/687 FPS
+  (+8%), GPU p50 1,185 -> 1,075 us; flyover 789/792 -> 888/879 FPS (+12%), GPU p50 1,048 ->
+  932 us. Per-pixel savings grow with resolution.
+- Gate: default Fancy is pixel-identical to 05b2106276; three paired runs lobby frame p50
+  +0.13%, flyover -0.99%, CPU p99 +3.05% / -6.31% (no regression). The Fast capture shows
+  opaque leaves with dark texels where Fancy is transparent, as vanilla Fast does.
+
+Regressions: jar test (Fancy: 162 leaf quads in cutout, none solid; Fast: 162 in solid, none in
+cutout, the grass side against the leaves culled, a leaf layer seals the VisGraph, epoch counts
+changes only); settings default/round-trip and pre-setting files keep Fancy; the vanilla menu
+row and the switch flip the setting; `--fast-graphics` option. Gate: 338 scoped tests, 12
+trace-tool tests, 7 Python gate tests, VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS
+packets=235 windows=2.

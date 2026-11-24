@@ -16,6 +16,8 @@ pub struct Options {
     pub fov: f32,
     /// Passive FPS and left/right CPS overlay, disabled by default.
     pub pvp_hud: bool,
+    /// Start with Graphics: Fast (opaque leaves) instead of the saved setting.
+    pub fast_graphics: bool,
     /// Requested view distance in chunks (vanilla default 8 here, 2..=16).
     pub view_distance: u8,
     /// Vanilla `guiScale`: 0 automatic, otherwise the largest allowed scale.
@@ -117,6 +119,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --smoke-settings              With --smoke-frames, open the settings screen\n\
     --smoke-pitch DEGREES         With --smoke-frames, look down (or up, negative) once in the world\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
+    --fast-graphics               Graphics: Fast (opaque leaves) for this run\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
     --render-distance N           View distance in chunks, 2-16 (default 8)\n\
@@ -258,6 +261,7 @@ impl Options {
                 "--autopilot-fly" => options.autopilot_fly = true,
                 "--capture" => options.capture = Some(value()?.into()),
                 "--pvp-hud" => options.pvp_hud = true,
+                "--fast-graphics" => options.fast_graphics = true,
                 "--fov" => {
                     let fov: f32 = value()?.parse()?;
                     if !(30.0..=110.0).contains(&fov) {
@@ -673,8 +677,9 @@ mod tests {
         for value in ["30", "70", "90", "110"] {
             assert!(parse(&["--fov", value]).is_ok());
         }
-        let tuned = parse(&["--pvp-hud", "--fov", "90"]).unwrap();
-        assert!(tuned.pvp_hud);
+        assert!(!defaults.fast_graphics);
+        let tuned = parse(&["--pvp-hud", "--fov", "90", "--fast-graphics"]).unwrap();
+        assert!(tuned.pvp_hud && tuned.fast_graphics);
         assert_eq!(tuned.fov, 90.0);
     }
 

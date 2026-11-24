@@ -281,6 +281,11 @@ pub struct ColumnMesh {
     pub visibility: [u64; 16],
 }
 
+/// `BlockLeaves` (18) and `BlockNewLeaf` (161).
+fn is_leaves(id: u16) -> bool {
+    matches!(id, 18 | 161)
+}
+
 /// Section faces in `EnumFacing` order: down, up, north, south, west, east.
 pub const FACES: [[i32; 3]; 6] = [
     [0, -1, 0],
@@ -412,6 +417,12 @@ pub struct Registry {
     inventory: HashMap<(u16, u8), u32>,
     /// Merge neighbouring full faces (`greedy`); off only to compare against.
     greedy: bool,
+    /// Vanilla's Graphics: Fast (`BlockLeaves.setGraphicsLevel(false)`): leaves are
+    /// opaque cubes drawn in the solid layer, so faces between them and against
+    /// them are culled. Read by the mesh workers; `graphics_epoch` counts changes
+    /// so every loaded column is meshed again.
+    fast_graphics: std::sync::atomic::AtomicBool,
+    graphics_epoch: std::sync::atomic::AtomicU64,
 }
 
 /// The ten crack stages a block shows while it is broken.
@@ -1166,6 +1177,8 @@ impl Registry {
             block_layers,
             inventory,
             greedy: true,
+            fast_graphics: std::sync::atomic::AtomicBool::new(false),
+            graphics_epoch: std::sync::atomic::AtomicU64::new(0),
         };
         let empty = World::default();
         let mut unresolved = Vec::new();
@@ -1438,13 +1451,41 @@ impl Registry {
         }
     }
 
+    /// Apply the Graphics setting; returns whether it changed (then every loaded
+    /// column must be meshed again: see `graphics_epoch`).
+    pub fn set_fancy_graphics(&self, fancy: bool) -> bool {
+        use std::sync::atomic::Ordering;
+        let changed = self.fast_graphics.swap(!fancy, Ordering::AcqRel) == fancy;
+        if changed {
+            self.graphics_epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        changed
+    }
+
+    /// Bumped whenever the Graphics setting changes meshes.
+    pub fn graphics_epoch(&self) -> u64 {
+        self.graphics_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn fast_graphics(&self) -> bool {
+        self.fast_graphics
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// `Block.isOpaqueCube` under the current Graphics setting: `BlockLeaves`
+    /// returns `!fancyGraphics`.
+    fn opaque(&self, id: u16) -> bool {
+        block(id).opaque_cube() || (is_leaves(id) && self.fast_graphics())
+    }
+
     fn culls(&self, world: &World, state: BlockState, neighbour: [i32; 3]) -> bool {
         let Some(other) = world.block(neighbour[0], neighbour[1], neighbour[2]) else {
             // Unloaded neighbour columns: skip faces nobody can see yet.
             return (0..256).contains(&neighbour[1]);
         };
         let id = state.block_id();
-        block(other.block_id()).opaque_cube()
+        self.opaque(other.block_id())
             || (other.block_id() == id
                 && match id {
                     20 | 79 | 165 => true,
@@ -1472,7 +1513,7 @@ impl Registry {
             let mut states = [0u16; 4096];
             section.states().unpack(&mut states);
             mesh.visibility[section_y] =
-                visibility(|index| block(BlockState(states[index]).block_id()).opaque_cube());
+                visibility(|index| self.opaque(BlockState(states[index]).block_id()));
             for (index, &raw) in states.iter().enumerate() {
                 if raw == 0 {
                     continue;
@@ -1541,6 +1582,9 @@ impl Registry {
                     };
                     let pass = if translucent {
                         2
+                    } else if is_leaves(state.block_id()) && self.fast_graphics() {
+                        // BlockLeaves.getBlockLayer: SOLID when not fancy.
+                        0
                     } else if self
                         .cutout
                         .get(face.layer as usize)
@@ -1773,8 +1817,7 @@ impl Registry {
         for ([dx, dy, dz], positions, shade) in faces {
             let skip = same(dx, dy, dz)
                 || (dy != 1
-                    && neighbour(dx, dy, dz)
-                        .is_none_or(|other| block(other.block_id()).opaque_cube()));
+                    && neighbour(dx, dy, dz).is_none_or(|other| self.opaque(other.block_id())));
             if !skip {
                 append(
                     &mut target.vertices,
@@ -2237,6 +2280,86 @@ mod tests {
             checked > 10_000 && mismatched < 32,
             "{checked} / {mismatched}"
         );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "Requires HORIZON_189_TEST_JAR pointing at an owned 1.8.9 jar"]
+    fn fast_graphics_draws_leaves_as_solid_opaque_cubes() -> Result<(), Box<dyn Error>> {
+        use horizon_world_189::{ColumnData, ColumnUpdate, Section};
+        let jar = std::env::var_os("HORIZON_189_TEST_JAR").ok_or("Set HORIZON_189_TEST_JAR")?;
+        let registry = Registry::open(Path::new(&jar))?;
+        // A 3 x 3 x 3 cube of oak leaves at y 1-3 with a grass block beside it at y 1.
+        let mut states = [0u16; 4096];
+        for y in 1..4 {
+            for z in 1..4 {
+                for x in 1..4 {
+                    states[y << 8 | z << 4 | x] = 18 << 4;
+                }
+            }
+        }
+        states[1 << 8 | 2 << 4 | 4] = 2 << 4;
+        let mut world = World::default();
+        let mut sections: [Option<Section>; 16] = std::array::from_fn(|_| None);
+        sections[0] = Some(Section::new(&states, &[0; 2048], Some(&[0xff; 2048])));
+        world.apply(ColumnUpdate::Data {
+            x: 0,
+            z: 0,
+            full: true,
+            data: Box::new(ColumnData {
+                sections,
+                biomes: None,
+            }),
+        });
+        let leaf_layers: Vec<u32> = registry.models[registry
+            .resolve(&world, [2, 2, 2], BlockState(18 << 4))
+            .ok_or("no oak leaves model")?
+            as usize]
+            .alternatives[0]
+            .0
+            .iter()
+            .map(|face| face.layer)
+            .collect();
+        let leaf_quads = |pass: &TerrainPass| {
+            pass.vertices
+                .chunks(4)
+                .filter(|quad| leaf_layers.contains(&u32::from(quad[0].position()[3])))
+                .count()
+        };
+        assert_eq!(registry.graphics_epoch(), 0);
+        assert!(!registry.set_fancy_graphics(true), "fancy is the default");
+        let fancy = registry.mesh_column(&world, (0, 0), [0, 0, 0]);
+        assert!(registry.set_fancy_graphics(false));
+        assert_eq!(registry.graphics_epoch(), 1);
+        let fast = registry.mesh_column(&world, (0, 0), [0, 0, 0]);
+        // Fancy: every face of every leaf (6 x 27, less the one against the
+        // grass block's full side), all in the cutout layer.
+        // leaves.json has no cullface: vanilla draws every leaf face in both
+        // modes. Fancy puts them in the cutout layer; Fast in the solid layer,
+        // where no fragment is discarded and hidden layers cost nothing.
+        assert_eq!(leaf_quads(&fancy.cutout), 6 * 27);
+        assert_eq!(leaf_quads(&fancy.solid), 0);
+        assert_eq!(leaf_quads(&fast.cutout), 0);
+        assert_eq!(leaf_quads(&fast.solid), 6 * 27);
+        // Fast leaves are opaque cubes, so the grass block's side against them
+        // is culled; Fancy leaves are not.
+        assert_eq!(fast.solid.quads(), fancy.solid.quads() + 6 * 27 - 1);
+        // VisGraph treats Fast leaves as opaque too: a whole layer of them seals
+        // the section's top from its bottom only in Fast.
+        let layer = |id: u16| {
+            visibility(|index| {
+                let block = if (index >> 8) == 5 { 18 } else { 0 };
+                let _ = id;
+                registry.opaque(block)
+            })
+        };
+        let fast_layer = layer(18);
+        assert!(registry.set_fancy_graphics(true));
+        let fancy_layer = layer(18);
+        assert_ne!(fast_layer, fancy_layer);
+        assert!(registry.set_fancy_graphics(false));
+        assert!(registry.set_fancy_graphics(true));
+        assert_eq!(registry.graphics_epoch(), 4);
         Ok(())
     }
 

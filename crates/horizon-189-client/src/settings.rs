@@ -120,6 +120,9 @@ pub struct Video {
     pub gui_scale: u32,
     pub view_bobbing: bool,
     pub fullscreen: bool,
+    /// Vanilla's Graphics: Fancy (default) or Fast. Fast draws leaves as opaque
+    /// cubes, which removes most of their GPU cost.
+    pub fancy_graphics: bool,
 }
 
 impl Default for Video {
@@ -131,6 +134,7 @@ impl Default for Video {
             gui_scale: 0,
             view_bobbing: true,
             fullscreen: false,
+            fancy_graphics: true,
         }
     }
 }
@@ -273,6 +277,7 @@ impl Settings {
                 gui_scale: number("gui_scale").map_or(d.gui_scale, |n| n.clamp(0.0, 4.0) as u32),
                 view_bobbing: flag("view_bobbing", d.view_bobbing),
                 fullscreen: flag("fullscreen", d.fullscreen),
+                fancy_graphics: flag("fancy_graphics", d.fancy_graphics),
             };
         }
         if let Some(Value::Object(t)) = root.get("toggles") {
@@ -332,6 +337,7 @@ impl Settings {
                 "gui_scale": self.video.gui_scale,
                 "view_bobbing": self.video.view_bobbing,
                 "fullscreen": self.video.fullscreen,
+                "fancy_graphics": self.video.fancy_graphics,
             },
             "toggles": {
                 "zoom": t.zoom,
@@ -432,5 +438,21 @@ mod tests {
         assert!(!path.with_extension("json.tmp").exists());
         assert!(Settings::load(Some(path)).toggles.fullbright);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn graphics_defaults_to_fancy_and_round_trips() {
+        assert!(Settings::default().video.fancy_graphics);
+        let mut settings = Settings::default();
+        settings.video.fancy_graphics = false;
+        let saved = settings.to_json();
+        assert!(!Settings::parse(&saved).video.fancy_graphics);
+        // Files from before the setting existed keep Fancy.
+        let mut old: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        old["video"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fancy_graphics");
+        assert!(Settings::parse(&old.to_string()).video.fancy_graphics);
     }
 }

@@ -103,6 +103,8 @@ enum Target {
     GuiScale,
     Bobbing,
     Fullscreen,
+    /// Graphics: Fancy / Fast.
+    Graphics,
     /// Glass or vanilla menus.
     MenuStyle,
     /// A vanilla button this client has nothing behind (translation key).
@@ -151,6 +153,7 @@ fn vanilla_geometry(page: Page, layout: Layout) -> Geometry {
                 Target::GuiScale,
                 Target::Bobbing,
                 Target::Fullscreen,
+                Target::Graphics,
                 Target::MenuStyle,
             ];
             for (i, target) in rows.into_iter().enumerate() {
@@ -192,14 +195,20 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
                 Target::GuiScale,
                 Target::Bobbing,
                 Target::Fullscreen,
+                Target::Graphics,
                 Target::MenuStyle,
             ];
             let width = 300.0f32.min(layout.width - 8.0);
-            let height = 34.0 + rows.len() as f32 * ROW_H + 8.0 + BUTTON_H + PAD;
+            // Rows tighten (never below a button's height) to fit short windows.
+            let fixed = 34.0 + 8.0 + BUTTON_H + PAD;
+            let row_h = ROW_H
+                .min((layout.height - 4.0 - fixed) / rows.len() as f32)
+                .max(BUTTON_H);
+            let height = fixed + rows.len() as f32 * row_h;
             let sheet = centred(layout, width, height);
             let mut targets = Vec::new();
             for (index, target) in rows.into_iter().enumerate() {
-                let y = sheet[1] + 34.0 + index as f32 * ROW_H;
+                let y = sheet[1] + 34.0 + index as f32 * row_h;
                 let rect = match target {
                     Target::Slider(_) => {
                         [sheet[2] - PAD - TRACK, y + 4.0, sheet[2] - PAD, y + 18.0]
@@ -334,6 +343,10 @@ impl Pause {
             }
             Target::Fullscreen => {
                 video.fullscreen = !video.fullscreen;
+                Click::Changed
+            }
+            Target::Graphics => {
+                video.fancy_graphics = !video.fancy_graphics;
                 Click::Changed
             }
             Target::MenuStyle => {
@@ -475,10 +488,22 @@ impl Pause {
                     };
                     button(canvas, rect, &value, hover, false, e);
                 }
-                Target::Bobbing | Target::Fullscreen | Target::MenuStyle => {
+                Target::Bobbing | Target::Fullscreen | Target::Graphics | Target::MenuStyle => {
                     let (label, on) = match target {
                         Target::Bobbing => (translate("options.viewBobbing"), video.view_bobbing),
                         Target::Fullscreen => (translate("options.fullscreen"), video.fullscreen),
+                        Target::Graphics => (
+                            format!(
+                                "{}: {}",
+                                translate("options.graphics"),
+                                translate(if video.fancy_graphics {
+                                    "options.graphics.fancy"
+                                } else {
+                                    "options.graphics.fast"
+                                })
+                            ),
+                            video.fancy_graphics,
+                        ),
                         _ => ("Vanilla Menu".to_owned(), settings.toggles.vanilla_menu),
                     };
                     row_label(canvas, g.sheet[0] + PAD, rect, &label, e);
@@ -535,6 +560,15 @@ impl Pause {
                     "{}: {}",
                     translate("options.fullscreen"),
                     on_off(video.fullscreen)
+                ),
+                Target::Graphics => format!(
+                    "{}: {}",
+                    translate("options.graphics"),
+                    translate(if video.fancy_graphics {
+                        "options.graphics.fancy"
+                    } else {
+                        "options.graphics.fast"
+                    })
                 ),
                 Target::MenuStyle => "Menu Style: Vanilla".to_owned(),
                 Target::Slider(slider) => {
@@ -717,7 +751,15 @@ mod tests {
             row(Target::Slider(Slider::Sensitivity)),
             [245.0, 33.0, 395.0, 53.0]
         );
-        assert_eq!(row(Target::MenuStyle), [85.0, 105.0, 235.0, 125.0]);
+        assert_eq!(row(Target::Graphics), [85.0, 105.0, 235.0, 125.0]);
+        assert_eq!(row(Target::MenuStyle), [245.0, 105.0, 395.0, 125.0]);
+        // Graphics flips Fancy and Fast.
+        assert!(settings.video.fancy_graphics);
+        assert_eq!(
+            pause.press(layout, centre(row(Target::Graphics)), &mut settings),
+            Click::Changed
+        );
+        assert!(!settings.video.fancy_graphics);
         assert_eq!(row(Target::Done), [140.0, 213.0, 340.0, 233.0]);
         // The vanilla slider's knob rides 4 pixels in from each end.
         let fov = row(Target::Slider(Slider::Fov));

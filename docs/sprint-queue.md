@@ -106,6 +106,8 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       HANDOFF 82: frustum + facing groups + same-frame depth-pyramid occlusion; 336 scoped + 12
       trace + 7 gate tests. Paired frame p50 +2.54% lobby / -5.16% flyover, 1% lows 230 -> 345
       and 205 -> 288 FPS; terrain captures pixel-identical. +29 allocations/frame, +32 MB RSS.
+- [x] (Added) Vanilla Graphics: Fast/Fancy (HANDOFF 83): Fast leaves +8% / +12% FPS
+      (lobby / flyover) against Fancy; default Fancy unchanged and pixel-identical.
 - [ ] Vanilla VisGraph cave occlusion, entity culling, Smart Animations.
 - [ ] Zero-allocation hot loop, unified-memory staging rings, capped frames in flight,
       `MTLBinaryArchive` pipeline cache with startup warmup.
