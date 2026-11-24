@@ -52,6 +52,7 @@ mod updater;
 mod upscale;
 mod view;
 mod watchdog;
+mod wheel;
 
 use horizon_client_platform::is_quit_shortcut_down;
 
@@ -71,7 +72,7 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, MouseButton, TouchPhase, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
@@ -82,6 +83,11 @@ struct App {
     keyboard: Keyboard,
     captured: bool,
     focused: bool,
+    /// The window cannot be seen (minimized, covered, another Space).
+    occluded: bool,
+    /// When the display's refresh rate was last read (it can change without the
+    /// window moving: a monitor plugged in, a rate picked in System Settings).
+    display_checked: Instant,
     auto_captured: bool,
     /// Raw pointer deltas since the last frame, in AppKit points (y down).
     mouse: (f64, f64),
@@ -119,8 +125,8 @@ struct App {
     modifiers: ModifiersState,
     clipboard: Option<arboard::Clipboard>,
     gui_scale: u32,
-    /// Trackpad pixels not yet worth a wheel notch.
-    wheel_pixels: f64,
+    /// Wheel and trackpad notches (trackpad debouncing for the hotbar).
+    wheel: wheel::Wheel,
     smoke_chat: Option<String>,
     /// The player-list key, held with no screen open.
     tab_held: bool,
@@ -247,7 +253,7 @@ impl App {
         self.world_epoch = 0;
         self.menu_open = false;
         self.auto_captured = false;
-        self.wheel_pixels = 0.0;
+        self.wheel.reset();
         self.connection.lost(reason);
     }
 
@@ -906,7 +912,17 @@ impl App {
         if self.smoke_frames.is_some() {
             return pacing::Schedule::Vsync;
         }
-        pacing::schedule(self.settings.toggles.fps_limit)
+        let visibility = if self.occluded {
+            pacing::Visibility::Hidden
+        } else if self.focused {
+            pacing::Visibility::Focused
+        } else {
+            pacing::Visibility::Unfocused
+        };
+        pacing::throttle(
+            pacing::schedule(self.settings.toggles.fps_limit),
+            visibility,
+        )
     }
 
     /// The wait between redraws for the frame cap.
@@ -949,16 +965,8 @@ impl App {
     }
 
     /// Wheel motion in vanilla notches; trackpads report pixels.
-    fn notches(&mut self, delta: winit::event::MouseScrollDelta) -> i32 {
-        match delta {
-            winit::event::MouseScrollDelta::LineDelta(_, y) => y.signum() as i32,
-            winit::event::MouseScrollDelta::PixelDelta(p) => {
-                self.wheel_pixels += p.y;
-                let notches = (self.wheel_pixels / 24.0).trunc();
-                self.wheel_pixels -= notches * 24.0;
-                notches as i32
-            }
-        }
+    fn notches(&mut self, delta: winit::event::MouseScrollDelta, phase: TouchPhase) -> i32 {
+        self.wheel.notches(delta, phase, Instant::now(), false)
     }
 
     fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
@@ -1242,7 +1250,13 @@ impl ApplicationHandler for App {
                     self.release_cursor();
                 }
             }
-            WindowEvent::Occluded(true) => self.release_cursor(),
+            WindowEvent::Occluded(occluded) => {
+                eprintln!("occluded={occluded}");
+                self.occluded = occluded;
+                if occluded {
+                    self.release_cursor();
+                }
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
                 self.keyboard.modifiers(modifiers.state());
@@ -1294,15 +1308,15 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { .. } if self.connection.active() => {}
-            WindowEvent::MouseWheel { delta, .. } if self.chat.open => {
-                let notches = self.notches(delta);
+            WindowEvent::MouseWheel { delta, phase, .. } if self.chat.open => {
+                let notches = self.notches(delta, phase);
                 if notches != 0 {
                     self.chat
                         .wheel(f64::from(notches), self.modifiers.shift_key());
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } if self.menu.editing => {
-                let notches = self.notches(delta);
+            WindowEvent::MouseWheel { delta, phase, .. } if self.menu.editing => {
+                let notches = self.notches(delta, phase);
                 let mouse = self.mouse_gui();
                 if self
                     .menu
@@ -1311,14 +1325,15 @@ impl ApplicationHandler for App {
                     self.save_settings();
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } if self.menu.open => {
-                let notches = self.notches(delta);
+            WindowEvent::MouseWheel { delta, phase, .. } if self.menu.open => {
+                let notches = self.notches(delta, phase);
                 if let Some(layout) = self.renderer.as_ref().map(|r| r.layout) {
                     self.menu.wheel(layout, notches);
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } if self.captured => {
-                let amount = f64::from(self.notches(delta));
+            WindowEvent::MouseWheel { delta, phase, .. } if self.captured => {
+                // The hotbar: one slot per event, none from trackpad momentum.
+                let amount = f64::from(self.wheel.notches(delta, phase, Instant::now(), true));
                 if let Some(network) = &self.network
                     && let Ok(mut state) = network.shared.lock()
                     && amount != 0.0
@@ -2139,6 +2154,17 @@ impl ApplicationHandler for App {
                 return;
             }
         }
+        if self.display_checked.elapsed() >= Duration::from_secs(1)
+            && let Some(renderer) = &self.renderer
+        {
+            self.display_checked = Instant::now();
+            let period = frame_period(&renderer.window);
+            if period != self.frame_period {
+                eprintln!("DISPLAY_REFRESH frame_period_us={}", period.as_micros());
+                self.frame_period = period;
+                self.pacer.set_period(refresh_period(&renderer.window));
+            }
+        }
         // Vanilla takes ingame focus once the world loads.
         let positioned = self
             .network
@@ -2360,6 +2386,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         keyboard: Keyboard::default(),
         captured: false,
         focused: false,
+        occluded: false,
+        display_checked: Instant::now(),
         auto_captured: false,
         mouse: (0.0, 0.0),
         skip_motion: false,
@@ -2394,7 +2422,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         modifiers: ModifiersState::empty(),
         clipboard: None,
         gui_scale: options.gui_scale,
-        wheel_pixels: 0.0,
+        wheel: wheel::Wheel::default(),
         smoke_chat: options.smoke_chat,
         tab_held: false,
         smoke_tab: options.smoke_tab,

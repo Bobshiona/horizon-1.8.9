@@ -43,6 +43,36 @@ pub fn schedule(limit: u32) -> Schedule {
     }
 }
 
+/// Whether anyone can be playing: the window has focus, is visible behind
+/// another app, or cannot be seen at all (minimized, covered, another Space).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    Focused,
+    Unfocused,
+    Hidden,
+}
+
+/// Frame rates while the game is in the background: enough to watch it in an
+/// unfocused window, and little more than a heartbeat when it cannot be seen.
+pub const UNFOCUSED_FPS: u32 = 30;
+pub const HIDDEN_FPS: u32 = 15;
+
+/// The frame schedule with background throttling: a focused window keeps the
+/// requested schedule; otherwise frames come no faster than the background
+/// rate (a slower requested limit still applies).
+pub fn throttle(schedule: Schedule, visibility: Visibility) -> Schedule {
+    let fps = match visibility {
+        Visibility::Focused => return schedule,
+        Visibility::Unfocused => UNFOCUSED_FPS,
+        Visibility::Hidden => HIDDEN_FPS,
+    };
+    let period = Duration::from_nanos(1_000_000_000 / u64::from(fps));
+    match schedule {
+        Schedule::Timer(own) if own >= period => schedule,
+        _ => Schedule::Timer(period),
+    }
+}
+
 /// How long `about_to_wait` may spend uploading meshes: the idle time
 /// before the next frame less a guard, up to 6 ms. When
 /// `paced` (the pacer planned the next frame from a known vsync phase) and
@@ -260,6 +290,22 @@ mod tests {
     use super::*;
 
     const P: Duration = Duration::from_micros(16_667);
+
+    #[test]
+    fn background_windows_throttle_to_thirty_or_fifteen_fps() {
+        let unlimited = schedule(u32::MAX);
+        assert_eq!(throttle(unlimited, Visibility::Focused), unlimited);
+        assert_eq!(throttle(schedule(0), Visibility::Focused), Schedule::Vsync);
+        let thirty = Schedule::Timer(Duration::from_nanos(33_333_333));
+        let fifteen = Schedule::Timer(Duration::from_nanos(66_666_666));
+        for requested in [schedule(0), unlimited, schedule(240), schedule(60)] {
+            assert_eq!(throttle(requested, Visibility::Unfocused), thirty);
+            assert_eq!(throttle(requested, Visibility::Hidden), fifteen);
+        }
+        // A limit already below the background rate stays.
+        let slow = Schedule::Timer(Duration::from_millis(100));
+        assert_eq!(throttle(slow, Visibility::Unfocused), slow);
+    }
 
     #[test]
     fn only_display_limit_uses_vsync_and_other_limits_keep_their_timer() {

@@ -2801,3 +2801,34 @@ clamping of saved values; the slider (left end 50%, middle 75%) and its label; `
 validation; the glass sheet fits 640x480; `Info.plist` carries both Game Mode keys. Gate: 324
 scoped tests, 12 trace-tool tests, 7 Python gate tests, VANILLA_189_REFERENCE_GATE_PASS,
 WATCHDOG_PASS packets=235 windows=2.
+
+## 87. Background throttling, trackpad hotbar debouncing, refresh-rate changes
+
+Previous commit: dc9353e4bc. Sprint rows 1.3 (background FPS throttling; notch, hotplug,
+scroll debouncing).
+
+- **Background throttling.** A focused window keeps the frame limit as set. Unfocused but
+  visible (another app in front, the game still on screen) it draws at most 30 FPS; occluded
+  (minimized, covered, another Space; `WindowEvent::Occluded`) at most 15. A slower limit
+  still applies. Benchmarks and smoke runs are exempt. Mesh uploads continue in the
+  background so the world is current when the game is brought back.
+- **Trackpad hotbar.** Trackpads report pixels (24 per notch). For the hotbar each event now
+  moves at most one slot, and the momentum AppKit sends after the fingers lift is ignored (a
+  gesture that starts within 60 ms of one ending; winit reports both phases alike). Mouse
+  wheels are unchanged, one slot per line; chat, menus and the HUD editor keep every notch
+  and momentum.
+- **Refresh rate.** The display's refresh rate is reread once a second, so the frame period
+  and the vsync pacer follow a monitor plugged in, a rate changed in System Settings, or a move
+  between the 60 Hz panel and a 240 Hz display without waiting for a window event.
+- **Notch.** Not changed: full screen uses the system's full-screen Space, and Apple documents
+  that `toggleFullScreen` places a window's content within the safe area below the camera
+  housing (only custom full-screen modes must apply `NSScreen.safeAreaInsets`).
+- A/B against dc9353e4bc, three alternating pairs: frame p50 lobby -1.62%, flyover -0.58%;
+  CPU p99 -12.07% / -2.03% (background `mediaanalysisd` still near two cores, noisy pairs).
+  Benchmarks never throttle, so no change is expected there.
+
+Regressions: background schedules (30 / 15 FPS for every requested limit, a slower limit
+kept, focused unchanged); wheel lines, trackpad accumulation, one hotbar slot per event, and
+momentum ignored for the hotbar but kept for menus. Gate: 328 scoped tests, 12 trace-tool
+tests, 7 Python gate tests, VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235
+windows=2.

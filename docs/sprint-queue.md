@@ -136,9 +136,12 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       copy the drawable; toggling reconfigures the surface on menu open).
 - [x] Decoupled 3D render scale (50-100%) under a full-resolution 2D layer.
       HANDOFF 86: 3440x1440 lobby 411 -> 435 (75%) -> 534 FPS (50%); 100% path unchanged.
-- [ ] Background FPS throttling (15-30 FPS, paused uploads when unfocused, minimized, occluded).
-- [ ] Notch safe-area clearance in fullscreen, 60-240 Hz display hotplug, scroll and trackpad
+- [x] Background FPS throttling (15-30 FPS, paused uploads when unfocused, minimized, occluded).
+      HANDOFF 87: 30 FPS unfocused, 15 occluded; uploads kept so the world is current on return.
+- [x] Notch safe-area clearance in fullscreen, 60-240 Hz display hotplug, scroll and trackpad
       debouncing for single-slot hotbar steps.
+      HANDOFF 87: system full screen already clears the notch; refresh rate reread each second;
+      hotbar one slot per trackpad event, momentum ignored.
 
 ### 1.4 Input, networking and telemetry
 Presentation/pacing bookkeeping checkpoint (HANDOFF 80): cached surface capabilities, explicit
