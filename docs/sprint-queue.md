@@ -106,6 +106,10 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
 - [ ] Vanilla VisGraph cave occlusion, entity culling, Smart Animations.
 - [ ] Zero-allocation hot loop, unified-memory staging rings, capped frames in flight,
       `MTLBinaryArchive` pipeline cache with startup warmup.
+      Entity/item geometry caching checkpoint (HANDOFF 79): bounded cuboid cache and registry
+      sprite extrusion reuse, 316 scoped + 12 trace + 7 gate tests. Paired frame p50
+      -2.49% / -0.15%, CPU submit p99 -11.59% / +2.27%; terrain captures pixel-identical,
+      separate 80-player crowd inspected. The zero-allocation target remains open.
 
 ### 1.3 macOS display, scaling, hardware and thermal efficiency
 - [ ] Direct-to-display `CAMetalLayer` (opaque, framebufferOnly when no menu blur), VSync toggle

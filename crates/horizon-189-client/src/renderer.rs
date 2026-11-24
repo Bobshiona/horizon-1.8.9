@@ -53,8 +53,8 @@ pub struct Renderer {
     /// When the last acquire returned: a vsync, if it blocked.
     pub acquired_at: std::time::Instant,
     skin_loader: crate::skins::Loader,
-    skins: std::collections::HashMap<u128, crate::skins::Binding>,
-    skin_images: std::collections::HashMap<u128, crate::skins::Loaded>,
+    skins: crate::skins::Bindings,
+    skin_images: std::collections::HashMap<u128, crate::skins::Loaded, horizon_world_189::Keys>,
 }
 
 impl Renderer {
@@ -401,13 +401,14 @@ impl Renderer {
             return Ok(());
         };
         let own_uuid = own.map(|(uuid, _)| *uuid);
-        self.skins.retain(|uuid, _| {
-            Some(*uuid) == own_uuid || entities.iter().any(|(_, e)| e.uuid == *uuid)
-        });
-        self.skin_images
-            .retain(|uuid, _| self.skins.contains_key(uuid));
+        // The loader's active set is exactly the entities' UUIDs and our own:
+        // one hash probe per skin instead of a scan of every entity.
         self.skin_loader
             .retain(entities.iter().map(|(_, e)| e.uuid).chain(own_uuid));
+        self.skins
+            .retain(|uuid, _| self.skin_loader.is_active(*uuid));
+        self.skin_images
+            .retain(|uuid, _| self.skins.contains_key(uuid));
         for (_, entity) in entities {
             if let Some(profile) = &entity.profile {
                 self.skin_loader.request(entity.uuid, profile);
@@ -419,9 +420,7 @@ impl Renderer {
         while let Ok(result) = self.skin_loader.results.try_recv() {
             match result {
                 Ok(loaded) => {
-                    if Some(loaded.uuid) != own_uuid
-                        && !entities.iter().any(|(_, e)| e.uuid == loaded.uuid)
-                    {
+                    if !self.skin_loader.is_active(loaded.uuid) {
                         continue;
                     }
                     let Some(layer) = self.skins.get(&loaded.uuid).map(|b| b.skin).or_else(|| {

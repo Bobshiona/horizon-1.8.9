@@ -2478,3 +2478,45 @@ Average FPS is 671 -> 667 / 765 -> 762, 1% lows 387 -> 386 / 316 -> 313; mesh p9
 Evidence prefix: resume-harness. The native culling/occlusion commits remain on local work
 branches and are not included in this checkpoint. Entity geometry caching and input/pacing
 changes are being reviewed separately; no unverified FPS/latency claims are made for them.
+
+## 79. Bounded entity and item geometry caches
+
+Parent checkpoint: 995992c8fb. Local cuboid geometry is cached per render thread with a hard
+256-entry bound; pose, lighting, tint, skin/cape layer and glint remain dynamic. Item sprite
+extrusions are built once per registry layer, and each distinct point is transformed once per
+emission. Held-item layer selection no longer allocates. Skin lookup/pruning avoids repeated
+linear searches. No packets, player identity or animation timing change.
+
+Validation passes 316 scoped Rust tests, 12 trace tests, seven Python gate tests, strict Clippy
+including alloc-count, fmt, layer/public-tree/privacy checks, ARM64 default release,
+VANILLA_189_REFERENCE_GATE_PASS and WATCHDOG_PASS packets=235 windows=2. Independent legacy
+geometry references match byte for byte, including all 4,824 owned item layers. Inspected
+terrain captures are pixel-identical. Separate timed 80-player crowd captures show player skins,
+held items and hurt tint correctly; their animation poses differ and are not a pixel-equality
+test. The earlier crowd capture without a spawn delay had no visible actors and is not evidence.
+
+Three alternating release pairs against the isolated harness checkpoint all pass:
+
+| Phase / metric | Previous default | Entity cache |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 668 / 386 | 683 / 393 |
+| Lobby frame p50 / CPU submit p99 (us) | 1485 / 630 | 1448 / 545 |
+| Lobby frame p99 / GPU p99 (us) | 1971 / 1371 | 1945 / 1392 |
+| Lobby mesh p99 (ms) | 5.9 | 5.8 |
+| Flyover average FPS / 1% low | 762 / 315 | 762 / 313 |
+| Flyover frame p50 / CPU submit p99 (us) | 1292 / 1455 | 1290 / 1488 |
+| Flyover frame p99 / GPU p99 (us) | 2879 / 1391 | 2898 / 1391 |
+| Flyover mesh p99 (ms) | 21.8 | 21.3 |
+
+Paired frame p50 ratios are -2.49% / -0.15%, CPU submit p99 -11.59% / +2.27%
+(lobby/flyover), BENCH_REGRESSION=0. All pairs are retained; no input-to-photon improvement is
+claimed. The native ICB/occlusion work remains separate and unpublished after its earlier
+failed performance gate. Pacing and terrain gamma lookup candidates are also unshipped.
+
+Separate counted run: 321.6 / 208.8 main-thread allocations per frame, peak/mean RSS 259/240 MiB.
+Uninstrumented paired-run median peak RSS stays 253 MiB; mean RSS 234 -> 234 MiB. Zero-allocation
+rendering remains open. Rebuilding after counting changed only mimalloc's embedded build date/time
+in file-backed sections (all executable and other data sections match), plus binary identity/signature
+metadata. The exact previously captured/A/B-tested default binary was retained and restored.
+Private evidence prefix: resume-entities (paired evidence: nov23-resume-entities).
+Next: validate the separate presentation/pacing candidate, without claiming raw input or late sampling.

@@ -410,8 +410,10 @@ fn generated_item(
         let [r, g, b, _] = crate::ui::argb(color | 0xFF00_0000);
         [r, g, b]
     };
-    let layers: Vec<(Option<u32>, [f32; 3])> = match item.id {
-        346 if cast => vec![(sprite("fishing_rod_cast"), [1.0; 3])],
+    // At most two layers, drawn in order; no allocation per held item.
+    let single = |layer| [(layer, [1.0; 3]), (None, [1.0; 3])];
+    let layers: [(Option<u32>, [f32; 3]); 2] = match item.id {
+        346 if cast => single(sprite("fishing_rod_cast")),
         261 => {
             let pulling = used.map(|t| t as u32).and_then(|t| match t {
                 18.. => sprite("bow_pulling_2"),
@@ -419,9 +421,9 @@ fn generated_item(
                 1..=13 => sprite("bow_pulling_0"),
                 _ => None,
             });
-            vec![(pulling.or_else(|| registry.item_layer(item)), [1.0; 3])]
+            single(pulling.or_else(|| registry.item_layer(item)))
         }
-        373 => vec![
+        373 => [
             (
                 sprite("potion_overlay"),
                 tint(crate::tooltip::potion_color(item)),
@@ -437,7 +439,7 @@ fn generated_item(
         ],
         298..=301 => {
             let index = (item.id - 298) as usize;
-            vec![
+            [
                 (
                     sprite(
                         [
@@ -462,7 +464,7 @@ fn generated_item(
                 ),
             ]
         }
-        _ => vec![(registry.item_layer(item), [1.0; 3])],
+        _ => single(registry.item_layer(item)),
     };
     for (layer, color) in layers {
         if let Some(layer) = layer {

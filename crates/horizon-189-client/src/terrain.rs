@@ -5,7 +5,7 @@
 use bytemuck::{Pod, Zeroable};
 use horizon_assets_189::{Assets, Texture, VariantSet};
 use horizon_world_189::{
-    BlockState, World,
+    BlockState, Keys, World,
     blocks::{Layer, block, is_door, is_fence, is_fence_gate, is_pane, is_stairs},
     variants::{Variant, variant},
 };
@@ -297,11 +297,13 @@ pub struct Registry {
     pub glyphs: [u8; 256],
     /// Interface sheets, fonts and language.
     pub gui: crate::ui::Resources,
-    item_layers: HashMap<i16, u32>,
-    overlays: HashMap<&'static str, u32>,
-    /// Opaque-pixel edges of each item sprite layer (`x`, `y`, side: 0 left,
-    /// 1 right, 2 top, 3 bottom), for the extruded item mesh.
-    item_edges: HashMap<u32, Vec<[u8; 3]>>,
+    /// Looked up for every held and dropped item each frame: `Keys`, not SipHash.
+    item_layers: HashMap<i16, u32, Keys>,
+    overlays: HashMap<&'static str, u32, Keys>,
+    /// Each item sprite layer's extruded mesh, by layer, from its
+    /// opaque-pixel edges; `flat_item` for other layers.
+    item_meshes: Vec<Option<ItemMesh>>,
+    flat_item: ItemMesh,
     block_layers: Vec<u32>,
     /// Blocks whose item model is a separate `*_inventory` block model, by
     /// (id, metadata or 255 for any).
@@ -369,6 +371,226 @@ fn sprite_edges(rgba: &[u8], size: usize) -> Vec<[u8; 3]> {
         }
     }
     edges
+}
+
+/// Every corner of an extruded item mesh is a sprite pixel corner (17 x 17)
+/// at the front or the back depth.
+const ITEM_POINTS: usize = 17 * 17 * 2;
+/// Item face shades: front, back and top; left and right; bottom.
+const ITEM_SHADES: [f32; 3] = [1.0, 0.6, 0.5];
+
+/// `ItemModelGenerator`'s extruded sprite in a unit cube, built once per
+/// sprite layer: front at z = 8.5/16, back at 7.5/16, and a one-pixel side
+/// wherever an opaque pixel meets a transparent one. Drawing only transforms
+/// each distinct corner once and emits both windings, as items draw unculled.
+struct ItemMesh {
+    points: Vec<glam::Vec3>,
+    quads: Vec<ItemQuad>,
+}
+
+struct ItemQuad {
+    /// Indices into `ItemMesh::points`.
+    corners: [u16; 4],
+    /// Layer-scaled texture coordinates.
+    uv: [[f32; 2]; 4],
+    /// Index into `ITEM_SHADES`.
+    shade: u8,
+}
+
+impl ItemMesh {
+    /// The front, the back, then one side per `sprite_edges` entry.
+    fn new(edges: &[[u8; 3]]) -> Self {
+        let mut points = Vec::new();
+        let mut quads = Vec::with_capacity(edges.len() + 2);
+        let mut slots = [u16::MAX; ITEM_POINTS];
+        let scale = 1.0 / crate::models::LAYER_SIZE as f32;
+        // Corner (i, j, front): x = i / 16, y = 1 - j / 16, the same values
+        // the per-pixel `x0`/`x1` and `y0`/`y1` give.
+        let mut quad = |corners: [(u8, u8, bool); 4], uv: [[f32; 2]; 4], shade: u8| {
+            let corners = corners.map(|(i, j, front)| {
+                let slot =
+                    &mut slots[(usize::from(front) * 17 + usize::from(j)) * 17 + usize::from(i)];
+                if *slot == u16::MAX {
+                    *slot = points.len() as u16;
+                    points.push(glam::Vec3::new(
+                        f32::from(i) / 16.0,
+                        1.0 - f32::from(j) / 16.0,
+                        if front { 8.5 / 16.0 } else { 7.5 / 16.0 },
+                    ));
+                }
+                *slot
+            });
+            quads.push(ItemQuad {
+                corners,
+                uv: uv.map(|corner| corner.map(|v| v * scale)),
+                shade,
+            });
+        };
+        for front in [true, false] {
+            quad(
+                [
+                    (0, 16, front),
+                    (16, 16, front),
+                    (16, 0, front),
+                    (0, 0, front),
+                ],
+                [[0.0, 16.0], [16.0, 16.0], [16.0, 0.0], [0.0, 0.0]],
+                0,
+            );
+        }
+        for &[x, y, side] in edges {
+            let (px, py) = (f32::from(x), f32::from(y));
+            let uv = [
+                [px + 0.01, py + 0.99],
+                [px + 0.99, py + 0.99],
+                [px + 0.99, py + 0.01],
+                [px + 0.01, py + 0.01],
+            ];
+            let (left, right, top, bottom) = (x, x + 1, y, y + 1);
+            let (corners, shade) = match side {
+                0 => (
+                    [
+                        (left, bottom, false),
+                        (left, bottom, true),
+                        (left, top, true),
+                        (left, top, false),
+                    ],
+                    1,
+                ),
+                1 => (
+                    [
+                        (right, bottom, true),
+                        (right, bottom, false),
+                        (right, top, false),
+                        (right, top, true),
+                    ],
+                    1,
+                ),
+                2 => (
+                    [
+                        (left, top, true),
+                        (right, top, true),
+                        (right, top, false),
+                        (left, top, false),
+                    ],
+                    0,
+                ),
+                _ => (
+                    [
+                        (left, bottom, false),
+                        (right, bottom, false),
+                        (right, bottom, true),
+                        (left, bottom, true),
+                    ],
+                    2,
+                ),
+            };
+            quad(corners, uv, shade);
+        }
+        Self { points, quads }
+    }
+
+    fn emit(&self, out: &mut Vec<Vertex>, layer: u32, matrix: glam::Mat4, color: [f32; 3]) {
+        let mut world = [[0.0f32; 3]; ITEM_POINTS];
+        for (slot, point) in world.iter_mut().zip(&self.points) {
+            *slot = matrix.transform_point3(*point).to_array();
+        }
+        let colors = ITEM_SHADES.map(|shade| color.map(|c| c * shade));
+        out.reserve(self.quads.len() * 12);
+        for quad in &self.quads {
+            let color = colors[usize::from(quad.shade)];
+            out.extend([0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2].map(|i| Vertex {
+                position: world[usize::from(quad.corners[i])],
+                uv: quad.uv[i],
+                layer,
+                color,
+                hurt: 0.0,
+            }));
+        }
+    }
+}
+
+/// The extrusion `Registry::item_mesh` rebuilt from the edges on every call
+/// before `ItemMesh`, kept as the reference the cached meshes must match.
+#[cfg(test)]
+fn item_mesh_reference(
+    out: &mut Vec<Vertex>,
+    edges: &[[u8; 3]],
+    layer: u32,
+    matrix: glam::Mat4,
+    color: [f32; 3],
+) {
+    let scale = 1.0 / crate::models::LAYER_SIZE as f32;
+    let mut quad = |corners: [[f32; 3]; 4], uv: [[f32; 2]; 4], shade: f32| {
+        let corners = corners.map(|p| matrix.transform_point3(glam::Vec3::from(p)).to_array());
+        for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+            out.push(Vertex {
+                position: corners[i],
+                uv: uv[i].map(|v| v * scale),
+                layer,
+                color: color.map(|c| c * shade),
+                hurt: 0.0,
+            });
+        }
+    };
+    let (front, back) = (8.5 / 16.0, 7.5 / 16.0);
+    for z in [front, back] {
+        quad(
+            [[0.0, 0.0, z], [1.0, 0.0, z], [1.0, 1.0, z], [0.0, 1.0, z]],
+            [[0.0, 16.0], [16.0, 16.0], [16.0, 0.0], [0.0, 0.0]],
+            1.0,
+        );
+    }
+    for &[x, y, side] in edges {
+        let (px, py) = (f32::from(x), f32::from(y));
+        let (x0, x1) = (px / 16.0, (px + 1.0) / 16.0);
+        let (y0, y1) = (1.0 - (py + 1.0) / 16.0, 1.0 - py / 16.0);
+        let uv = [
+            [px + 0.01, py + 0.99],
+            [px + 0.99, py + 0.99],
+            [px + 0.99, py + 0.01],
+            [px + 0.01, py + 0.01],
+        ];
+        let (corners, shade) = match side {
+            0 => (
+                [
+                    [x0, y0, back],
+                    [x0, y0, front],
+                    [x0, y1, front],
+                    [x0, y1, back],
+                ],
+                0.6,
+            ),
+            1 => (
+                [
+                    [x1, y0, front],
+                    [x1, y0, back],
+                    [x1, y1, back],
+                    [x1, y1, front],
+                ],
+                0.6,
+            ),
+            2 => (
+                [
+                    [x0, y1, front],
+                    [x1, y1, front],
+                    [x1, y1, back],
+                    [x0, y1, back],
+                ],
+                1.0,
+            ),
+            _ => (
+                [
+                    [x0, y0, back],
+                    [x1, y0, back],
+                    [x1, y0, front],
+                    [x0, y0, front],
+                ],
+                0.5,
+            ),
+        };
+        quad(corners, uv, shade);
+    }
 }
 
 /// Item sprites drawn in two tinted layers.
@@ -723,7 +945,7 @@ impl Registry {
                 rgba: canvas,
             });
         }
-        let mut item_layers = HashMap::new();
+        let mut item_layers = HashMap::default();
         for &(id, name) in crate::items::ITEMS {
             if let Ok(image) = assets.item_texture(name) {
                 let w = image.width.min(size as u32) as usize;
@@ -743,7 +965,7 @@ impl Registry {
             }
         }
         // Two-layer item sprites the interface tints: potions and leather.
-        let mut overlays = HashMap::new();
+        let mut overlays = HashMap::default();
         for name in OVERLAY_SPRITES {
             if let Ok(image) = assets.texture(&format!("minecraft:items/{name}")) {
                 let w = image.width.min(size as u32) as usize;
@@ -762,12 +984,16 @@ impl Registry {
                 });
             }
         }
-        let mut item_edges = HashMap::new();
+        let mut item_meshes = Vec::new();
         for &layer in item_layers.values().chain(overlays.values()) {
-            item_edges.insert(
-                layer,
-                sprite_edges(&entity_textures[layer as usize].rgba, size),
-            );
+            let layer = layer as usize;
+            if item_meshes.len() <= layer {
+                item_meshes.resize_with(layer + 1, || None);
+            }
+            item_meshes[layer] = Some(ItemMesh::new(&sprite_edges(
+                &entity_textures[layer].rgba,
+                size,
+            )));
         }
         // `RenderGlobal.destroyBlockIcons`, drawn over blocks being broken.
         for name in DESTROY_STAGES {
@@ -831,7 +1057,8 @@ impl Registry {
             entity_textures,
             glyphs,
             gui,
-            item_edges,
+            item_meshes,
+            flat_item: ItemMesh::new(&[]),
             item_layers,
             overlays,
             block_layers,
@@ -989,9 +1216,8 @@ impl Registry {
         true
     }
 
-    /// `ItemModelGenerator`'s extruded sprite in a unit cube: front at
-    /// z = 8.5/16, back at 7.5/16, and a one-pixel side wherever an opaque
-    /// pixel meets a transparent one. Both windings, as items draw unculled.
+    /// `ItemModelGenerator`'s extruded sprite under `matrix` (`ItemMesh`). A
+    /// layer without a cached mesh draws only its front and back.
     pub fn item_mesh(
         &self,
         out: &mut Vec<Vertex>,
@@ -999,82 +1225,11 @@ impl Registry {
         matrix: glam::Mat4,
         color: [f32; 3],
     ) {
-        let scale = 1.0 / crate::models::LAYER_SIZE as f32;
-        let mut quad = |corners: [[f32; 3]; 4], uv: [[f32; 2]; 4], shade: f32| {
-            let corners = corners.map(|p| matrix.transform_point3(glam::Vec3::from(p)).to_array());
-            for i in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
-                out.push(Vertex {
-                    position: corners[i],
-                    uv: uv[i].map(|v| v * scale),
-                    layer,
-                    color: color.map(|c| c * shade),
-                    hurt: 0.0,
-                });
-            }
-        };
-        let (front, back) = (8.5 / 16.0, 7.5 / 16.0);
-        for z in [front, back] {
-            quad(
-                [[0.0, 0.0, z], [1.0, 0.0, z], [1.0, 1.0, z], [0.0, 1.0, z]],
-                [[0.0, 16.0], [16.0, 16.0], [16.0, 0.0], [0.0, 0.0]],
-                1.0,
-            );
-        }
-        for &[x, y, side] in self
-            .item_edges
-            .get(&layer)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            let (px, py) = (f32::from(x), f32::from(y));
-            let (x0, x1) = (px / 16.0, (px + 1.0) / 16.0);
-            let (y0, y1) = (1.0 - (py + 1.0) / 16.0, 1.0 - py / 16.0);
-            let uv = [
-                [px + 0.01, py + 0.99],
-                [px + 0.99, py + 0.99],
-                [px + 0.99, py + 0.01],
-                [px + 0.01, py + 0.01],
-            ];
-            let (corners, shade) = match side {
-                0 => (
-                    [
-                        [x0, y0, back],
-                        [x0, y0, front],
-                        [x0, y1, front],
-                        [x0, y1, back],
-                    ],
-                    0.6,
-                ),
-                1 => (
-                    [
-                        [x1, y0, front],
-                        [x1, y0, back],
-                        [x1, y1, back],
-                        [x1, y1, front],
-                    ],
-                    0.6,
-                ),
-                2 => (
-                    [
-                        [x0, y1, front],
-                        [x1, y1, front],
-                        [x1, y1, back],
-                        [x0, y1, back],
-                    ],
-                    1.0,
-                ),
-                _ => (
-                    [
-                        [x0, y0, back],
-                        [x1, y0, back],
-                        [x1, y0, front],
-                        [x0, y0, front],
-                    ],
-                    0.5,
-                ),
-            };
-            quad(corners, uv, shade);
-        }
+        self.item_meshes
+            .get(layer as usize)
+            .and_then(Option::as_ref)
+            .unwrap_or(&self.flat_item)
+            .emit(out, layer, matrix, color);
     }
 
     pub fn stone_fixture(&self) -> Vec<Vertex> {
@@ -1584,6 +1739,165 @@ pub fn quad_indices(quads: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 16 x 16 sprite in a `LAYER_SIZE` canvas, opaque where `mask` says.
+    fn sprite(mask: impl Fn(usize, usize) -> bool) -> Vec<u8> {
+        let size = crate::models::LAYER_SIZE as usize;
+        let mut rgba = vec![0u8; size * size * 4];
+        for y in 0..16 {
+            for x in 0..16 {
+                if mask(x, y) {
+                    rgba[(y * size + x) * 4..(y * size + x) * 4 + 4]
+                        .copy_from_slice(&[200, 100, 50, 255]);
+                }
+            }
+        }
+        rgba
+    }
+
+    /// Item transforms as the hand, held and dropped item paths build them,
+    /// plus mirrored, non-uniformly scaled and far-from-origin ones.
+    fn item_matrices() -> Vec<glam::Mat4> {
+        use glam::{Mat4, Quat, Vec3};
+        let mut matrices = vec![
+            Mat4::IDENTITY,
+            Mat4::from_translation(Vec3::splat(-0.5)),
+            Mat4::from_scale(Vec3::splat(2.0))
+                * Mat4::from_translation(Vec3::new(0.0, 0.25, 0.125))
+                * Mat4::from_rotation_y((-135f32).to_radians())
+                * Mat4::from_rotation_z(25f32.to_radians())
+                * Mat4::from_scale(Vec3::splat(1.7 * 0.5))
+                * Mat4::from_translation(Vec3::splat(-0.5)),
+            Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+                * Mat4::from_rotation_x(1.3)
+                * Mat4::from_translation(Vec3::new(1234.5, 70.25, -987.125)),
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+        };
+        for _ in 0..24 {
+            matrices.push(Mat4::from_scale_rotation_translation(
+                Vec3::new(next() * 3.0, next() * 3.0, next() * 3.0),
+                Quat::from_euler(
+                    glam::EulerRot::YXZ,
+                    next() * 4.0,
+                    next() * 4.0,
+                    next() * 4.0,
+                ),
+                Vec3::new(next() * 300.0, next() * 100.0, next() * 300.0),
+            ));
+        }
+        matrices
+    }
+
+    fn assert_same_vertices(cached: &[Vertex], reference: &[Vertex], what: &str) {
+        assert_eq!(cached.len(), reference.len(), "{what}: vertex count");
+        for (index, (a, b)) in cached.iter().zip(reference).enumerate() {
+            assert_eq!(
+                bytemuck::bytes_of(a),
+                bytemuck::bytes_of(b),
+                "{what}: vertex {index}: {a:?} != {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cached_item_meshes_emit_the_per_call_extrusion_bit_for_bit() {
+        let size = crate::models::LAYER_SIZE as usize;
+        let mut seed = 0x9e37_79b9u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed >> 24
+        };
+        let mut sprites = vec![
+            ("empty", sprite(|_, _| false)),
+            ("full", sprite(|_, _| true)),
+            ("single pixel", sprite(|x, y| x == 7 && y == 9)),
+            // Every pixel has four sides: every lattice corner is used.
+            ("checkerboard", sprite(|x, y| (x + y) % 2 == 0)),
+            // A sword-like diagonal blade three pixels wide, touching the borders.
+            ("diagonal", sprite(|x, y| (x + y).abs_diff(15) <= 1)),
+            (
+                "border ring",
+                sprite(|x, y| x == 0 || y == 0 || x == 15 || y == 15),
+            ),
+        ];
+        for density in [32, 128, 224] {
+            let bits: Vec<bool> = (0..256).map(|_| noise() < density).collect();
+            sprites.push(("noise", sprite(|x, y| bits[y * 16 + x])));
+        }
+        let colors = [[1.0; 3], [0.3, 0.7, 0.9], [0.123, 1.0, 0.456]];
+        for (name, rgba) in &sprites {
+            let edges = sprite_edges(rgba, size);
+            let mesh = ItemMesh::new(&edges);
+            assert!(mesh.points.len() <= ITEM_POINTS, "{name}");
+            assert_eq!(mesh.quads.len(), edges.len() + 2, "{name}");
+            for (m, matrix) in item_matrices().into_iter().enumerate() {
+                for (c, color) in colors.into_iter().enumerate() {
+                    let layer = 7 + m as u32;
+                    // Appending after existing vertices, as the entity stream does.
+                    let mut cached = vec![Vertex::zeroed(); 3];
+                    let mut reference = cached.clone();
+                    mesh.emit(&mut cached, layer, matrix, color);
+                    item_mesh_reference(&mut reference, &edges, layer, matrix, color);
+                    assert_same_vertices(&cached, &reference, &format!("{name} m{m} c{c}"));
+                }
+            }
+        }
+        // The checkerboard reaches every corner of the 17 x 17 x 2 lattice.
+        let checker = ItemMesh::new(&sprite_edges(&sprites[3].1, size));
+        assert_eq!(checker.points.len(), ITEM_POINTS);
+    }
+
+    #[test]
+    #[ignore = "Requires HORIZON_189_TEST_JAR pointing at an owned 1.8.9 jar"]
+    fn every_owned_item_layer_emits_the_per_call_extrusion_bit_for_bit()
+    -> Result<(), Box<dyn Error>> {
+        let jar = std::env::var_os("HORIZON_189_TEST_JAR").ok_or("Set HORIZON_189_TEST_JAR")?;
+        let registry = Registry::open(Path::new(&jar))?;
+        let size = crate::models::LAYER_SIZE as usize;
+        // Before the cache, edges existed for item layers and the two-layer
+        // sprites only; every other layer drew its front and back alone.
+        let extruded: std::collections::HashSet<u32> = registry
+            .item_layers
+            .values()
+            .copied()
+            .chain(
+                OVERLAY_SPRITES
+                    .iter()
+                    .filter_map(|name| registry.sprite(name)),
+            )
+            .collect();
+        assert!(extruded.len() > 100, "{} extruded layers", extruded.len());
+        let mut compared = 0;
+        for layer in 0..registry.entity_textures.len() as u32 {
+            let edges = if extruded.contains(&layer) {
+                sprite_edges(&registry.entity_textures[layer as usize].rgba, size)
+            } else {
+                Vec::new()
+            };
+            for matrix in item_matrices().into_iter().take(8) {
+                let mut cached = Vec::new();
+                let mut reference = Vec::new();
+                registry.item_mesh(&mut cached, layer, matrix, [0.5, 0.75, 1.0]);
+                item_mesh_reference(&mut reference, &edges, layer, matrix, [0.5, 0.75, 1.0]);
+                assert_same_vertices(&cached, &reference, &format!("layer {layer}"));
+                compared += 1;
+            }
+        }
+        let sword = registry.item_layers[&276];
+        let mut vertices = Vec::new();
+        registry.item_mesh(&mut vertices, sword, glam::Mat4::IDENTITY, [1.0; 3]);
+        eprintln!(
+            "compared={compared} diamond_sword_vertices={}",
+            vertices.len()
+        );
+        Ok(())
+    }
 
     #[test]
     fn position_random_keeps_java_int_overflow_before_widening() {

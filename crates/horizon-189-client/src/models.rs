@@ -176,80 +176,158 @@ fn shade(normal: Vec3) -> f32 {
     }
 }
 
-/// Append one `ModelBox` under `matrix`, with a uniform tint and layer.
+/// Cache only local box geometry. Pose, texture, tint, lighting and winding
+/// are evaluated at emission, including inventory/first-person transforms.
+struct BoxGeometry {
+    corners: [Vec3; 8],
+    centre: Vec3,
+    faces: [BoxFace; 6],
+}
+
+struct BoxFace {
+    corners: [usize; 4],
+    uv: [[f32; 2]; 4],
+}
+
+impl BoxGeometry {
+    fn new(cube: Cuboid) -> Self {
+        let [dx, dy, dz] = cube.size.map(f32::from);
+        let [mut x, mut y, mut z] = cube.origin;
+        let (mut x2, mut y2, mut z2) = (x + dx, y + dy, z + dz);
+        x -= cube.inflate;
+        y -= cube.inflate;
+        z -= cube.inflate;
+        x2 += cube.inflate;
+        y2 += cube.inflate;
+        z2 += cube.inflate;
+        if cube.mirror {
+            std::mem::swap(&mut x, &mut x2);
+        }
+        let v7 = [x, y, z];
+        let v0 = [x2, y, z];
+        let v1 = [x2, y2, z];
+        let v2 = [x, y2, z];
+        let v3 = [x, y, z2];
+        let v4 = [x2, y, z2];
+        let v5 = [x2, y2, z2];
+        let v6 = [x, y2, z2];
+        let corners = [v0, v1, v2, v3, v4, v5, v6, v7].map(Vec3::from);
+        let (u, v) = (cube.u, cube.v);
+        let faces = [
+            (
+                [4, 0, 1, 5],
+                u + dz + dx,
+                v + dz,
+                u + dz + dx + dz,
+                v + dz + dy,
+            ),
+            ([7, 3, 6, 2], u, v + dz, u + dz, v + dz + dy),
+            ([4, 3, 7, 0], u + dz, v, u + dz + dx, v + dz),
+            ([1, 2, 6, 5], u + dz + dx, v + dz, u + dz + dx + dx, v),
+            ([0, 7, 2, 1], u + dz, v + dz, u + dz + dx, v + dz + dy),
+            (
+                [3, 4, 5, 6],
+                u + dz + dx + dz,
+                v + dz,
+                u + dz + dx + dz + dx,
+                v + dz + dy,
+            ),
+        ];
+        let scale = 1.0 / LAYER_SIZE as f32;
+        Self {
+            corners,
+            centre: Vec3::new((x + x2) / 2.0, (y + y2) / 2.0, (z + z2) / 2.0),
+            faces: faces.map(|(indices, u1, v1, u2, v2)| BoxFace {
+                corners: indices,
+                uv: [[u2, v1], [u1, v1], [u1, v2], [u2, v2]].map(|[a, b]| [a * scale, b * scale]),
+            }),
+        }
+    }
+
+    fn emit(&self, out: &mut Vec<Vertex>, matrix: Mat4, layer: u32, tint: [f32; 3]) {
+        // Each corner is shared by three faces: transform it once.
+        let corners = self.corners.map(|corner| matrix.transform_point3(corner));
+        let centre = matrix.transform_point3(self.centre);
+        out.reserve(36);
+        for face in &self.faces {
+            let points = face.corners.map(|index| corners[index]);
+            let normal = (points[1] - points[0]).cross(points[2] - points[0]);
+            if normal.length_squared() == 0.0 {
+                continue;
+            }
+            let normal = normal.normalize();
+            let middle = (points[0] + points[2]) * 0.5;
+            // Recompute after transformation for mirrored and flat boxes.
+            let outward = normal.dot(middle - centre) >= 0.0;
+            let order = if outward {
+                [0, 1, 2, 0, 2, 3]
+            } else {
+                [0, 2, 1, 0, 3, 2]
+            };
+            let facing = if outward { normal } else { -normal };
+            let light = shade(facing);
+            let color = tint.map(|channel| channel * light);
+            out.extend(order.map(|index| Vertex {
+                position: points[index].to_array(),
+                uv: face.uv[index],
+                layer,
+                color,
+                hurt: 0.0,
+            }));
+        }
+    }
+}
+
+// A fixed limit per rendering thread, independent of entity count/lifetime.
+// Once full, uncommon boxes use the identical uncached path. No eviction or
+// frame-wide invalidation is needed: all geometry inputs are in the key.
+const BOX_CACHE_LIMIT: usize = 256;
+#[derive(Default)]
+struct BoxCache {
+    geometry: std::collections::HashMap<[u32; 7], BoxGeometry, horizon_world_189::Keys>,
+}
+
+impl BoxCache {
+    fn get(&mut self, cube: Cuboid) -> Option<&BoxGeometry> {
+        let key = [
+            cube.u.to_bits(),
+            cube.v.to_bits(),
+            cube.origin[0].to_bits(),
+            cube.origin[1].to_bits(),
+            cube.origin[2].to_bits(),
+            cube.inflate.to_bits(),
+            u32::from(cube.size[0])
+                | (u32::from(cube.size[1]) << 8)
+                | (u32::from(cube.size[2]) << 16)
+                | (u32::from(cube.mirror) << 24),
+        ];
+        if self.geometry.len() < BOX_CACHE_LIMIT {
+            Some(
+                self.geometry
+                    .entry(key)
+                    .or_insert_with(|| BoxGeometry::new(cube)),
+            )
+        } else {
+            self.geometry.get(&key)
+        }
+    }
+}
+
+thread_local! {
+    static BOX_CACHE: std::cell::RefCell<BoxCache> = std::cell::RefCell::new(BoxCache::default());
+}
+
+/// Append one `ModelBox` under the current frame's transform and material.
 fn add(out: &mut Vec<Vertex>, matrix: Mat4, cube: Cuboid, layer: impl Into<u32>, tint: [f32; 3]) {
     let layer = layer.into();
-    let [dx, dy, dz] = cube.size.map(f32::from);
-    let [mut x, mut y, mut z] = cube.origin;
-    let (mut x2, mut y2, mut z2) = (x + dx, y + dy, z + dz);
-    x -= cube.inflate;
-    y -= cube.inflate;
-    z -= cube.inflate;
-    x2 += cube.inflate;
-    y2 += cube.inflate;
-    z2 += cube.inflate;
-    if cube.mirror {
-        std::mem::swap(&mut x, &mut x2);
-    }
-    let v7 = [x, y, z];
-    let v0 = [x2, y, z];
-    let v1 = [x2, y2, z];
-    let v2 = [x, y2, z];
-    let v3 = [x, y, z2];
-    let v4 = [x2, y, z2];
-    let v5 = [x2, y2, z2];
-    let v6 = [x, y2, z2];
-    let (u, v) = (cube.u, cube.v);
-    let quads = [
-        (
-            [v4, v0, v1, v5],
-            u + dz + dx,
-            v + dz,
-            u + dz + dx + dz,
-            v + dz + dy,
-        ),
-        ([v7, v3, v6, v2], u, v + dz, u + dz, v + dz + dy),
-        ([v4, v3, v7, v0], u + dz, v, u + dz + dx, v + dz),
-        ([v1, v2, v6, v5], u + dz + dx, v + dz, u + dz + dx + dx, v),
-        ([v0, v7, v2, v1], u + dz, v + dz, u + dz + dx, v + dz + dy),
-        (
-            [v3, v4, v5, v6],
-            u + dz + dx + dz,
-            v + dz,
-            u + dz + dx + dz + dx,
-            v + dz + dy,
-        ),
-    ];
-    let centre = matrix.transform_point3(Vec3::new((x + x2) / 2.0, (y + y2) / 2.0, (z + z2) / 2.0));
-    let scale = 1.0 / LAYER_SIZE as f32;
-    for (corners, u1, v1, u2, v2) in quads {
-        let uv = [[u2, v1], [u1, v1], [u1, v2], [u2, v2]].map(|[a, b]| [a * scale, b * scale]);
-        let points = corners.map(|corner| matrix.transform_point3(Vec3::from(corner)));
-        let normal = (points[1] - points[0]).cross(points[2] - points[0]);
-        if normal.length_squared() == 0.0 {
-            continue;
-        }
-        let normal = normal.normalize();
-        let middle = (points[0] + points[2]) * 0.5;
-        // Wind counter-clockwise as seen from outside the box.
-        let outward = normal.dot(middle - centre) >= 0.0;
-        let order = if outward {
-            [0, 1, 2, 0, 2, 3]
+    BOX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(geometry) = cache.get(cube) {
+            geometry.emit(out, matrix, layer, tint);
         } else {
-            [0, 2, 1, 0, 3, 2]
-        };
-        let facing = if outward { normal } else { -normal };
-        let light = shade(facing);
-        for index in order {
-            out.push(Vertex {
-                position: points[index].to_array(),
-                uv: uv[index],
-                layer,
-                color: tint.map(|channel| channel * light),
-                hurt: 0.0,
-            });
+            BoxGeometry::new(cube).emit(out, matrix, layer, tint);
         }
-    }
+    });
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -999,7 +1077,7 @@ pub fn entities(
     partial: f32,
     origin: [i64; 3],
     registry: Option<&crate::terrain::Registry>,
-    bindings: Option<&std::collections::HashMap<u128, crate::skins::Binding>>,
+    bindings: Option<&crate::skins::Bindings>,
     camera: horizon_protocol_47::play::PositionLook,
     glint: &mut Vec<Vertex>,
     millis: u64,
@@ -2093,6 +2171,203 @@ pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u
 mod tests {
     use super::*;
 
+    /// `add` as it was before it transformed each box corner once.
+    fn add_reference(
+        out: &mut Vec<Vertex>,
+        matrix: Mat4,
+        cube: Cuboid,
+        layer: u32,
+        tint: [f32; 3],
+    ) {
+        let [dx, dy, dz] = cube.size.map(f32::from);
+        let [mut x, mut y, mut z] = cube.origin;
+        let (mut x2, mut y2, mut z2) = (x + dx, y + dy, z + dz);
+        x -= cube.inflate;
+        y -= cube.inflate;
+        z -= cube.inflate;
+        x2 += cube.inflate;
+        y2 += cube.inflate;
+        z2 += cube.inflate;
+        if cube.mirror {
+            std::mem::swap(&mut x, &mut x2);
+        }
+        let v7 = [x, y, z];
+        let v0 = [x2, y, z];
+        let v1 = [x2, y2, z];
+        let v2 = [x, y2, z];
+        let v3 = [x, y, z2];
+        let v4 = [x2, y, z2];
+        let v5 = [x2, y2, z2];
+        let v6 = [x, y2, z2];
+        let (u, v) = (cube.u, cube.v);
+        let quads = [
+            (
+                [v4, v0, v1, v5],
+                u + dz + dx,
+                v + dz,
+                u + dz + dx + dz,
+                v + dz + dy,
+            ),
+            ([v7, v3, v6, v2], u, v + dz, u + dz, v + dz + dy),
+            ([v4, v3, v7, v0], u + dz, v, u + dz + dx, v + dz),
+            ([v1, v2, v6, v5], u + dz + dx, v + dz, u + dz + dx + dx, v),
+            ([v0, v7, v2, v1], u + dz, v + dz, u + dz + dx, v + dz + dy),
+            (
+                [v3, v4, v5, v6],
+                u + dz + dx + dz,
+                v + dz,
+                u + dz + dx + dz + dx,
+                v + dz + dy,
+            ),
+        ];
+        let centre =
+            matrix.transform_point3(Vec3::new((x + x2) / 2.0, (y + y2) / 2.0, (z + z2) / 2.0));
+        let scale = 1.0 / LAYER_SIZE as f32;
+        for (corners, u1, v1, u2, v2) in quads {
+            let uv = [[u2, v1], [u1, v1], [u1, v2], [u2, v2]].map(|[a, b]| [a * scale, b * scale]);
+            let points = corners.map(|corner| matrix.transform_point3(Vec3::from(corner)));
+            let normal = (points[1] - points[0]).cross(points[2] - points[0]);
+            if normal.length_squared() == 0.0 {
+                continue;
+            }
+            let normal = normal.normalize();
+            let middle = (points[0] + points[2]) * 0.5;
+            let outward = normal.dot(middle - centre) >= 0.0;
+            let order = if outward {
+                [0, 1, 2, 0, 2, 3]
+            } else {
+                [0, 2, 1, 0, 3, 2]
+            };
+            let facing = if outward { normal } else { -normal };
+            let light = shade(facing);
+            for index in order {
+                out.push(Vertex {
+                    position: points[index].to_array(),
+                    uv: uv[index],
+                    layer,
+                    color: tint.map(|channel| channel * light),
+                    hurt: 0.0,
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn box_cache_keys_all_geometry_inputs_and_stays_bounded() {
+        let base = cuboid(0.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8]);
+        let mut variants = vec![base];
+        let mut changed = base;
+        changed.u = 32.0;
+        variants.push(changed);
+        changed = base;
+        changed.v = 16.0;
+        variants.push(changed);
+        for axis in 0..3 {
+            changed = base;
+            changed.origin[axis] += 1.0;
+            variants.push(changed);
+            changed = base;
+            changed.size[axis] += 1;
+            variants.push(changed);
+        }
+        variants.push(base.inflated(0.5));
+        changed = base;
+        changed.mirror = true;
+        variants.push(changed);
+        let mut cache = BoxCache::default();
+        for (index, cube) in variants.iter().copied().enumerate() {
+            let mut actual = Vec::new();
+            let mut expected = Vec::new();
+            let matrix = Mat4::from_rotation_y(index as f32 * 0.3);
+            let layer = 100 + index as u32;
+            let tint = [0.25, 0.5, 0.75];
+            cache
+                .get(cube)
+                .unwrap()
+                .emit(&mut actual, matrix, layer, tint);
+            add_reference(&mut expected, matrix, cube, layer, tint);
+            assert_eq!(
+                bytemuck::cast_slice::<Vertex, u8>(&actual),
+                bytemuck::cast_slice::<Vertex, u8>(&expected)
+            );
+        }
+        assert_eq!(cache.geometry.len(), variants.len());
+        for index in 0..BOX_CACHE_LIMIT {
+            let _ = cache.get(cuboid(index as f32 + 100.0, 0.0, [0.0; 3], [1, 1, 1]));
+        }
+        assert_eq!(cache.geometry.len(), BOX_CACHE_LIMIT);
+        let uncommon = cuboid(-100.0, 0.0, [0.0; 3], [3, 7, 1]);
+        assert!(cache.get(uncommon).is_none());
+        // A miss at capacity still draws; existing entries remain reusable
+        // under a new pose, texture and tint (including another player's skin).
+        for cube in [uncommon, base] {
+            let mut actual = Vec::new();
+            let mut expected = Vec::new();
+            let matrix = Mat4::from_translation(Vec3::new(9.0, 3.0, -1.0))
+                * Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+            let fallback;
+            let geometry = match cache.get(cube) {
+                Some(geometry) => geometry,
+                None => {
+                    fallback = BoxGeometry::new(cube);
+                    &fallback
+                }
+            };
+            geometry.emit(&mut actual, matrix, 500, [0.9; 3]);
+            add_reference(&mut expected, matrix, cube, 500, [0.9; 3]);
+            assert_eq!(
+                bytemuck::cast_slice::<Vertex, u8>(&actual),
+                bytemuck::cast_slice::<Vertex, u8>(&expected)
+            );
+        }
+        assert!(cache.get(base).is_some());
+        assert_eq!(cache.geometry.len(), BOX_CACHE_LIMIT);
+    }
+
+    #[test]
+    fn boxes_transform_each_corner_once_and_emit_the_same_vertices_bit_for_bit() {
+        let mut cubes = vec![
+            cuboid(0.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8]),
+            cuboid(32.0, 0.0, [-4.0, -8.0, -4.0], [8, 8, 8]).inflated(0.5),
+            cuboid(16.0, 16.0, [-4.0, 0.0, -2.0], [8, 12, 4]).inflated(0.25),
+            cuboid(40.0, 16.0, [-3.0, -2.0, -2.0], [3, 12, 4]),
+            // Flat and empty boxes skip their zero-area faces.
+            cuboid(0.0, 0.0, [-5.0, 0.0, 0.0], [10, 16, 0]),
+            cuboid(0.0, 0.0, [0.0; 3], [0, 0, 0]),
+        ];
+        let mut mirrored = cuboid(40.0, 16.0, [-1.0, -2.0, -2.0], [4, 12, 4]).inflated(1.0);
+        mirrored.mirror = true;
+        cubes.push(mirrored);
+        let matrices = [
+            Mat4::IDENTITY,
+            part(
+                Mat4::from_translation(Vec3::new(12.3, 64.0, -7.9))
+                    * Mat4::from_rotation_y(2.1)
+                    * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+                    * Mat4::from_scale(Vec3::splat(0.9375)),
+                [-5.0, 2.0, 0.0],
+                [-0.7, 0.3, 0.1],
+            ),
+            Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0)),
+            Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0)),
+            Mat4::from_rotation_x(1.0) * Mat4::from_scale(Vec3::new(1.0, 1.0, -2.0)),
+        ];
+        for (c, cube) in cubes.into_iter().enumerate() {
+            for (m, matrix) in matrices.into_iter().enumerate() {
+                let mut fast = vec![<Vertex as bytemuck::Zeroable>::zeroed()];
+                let mut reference = fast.clone();
+                add(&mut fast, matrix, cube, 42u32, [0.9, 0.5, 0.25]);
+                add_reference(&mut reference, matrix, cube, 42, [0.9, 0.5, 0.25]);
+                assert_eq!(fast.len(), reference.len(), "cube {c} matrix {m}");
+                assert_eq!(
+                    bytemuck::cast_slice::<Vertex, u8>(&fast),
+                    bytemuck::cast_slice::<Vertex, u8>(&reference),
+                    "cube {c} matrix {m}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_inventory_model_stands_at_the_box_thirty_pixels_a_block() {
         let screen = (480.0, 300.0);
@@ -2163,7 +2438,7 @@ mod tests {
             held_item: 0,
             metadata: vec![],
         });
-        let bindings = std::collections::HashMap::from([(
+        let bindings = crate::skins::Bindings::from_iter([(
             7,
             crate::skins::Binding {
                 skin: 1000,

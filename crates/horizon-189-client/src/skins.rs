@@ -3,6 +3,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use horizon_assets_189::{Assets, Texture};
 use horizon_protocol_47::player_list::Profile;
+use horizon_world_189::Keys;
 use std::{
     collections::HashMap,
     io::Read,
@@ -64,6 +65,9 @@ pub struct Binding {
     pub slim: bool,
 }
 
+/// Loaded skins by player UUID, looked up for every drawn player each frame.
+pub type Bindings = HashMap<u128, Binding, Keys>;
+
 pub struct Loaded {
     pub uuid: u128,
     pub skin: Texture,
@@ -74,9 +78,10 @@ pub struct Loaded {
 pub struct Loader {
     requests: SyncSender<(u128, Descriptor)>,
     pub results: Receiver<Result<Loaded, (u128, String)>>,
-    seen: HashMap<u128, Arc<Profile>>,
-    active: std::collections::HashSet<u128>,
-    retry: HashMap<u128, std::time::Instant>,
+    // Rebuilt and probed for every player each frame: `Keys`, not SipHash.
+    seen: HashMap<u128, Arc<Profile>, Keys>,
+    active: std::collections::HashSet<u128, Keys>,
+    retry: HashMap<u128, std::time::Instant, Keys>,
 }
 
 fn cdn(value: &str) -> Option<String> {
@@ -219,7 +224,7 @@ impl Loader {
         Ok(Self {
             requests,
             results,
-            seen: HashMap::new(),
+            seen: Default::default(),
             active: Default::default(),
             retry: Default::default(),
         })
@@ -229,6 +234,10 @@ impl Loader {
         self.active.extend(uuids);
         self.seen.retain(|uuid, _| self.active.contains(uuid));
         self.retry.retain(|uuid, _| self.active.contains(uuid));
+    }
+    /// Whether the last `retain` listed `uuid`.
+    pub fn is_active(&self, uuid: u128) -> bool {
+        self.active.contains(&uuid)
     }
     pub fn failed(&mut self, uuid: u128) {
         self.seen.remove(&uuid);
