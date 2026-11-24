@@ -2459,3 +2459,22 @@ peak/mean RSS 262/242 MiB; the zero-allocation milestone remains open. The defau
 restored and compared byte-for-byte with the captured/A/B-tested build. Private evidence prefix:
 h189-nov23-regions-*. No public-server/account action. Next: genuine Metal compute frustum culling
 into native indirect command buffers, followed by conservative GPU occlusion.
+
+
+## 78. Isolated benchmark checkpoint (26b5baca5a)
+
+The benchmark harness changes are now verified independently of the parked native ICB branch.
+Bench windows stay hidden at 960x600 physical pixels, hold a scoped macOS activity guard, and
+release that guard on exit. Paired evidence rejects cursor capture and inconsistent drawable
+size/backing scale. Ordinary game rendering and requested frame limits are unchanged.
+
+Fresh validation: 312 scoped Rust tests, 12 trace-tool tests, seven Python benchmark-gate tests,
+strict Clippy including alloc-count, fmt, layer/public-tree/privacy checks, ARM64 default release,
+VANILLA_189_REFERENCE_GATE_PASS and WATCHDOG_PASS packets=235 windows=2. Inspected hidden
+release captures are pixel-identical. Three alternating pairs against the matching private
+regions reference pass: lobby frame p50 +0.20%, CPU submit p99 -0.78%; flyover +0.16% / +0.21%.
+Average FPS is 671 -> 667 / 765 -> 762, 1% lows 387 -> 386 / 316 -> 313; mesh p99 6.1 -> 6.0 /
+21.9 -> 20.9 ms (lobby/flyover). No speedup is claimed for this measurement-only change.
+Evidence prefix: resume-harness. The native culling/occlusion commits remain on local work
+branches and are not included in this checkpoint. Entity geometry caching and input/pacing
+changes are being reviewed separately; no unverified FPS/latency claims are made for them.

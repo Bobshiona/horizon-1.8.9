@@ -69,6 +69,10 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       -26%; the app still ships `release`. Main thread 356 / 220 allocations per frame
       (lobby / flyover).
 
+- [x] Isolated benchmark windows and viewport-checked paired evidence (`26b5baca5a`, HANDOFF 78).
+      312 scoped + 12 trace + 7 Python tests. Pixel-identical captures; paired frame p50
+      +0.20% / +0.16%, CPU submit p99 -0.78% / +0.21%; measurement isolation, no speedup claim.
+
 ### 1.2 OptiFine-class native engine and GPU pipeline
 - [x] Palette-compressed sections (4/8-bit indirect palettes, shared immutable state tables).
       HANDOFF 69: 263 + 12 tests. Peak RSS 311 -> 268 MB; mesh p99 flyover 66.7 -> 34.3 ms
