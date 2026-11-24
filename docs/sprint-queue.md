@@ -110,6 +110,10 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       sprite extrusion reuse, 316 scoped + 12 trace + 7 gate tests. Paired frame p50
       -2.49% / -0.15%, CPU submit p99 -11.59% / +2.27%; terrain captures pixel-identical,
       separate 80-player crowd inspected. The zero-allocation target remains open.
+      World-text glyph traversal (HANDOFF 81): 321 scoped + 12 trace + 7 gate tests;
+      matched counted lobby allocations 316.6 -> 246.2/frame, flyover unchanged. Paired frame
+      p50 -0.27% / +0.08%, CPU p99 -1.06% / +0.48%; no FPS/latency gain claimed. Noisy pairs
+      retained and profiled, terrain captures pixel-identical, crowd labels inspected.
 
 ### 1.3 macOS display, scaling, hardware and thermal efficiency
 - [ ] Direct-to-display `CAMetalLayer` (opaque, framebufferOnly when no menu blur), VSync toggle

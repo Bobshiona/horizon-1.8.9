@@ -2557,3 +2557,53 @@ Separate counted telemetry: 316.7 / 203.8 main-thread allocations per frame, pea
 249/231 MiB. The exact captured and A/B-tested default binary is restored after counting.
 Next: measure the separate byte-domain terrain gamma lookup; native ICB work remains private
 until its own correctness and performance gates pass.
+
+## 81. Allocation-free world-text glyph traversal
+
+Parent: c412f0b7b0. World labels and sign text use a cloneable two-pass glyph iterator instead
+of allocating an intermediate glyph vector on every call. Output vertex buffers are unchanged.
+Formatting/color/reset handling, ASCII filtering, floating-point summation and centering retain
+their prior behavior. Independent legacy-reference tests compare output bytes across formatting
+edge cases, signed transforms and a long label whose width crosses the f32 exact-integer boundary.
+
+Full source gate: 321 scoped Rust tests, 12 trace tests, seven Python benchmark-gate tests,
+strict Clippy including alloc-count, fmt, layers/public-tree/privacy, ARM64 default release,
+VANILLA_189_REFERENCE_GATE_PASS and WATCHDOG_PASS packets=235 windows=2.
+
+Three alternating release pairs all use 960x600 at backing scale 1 and pass:
+
+| Phase / metric | Previous default | World-text iterator |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 640 / 332 | 673 / 380 |
+| Lobby frame p50 / p99 (us) | 1523 / 2137 | 1471 / 2034 |
+| Lobby CPU submit p99 / GPU p99 (us) | 845 / 1456 | 584 / 1400 |
+| Lobby mesh p99 (ms) | 7.0 | 6.3 |
+| Flyover average FPS / 1% low | 702 / 244 | 741 / 292 |
+| Flyover frame p50 / p99 (us) | 1370 / 3501 | 1306 / 2970 |
+| Flyover CPU submit p99 / GPU p99 (us) | 1823 / 1514 | 1480 / 1465 |
+| Flyover mesh p99 (ms) | 24.5 | 23.2 |
+
+The paired ratios, rather than ratios of the aggregate table, gate this noisy batch: lobby
+frame p50 -0.27%, CPU p99 -1.06%; flyover +0.08% / +0.48%, BENCH_REGRESSION=0. Lobby frame
+pairs -0.27%, -5.34%, +6.17%, CPU-tail pairs -1.06%, -42.35%, +43.08%, all retained. Fresh
+20-second profiles (excluding startup before 4 s) sample main-thread CPU 4,286 -> 4,230 ms;
+Renderer::render total 2,354 -> 2,314 ms, Scene::draw_terrain 324 -> 308 ms. They do not
+reproduce a sustained 43% CPU increase; the individual spike remains unexplained. No FPS or
+latency gain is claimed. Both inspected terrain captures are pixel-identical. Separate timed
+80-player crowd captures show correctly centered labels; animation poses differ, so those
+images are visual checks, not pixel-equality evidence.
+Uninstrumented median peak/mean RSS is 262/235 -> 254/233 MiB. Separate matched counted runs
+at the same viewport/scale report lobby allocations 316.6 -> 246.2 per frame (about 22% fewer),
+flyover 203.8 -> 203.7. Counted peak/mean RSS is 260/236 -> 265/240 MiB; no RAM reduction claimed.
+The candidate's isolated counted flyover has mesh p99 98.3 ms versus 26.8 ms in its counted
+parent run; these diagnostic timings do not replace the uninstrumented release gate, and no
+absence-of-hitches claim is made. The exact captured/A/B-tested default binary is restored.
+Evidence prefixes: resume-world-text (paired logs: nov23-resume-world-text), resume-text profiles.
+Next: integrate and remeasure the native ICB/occlusion candidate against this current default.
+
+The separate gamma-table experiment is parked privately at 5fc2ed82cb, not included here.
+Its all-byte GPU test and 321-test source gate pass, and terrain captures are pixel-identical,
+but paired frame p50 +0.53% / -0.08% (lobby/flyover) shows no useful speedup. One +31.46% lobby
+CPU-tail pair is retained; paired median +8.73%. Fresh profiles sample main-thread CPU
+4,257 -> 4,278 ms and do not reproduce that sustained increase. The spike remains unexplained.
+No energy or latency benefit is claimed for that private candidate.
