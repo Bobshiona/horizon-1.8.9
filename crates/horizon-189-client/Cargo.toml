@@ -21,7 +21,7 @@ horizon-protocol-47 = { path = "../horizon-protocol-47" }
 horizon-world-189 = { path = "../horizon-world-189" }
 horizon-physics-189 = { path = "../horizon-physics-189" }
 # The global allocator: mimalloc (a heap per thread), counting with `alloc-count`.
-horizon-threads = { path = "../horizon-threads" }
+horizon-threads = { path = "../horizon-threads", features = ["benchmark-activity"] }
 png = "0.18"
 pollster = "0.4"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }

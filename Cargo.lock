@@ -3063,6 +3063,8 @@ dependencies = [
  "libmimalloc-sys",
  "memmap2",
  "mimalloc",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
  "object 0.39.1",
  "rustc-demangle",
  "windows-sys 0.61.2",

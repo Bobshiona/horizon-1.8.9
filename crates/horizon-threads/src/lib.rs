@@ -1,6 +1,8 @@
 //! Scheduling hints for the game's threads and its allocator: the few OS calls
 //! that the other crates, which forbid unsafe code, can't make themselves.
 
+#[cfg(feature = "benchmark-activity")]
+pub mod activity;
 pub mod alloc_count;
 #[cfg(feature = "test-allocation-probe")]
 pub mod allocation_probe;

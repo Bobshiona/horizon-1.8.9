@@ -12,8 +12,8 @@ spec.loader.exec_module(bench)
 
 
 def run(frame=1000, cpu=1000, fps=1000):
-    return {p: {**dict.fromkeys(bench.METRICS, 1.0), "p50_us": frame,
-                "cpu_p99_us": cpu, "avg_fps": fps, "frames": 100} for p in bench.PHASES}
+    return {"_viewport": (960, 600, 2.0), **{p: {**dict.fromkeys(bench.METRICS, 1.0), "p50_us": frame,
+                "cpu_p99_us": cpu, "avg_fps": fps, "frames": 100} for p in bench.PHASES}}
 
 
 class PairedBenchmark(unittest.TestCase):
@@ -41,9 +41,9 @@ class PairedBenchmark(unittest.TestCase):
             paths = []
             for name, data in (("base", run()), ("new", run(frame=1060))):
                 path = Path(directory) / name
-                path.write_text("\n".join("BOBTRACE_RESULT phase=" + phase + " " +
+                path.write_text("drawable=960x600 backing_scale=2\n" + "\n".join("BOBTRACE_RESULT phase=" + phase + " " +
                                 " ".join(f"{k}={v}" for k, v in fields.items())
-                                for phase, fields in data.items()))
+                                for phase, fields in data.items() if phase in bench.PHASES))
                 paths.append(str(path))
             command = [sys.executable, spec.origin, "--pair", *paths]
             self.assertEqual(subprocess.run(command, capture_output=True).returncode, 2)
@@ -61,15 +61,33 @@ class PairedBenchmark(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bench.load(path)
             lines = ["BOBTRACE_RESULT phase=" + phase + " " + " ".join(f"{k}={v}" for k,v in data.items())
-                     for phase,data in run().items()]
-            path.write_text("\n".join(lines))
+                     for phase,data in run().items() if phase in bench.PHASES]
+            path.write_text("drawable=960x600 backing_scale=2\n" + "\n".join(lines))
             self.assertEqual(bench.load(path), run())
-            path.write_text("\n".join(lines).replace("allocs_per_frame=1.0", "allocs_per_frame=n/a"))
+            path.write_text("drawable=960x600 backing_scale=2\n" + "\n".join(lines).replace("allocs_per_frame=1.0", "allocs_per_frame=n/a"))
             loaded = bench.load(path)
             self.assertIn("allocs_per_frame=n/a", "\n".join(bench.compare([(loaded, loaded)] * 3)[0]))
             path.write_text("\n".join(lines + lines))
             with self.assertRaises(ValueError):
                 bench.load(path)
+
+    def test_rejects_desktop_input_or_changing_viewport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "run.log"
+            lines = "\n".join("BOBTRACE_RESULT phase=" + phase + " " +
+                " ".join(f"{k}={v}" for k, v in run()[phase].items()) for phase in bench.PHASES)
+            for prefix in ("", "drawable=960x600 backing_scale=2\ncursor_captured=true\n",
+                           "drawable=960x600 backing_scale=2\ndrawable=1920x1200 backing_scale=2\n"):
+                path.write_text(prefix + lines)
+                with self.assertRaises(ValueError):
+                    bench.load(path)
+
+    def test_all_pairs_share_physical_size_and_scale(self):
+        for viewport in ((1920, 1200, 2.0), (960, 600, 1.0), None):
+            pairs = [(run(), run()) for _ in range(3)]
+            pairs[1][1]["_viewport"] = viewport
+            with self.assertRaises(ValueError):
+                bench.compare(pairs)
 
 
 if __name__ == "__main__":

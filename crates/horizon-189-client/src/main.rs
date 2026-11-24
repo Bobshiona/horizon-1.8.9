@@ -1121,7 +1121,14 @@ impl ApplicationHandler for App {
         }
         let attributes = Window::default_attributes()
             .with_title("Bob Client")
-            .with_inner_size(LogicalSize::new(960.0, 600.0))
+            // Benchmark windows never take desktop input. Physical dimensions
+            // keep paired runs independent of display/backing-scale changes.
+            .with_visible(!self.bench)
+            .with_inner_size(if self.bench {
+                winit::dpi::Size::Physical(winit::dpi::PhysicalSize::new(960, 600))
+            } else {
+                winit::dpi::Size::Logical(LogicalSize::new(960.0, 600.0))
+            })
             .with_min_inner_size(LogicalSize::new(320.0, 240.0));
         let result = event_loop
             .create_window(attributes)
@@ -1152,7 +1159,7 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
-                if self.smoke_frames.is_some() {
+                if self.smoke_frames.is_some() && !self.bench {
                     renderer.window.focus_window();
                 }
                 if (self.launcher.is_some() || self.from_launcher) && self.settings.video.fullscreen
@@ -2287,6 +2294,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("INSTALLED {}", bundle.display());
         return Ok(());
     }
+    let _benchmark_activity = options.bench.then(|| {
+        let guard = horizon_threads::activity::benchmark_activity();
+        eprintln!("BENCH_ACTIVITY_READY scoped=true");
+        guard
+    });
     let preview = options.smoke_launcher;
     let launcher_mode = options.launcher() || preview;
     let from_launcher = options.started_by_launcher();

@@ -8,6 +8,7 @@ Both phases gate median frame interval (+5%) and CPU submit p99 (+25%).
 from __future__ import annotations
 import argparse
 import math
+import re
 from pathlib import Path
 import statistics
 
@@ -17,9 +18,19 @@ METRICS = ("avg_fps", "low1_fps", "p50_us", "p99_us", "cpu_p99_us", "gpu_p99_us"
            "draws_per_frame", "allocs_per_frame", "mesh_p99_ms")
 
 
-def load(path: Path) -> dict[str, dict[str, float]]:
+def load(path: Path) -> dict:
     phases = {}
+    viewports = set()
     for line in path.read_text().splitlines():
+        size = re.fullmatch(r"drawable=(\d+)x(\d+) backing_scale=([0-9.]+)", line)
+        if size:
+            width, height, scale = size.groups()
+            viewport = (int(width), int(height), float(scale))
+            if not all(math.isfinite(value) and value > 0 for value in viewport):
+                raise ValueError("invalid render viewport")
+            viewports.add(viewport)
+        if line == "cursor_captured=true":
+            raise ValueError("desktop input captured during benchmark")
         if not line.startswith("BOBTRACE_RESULT "):
             continue
         fields = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
@@ -39,13 +50,20 @@ def load(path: Path) -> dict[str, dict[str, float]]:
         for key in (*RULES, "frames"):
             if data[key] <= 0:
                 raise ValueError(f"zero {phase}.{key}")
+    if len(viewports) != 1:
+        raise ValueError("missing or changing render viewport")
+    phases["_viewport"] = next(iter(viewports))
     return phases
 
 
 def compare(pairs: list[tuple[dict, dict]]) -> tuple[list[str], int]:
     if len(pairs) < 3:
         raise ValueError("at least three complete A/B pairs required")
-    lines, bad = [], 0
+    viewports = [run.get("_viewport") for pair in pairs for run in pair]
+    if not viewports[0] or any(viewport != viewports[0] for viewport in viewports):
+        raise ValueError("all paired runs must use the same render viewport and scale")
+    width, height, scale = viewports[0]
+    lines, bad = [f"BENCH_VIEWPORT width={width} height={height} scale={scale:g}"], 0
     for phase in PHASES:
         for side, index in (("base", 0), ("new", 1)):
             def median(key):
