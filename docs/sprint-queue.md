@@ -149,14 +149,20 @@ frame-limit policy, phase reset, presentation timestamp and bounded idle uploads
 12 trace + 7 gate tests. Paired frame p50 +0.77% / +0.16%, CPU p99 -5.09% / -0.74%; captures
 pixel-identical. Visible Vsync model measurements are inconclusive; no input latency gain claimed.
 
-- [ ] Raw mouse at 1000 Hz+ with delta aggregation, no acceleration when locked, cursor
+- [x] Raw mouse at 1000 Hz+ with delta aggregation, no acceleration when locked, cursor
       confinement on fast flicks, late look sampling before submission.
-- [ ] Scan-code bindings for movement and hotbar; no press-and-hold accent popup in game; full
+      HANDOFF 88: Raw Input (GCMouse on its own queue, lock-free sums, default off; feel and
+      direction to be confirmed by the owner); Locked grab already confines.
+- [x] Scan-code bindings for movement and hotbar; no press-and-hold accent popup in game; full
       macOS text editing in chat and search.
-- [ ] `TCP_NODELAY`; socket I/O, zlib and AES/CFB8 on a dedicated thread feeding a lock-free
+      HANDOFF 88: physical key codes and no IME already; chat Control keys, search shortcuts.
+- [x] `TCP_NODELAY`; socket I/O, zlib and AES/CFB8 on a dedicated thread feeding a lock-free
       queue into the tick loop.
-- [ ] Frametime sparkline (CPU, GPU, p99, draw calls, chunks, RAM) and an `MTL_HUD_ENABLED=1`
+      HANDOFF 88: already in place; the decoder thread now runs at Interactive QoS.
+- [x] Frametime sparkline (CPU, GPU, p99, draw calls, chunks, RAM) and an `MTL_HUD_ENABLED=1`
       launch toggle.
+      HANDOFF 88: vanilla Alt+F3 lagometer plus median/p99/max (F3 already lists draws,
+      chunks, RAM); Metal HUD switch restarts in place with `MTL_HUD_ENABLED=1`.
 
 ## Phase 2: World completeness, 32+ render distance, resource packs, audio, parity
 

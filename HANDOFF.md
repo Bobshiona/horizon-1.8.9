@@ -2832,3 +2832,50 @@ kept, focused unchanged); wheel lines, trackpad accumulation, one hotbar slot pe
 momentum ignored for the hotbar but kept for menus. Gate: 328 scoped tests, 12 trace-tool
 tests, 7 Python gate tests, VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235
 windows=2.
+
+## 88. Raw Input, Alt+F3 lagometer, Metal HUD switch, text editing, packet thread priority
+
+Previous commit: 3657e9f090. Sprint rows 1.4.
+
+- **Raw Input** (mod menu, Gameplay; `toggles.raw_input`, default off; `--raw-input`). macOS
+  accelerates AppKit's mouse deltas, which vanilla and the default path use. With Raw Input on,
+  `horizon_threads::raw_mouse` listens to every `GCMouse` (GameController) on a serial queue of
+  its own; motion is summed in lock-free fixed point (1/256 count) as it arrives and taken at
+  the frame's look update. The deltas are device counts before acceleration (Apple: "the raw
+  amount ... without affecting mouse sensitivity settings"); y is flipped from
+  GameController's upward to AppKit's downward. Mice found after launch are picked up within a
+  second. AppKit motion is used until GameController reports any, so a missing framework or
+  device never freezes the camera. Verified: the framework is linked and two mice were found
+  in a hidden run (`RAW_MOUSE mice=2`); motion itself needs a person to move the mouse, so the
+  direction and feel are for the owner to confirm. The same sensitivity covers raw counts, so
+  it may need retuning.
+- Cursor lock: `CursorGrabMode::Locked` already detaches the pointer, so fast flicks cannot
+  leave the window. TCP_NODELAY was already set; socket reads, AES/CFB8 and zlib already run on
+  their own thread feeding a bounded channel. That thread now asks for Interactive QoS instead
+  of Utility, so knockback and movement packets are not decoded on efficiency cores behind
+  background work.
+- **Alt+F3 lagometer.** Verified in the jar: F3 sets `showLagometer` from
+  `GuiScreen.isAltKeyDown` (`ave` -> `avh.aE`), and `GuiOverlayDebug` (`avv.e`) draws the
+  last 240 frame-to-frame times (`FrameTimer`, `nh`) as bars at the bottom left, 30 pixels to
+  1/60 s, green to yellow to red, with the 60 and 30 FPS lines and, for caps of 120 or less,
+  the cap's line. Bob Client draws the same and, above it, the median, 99th percentile and
+  worst of those frames (`--smoke-lagometer` for captures).
+- **Metal HUD** (mod menu, General, default off): Apple's Metal Performance HUD, which shows
+  direct versus composited presentation, Game Mode, and GPU time. Metal reads
+  `MTL_HUD_ENABLED` at startup, so with the switch on the program restarts itself in place
+  (`exec`, same process) with it set; it applies from the next launch.
+- **Text editing.** Chat adds AppKit's Control bindings (A/E start and end, B/F character
+  moves, K delete to end, D delete forward, H backspace) to its existing Option and Command
+  shortcuts. The mod menu's search takes Option-Backspace (word), Command-Backspace (all) and
+  Command-V (paste), and Command letters no longer type. Movement and hotbar bindings were
+  already physical key codes, and the window never enables the input method, so macOS's
+  press-and-hold accent popup cannot open in game.
+- A/B against 3657e9f090, three alternating pairs: frame p50 lobby -0.48%, flyover -0.41%;
+  CPU p99 +5.47% / -2.39%. Flyover mesh p99 21.9 -> 25.9 ms, recorded (the decoder thread
+  now shares performance cores).
+
+Regressions: raw fixed-point sums; Raw Input and Metal HUD settings default off and round-trip;
+the menu's Gameplay and General cards; `--raw-input`; F3 and Alt+F3 toggling; lagometer
+scaling, colours and the 240-frame window; chat Control keys; search word and full deletes.
+Gate: 331 scoped tests, 12 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.

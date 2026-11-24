@@ -3070,6 +3070,8 @@ name = "horizon-threads"
 version = "0.1.0"
 dependencies = [
  "addr2line",
+ "block2 0.6.2",
+ "dispatch2",
  "framehop",
  "horizon-guest-stack",
  "libc",
@@ -3078,6 +3080,7 @@ dependencies = [
  "mimalloc",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
+ "objc2-game-controller",
  "object 0.39.1",
  "rustc-demangle",
  "windows-sys 0.61.2",
@@ -4280,6 +4283,18 @@ dependencies = [
  "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-game-controller"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1962c1882c5abcedb18e5f01acffeaad7b3cbd0a9d4cd8f5ca259ba8a64cb9a3"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

@@ -92,6 +92,11 @@ pub struct Toggles {
     pub smooth_zoom: bool,
     pub toggle_sprint: bool,
     pub fullbright: bool,
+    /// Raw Input: mouse motion in device counts from GameController, before
+    /// macOS's pointer acceleration (off: AppKit's accelerated motion, as vanilla).
+    pub raw_input: bool,
+    /// Apple's Metal Performance HUD (`MTL_HUD_ENABLED=1`), from the next launch.
+    pub metal_hud: bool,
     /// Frame cap: 0 follows the display (vsync), otherwise frames per second;
     /// `u32::MAX` is unlimited.
     pub fps_limit: u32,
@@ -153,6 +158,8 @@ impl Default for Toggles {
             smooth_zoom: true,
             toggle_sprint: false,
             fullbright: false,
+            raw_input: false,
+            metal_hud: false,
             fps_limit: 0,
             scoreboard_numbers: true,
             advanced_tooltips: false,
@@ -295,6 +302,8 @@ impl Settings {
                 smooth_zoom: flag("smooth_zoom", d.smooth_zoom),
                 toggle_sprint: flag("toggle_sprint", d.toggle_sprint),
                 fullbright: flag("fullbright", d.fullbright),
+                raw_input: flag("raw_input", d.raw_input),
+                metal_hud: flag("metal_hud", d.metal_hud),
                 fps_limit: t
                     .get("fps_limit")
                     .and_then(Value::as_u64)
@@ -351,6 +360,8 @@ impl Settings {
                 "smooth_zoom": t.smooth_zoom,
                 "toggle_sprint": t.toggle_sprint,
                 "fullbright": t.fullbright,
+                "raw_input": t.raw_input,
+                "metal_hud": t.metal_hud,
                 "fps_limit": t.fps_limit,
                 "scoreboard_numbers": t.scoreboard_numbers,
                 "advanced_tooltips": t.advanced_tooltips,
@@ -444,6 +455,10 @@ mod tests {
         settings.save().unwrap();
         assert!(!path.with_extension("json.tmp").exists());
         assert!(Settings::load(Some(path)).toggles.fullbright);
+        assert!(!Settings::default().toggles.raw_input);
+        let mut raw = Settings::default();
+        raw.toggles.raw_input = true;
+        assert!(Settings::parse(&raw.to_json()).toggles.raw_input);
         let _ = std::fs::remove_dir_all(dir);
     }
 

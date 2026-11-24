@@ -20,6 +20,8 @@ pub struct Options {
     pub fast_graphics: bool,
     /// Render scale for this run, percent (50 to 100).
     pub render_scale: Option<u8>,
+    /// Raw Input (GameController mouse motion) for this run.
+    pub raw_input: bool,
     /// Requested view distance in chunks (vanilla default 8 here, 2..=16).
     pub view_distance: u8,
     /// Vanilla `guiScale`: 0 automatic, otherwise the largest allowed scale.
@@ -55,6 +57,8 @@ pub struct Options {
     pub smoke_perspective: u8,
     /// Validation only: start with the F3 overlay open.
     pub smoke_debug: bool,
+    /// Validation only: start with the F3 overlay and Alt+F3's frame-time graph.
+    pub smoke_lagometer: bool,
     /// Validation only: start with F3+B hitboxes on.
     pub smoke_hitboxes: bool,
     /// Validation only: open the game menu once in the world.
@@ -123,6 +127,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --pvp-hud                     Show passive FPS and left/right CPS\n\
     --fast-graphics               Graphics: Fast (opaque leaves) for this run\n\
     --render-scale PERCENT        World resolution, 50-100% of the window\n\
+    --raw-input                   Unaccelerated mouse motion (GameController) for this run\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
     --render-distance N           View distance in chunks, 2-16 (default 8)\n\
@@ -265,6 +270,7 @@ impl Options {
                 "--capture" => options.capture = Some(value()?.into()),
                 "--pvp-hud" => options.pvp_hud = true,
                 "--fast-graphics" => options.fast_graphics = true,
+                "--raw-input" => options.raw_input = true,
                 "--render-scale" => {
                     let percent: f64 = value()?.parse()?;
                     if !(50.0..=100.0).contains(&percent) {
@@ -315,6 +321,10 @@ impl Options {
                 "--smoke-settings" => options.smoke_settings = true,
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
                 "--smoke-debug" => options.smoke_debug = true,
+                "--smoke-lagometer" => {
+                    options.smoke_debug = true;
+                    options.smoke_lagometer = true;
+                }
                 "--smoke-hitboxes" => options.smoke_hitboxes = true,
                 "--smoke-pause" => options.smoke_pause = true,
                 "--smoke-vanilla-menu" => options.smoke_vanilla_menu = true,
@@ -692,6 +702,7 @@ mod tests {
         assert!(tuned.pvp_hud && tuned.fast_graphics);
         assert_eq!(tuned.fov, 90.0);
         assert_eq!(defaults.render_scale, None);
+        assert!(!defaults.raw_input && parse(&["--raw-input"]).unwrap().raw_input);
         assert_eq!(
             parse(&["--render-scale", "73"]).unwrap().render_scale,
             Some(75)

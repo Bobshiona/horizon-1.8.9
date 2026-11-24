@@ -85,6 +85,11 @@ struct App {
     focused: bool,
     /// The window cannot be seen (minimized, covered, another Space).
     occluded: bool,
+    /// Alt+F3's lagometer: frame-to-frame times and when this frame began.
+    frame_timer: debug::FrameTimer,
+    last_frame: Option<Instant>,
+    /// Raw Input: GameController's unaccelerated mouse motion, while on.
+    raw_mouse: Option<horizon_threads::raw_mouse::RawMouse>,
     /// When the display's refresh rate was last read (it can change without the
     /// window moving: a monitor plugged in, a rate picked in System Settings).
     display_checked: Instant,
@@ -509,7 +514,17 @@ impl App {
         if self.menu.active() {
             // Typing searches the open menu; Escape clears the
             // search first, then closes.
-            let used = pressed && self.menu.key(key, text);
+            // Command-V pastes into the search like any macOS text field.
+            let pasted = if pressed && key == KeyCode::KeyV && self.modifiers.super_key() {
+                self.clipboard().and_then(|c| c.get_text().ok())
+            } else {
+                None
+            };
+            let used = pressed
+                && match &pasted {
+                    Some(pasted) => self.menu.key(key, Some(pasted), ModifiersState::empty()),
+                    None => self.menu.key(key, text, self.modifiers),
+                };
             if pressed && !used && !repeat && key == KeyCode::Escape {
                 self.menu.close();
                 self.save_settings();
@@ -573,7 +588,7 @@ impl App {
                         None => {}
                     }
                 }
-                self.view.key(key, screen);
+                self.view.key(key, screen, self.modifiers.alt_key());
             }
             if let Some(network) = &self.network
                 && let Ok(mut state) = network.shared.lock()
@@ -850,6 +865,9 @@ impl App {
                 renderer.window.set_cursor_visible(false);
                 self.captured = true;
                 self.mouse = (0.0, 0.0);
+                if let Some(raw) = &self.raw_mouse {
+                    raw.take();
+                }
                 self.skip_motion = true;
                 eprintln!("cursor_captured=true");
                 self.publish_keys();
@@ -1081,7 +1099,14 @@ impl App {
     /// `f = s * 0.6 + 0.2`, factor `f³ * 8`, then `Entity.setAngles`. LWJGL
     /// reports vertical motion upward-positive; AppKit downward-positive.
     fn apply_look(&mut self) {
-        let (dx, dy) = std::mem::take(&mut self.mouse);
+        let (mut dx, mut dy) = std::mem::take(&mut self.mouse);
+        // Raw Input replaces AppKit's motion once GameController reports any.
+        if let Some(raw) = &self.raw_mouse {
+            let motion = raw.take();
+            if raw.events() > 0 {
+                (dx, dy) = motion;
+            }
+        }
         if std::mem::take(&mut self.skip_motion) || !self.captured {
             return;
         }
@@ -1368,6 +1393,12 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let frame_started = Instant::now();
+                // `Minecraft.runGameLoop`: the time since the last frame began.
+                if let Some(previous) = self.last_frame.replace(frame_started) {
+                    let nanos = frame_started.duration_since(previous).as_nanos();
+                    self.frame_timer
+                        .record(u64::try_from(nanos).unwrap_or(u64::MAX));
+                }
                 if self.keyboard.reconcile() {
                     eprintln!("keys_reconciled=true");
                     self.publish_keys();
@@ -1854,6 +1885,15 @@ impl ApplicationHandler for App {
                                 };
                                 (debug::left(&info), debug::right(&info))
                             });
+                            // Alt+F3's frame-time graph, with the cap's line.
+                            let limit = self.settings.toggles.fps_limit;
+                            let lagometer =
+                                (self.view.lagometer && debug_text.is_some()).then(|| {
+                                    (
+                                        &self.frame_timer,
+                                        (limit != 0 && limit != u32::MAX).then_some(limit),
+                                    )
+                                });
                             let result = renderer.draw_ui(tick, |canvas, registry, skin| {
                                 let frame = hud::Frame {
                                     view: &snapshot.view,
@@ -1877,6 +1917,9 @@ impl ApplicationHandler for App {
                                 }
                                 if let Some((left, right)) = &debug_text {
                                     debug::draw(canvas, left, right);
+                                }
+                                if let Some((timer, cap)) = lagometer {
+                                    debug::lagometer(canvas, timer, cap);
                                 }
                                 // The mods would sit under the debug text.
                                 if overlay
@@ -2106,7 +2149,9 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        let raw = self.raw_mouse.as_ref().is_some_and(|raw| raw.events() > 0);
         if self.captured
+            && !raw
             && let DeviceEvent::MouseMotion { delta } = event
             && delta.0.is_finite()
             && delta.1.is_finite()
@@ -2127,6 +2172,18 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             return;
+        }
+        match (self.settings.toggles.raw_input, self.raw_mouse.is_some()) {
+            (true, false) => {
+                let raw = horizon_threads::raw_mouse::RawMouse::new();
+                eprintln!("RAW_MOUSE on mice={}", raw.mice());
+                self.raw_mouse = Some(raw);
+            }
+            (false, true) => {
+                self.raw_mouse = None;
+                eprintln!("RAW_MOUSE off");
+            }
+            _ => {}
         }
         // Upload rebuilt columns within a frame-sized budget, and when pacing
         // just in time only in the idle time before the next frame starts.
@@ -2158,6 +2215,14 @@ impl ApplicationHandler for App {
             && let Some(renderer) = &self.renderer
         {
             self.display_checked = Instant::now();
+            // Mice GameController finds after launch (or plugged in later).
+            if let Some(raw) = &mut self.raw_mouse {
+                let before = raw.mice();
+                raw.refresh();
+                if raw.mice() != before {
+                    eprintln!("RAW_MOUSE mice={}", raw.mice());
+                }
+            }
             let period = frame_period(&renderer.window);
             if period != self.frame_period {
                 eprintln!("DISPLAY_REFRESH frame_period_us={}", period.as_micros());
@@ -2352,6 +2417,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("INSTALLED {}", bundle.display());
         return Ok(());
     }
+    // Metal Performance HUD: Metal reads `MTL_HUD_ENABLED` when it starts, so
+    // the game starts over in place (same process) with it set.
+    if !options.bench
+        && options.smoke_frames.is_none()
+        && std::env::var_os("MTL_HUD_ENABLED").is_none()
+        && settings::Settings::load(settings::default_path())
+            .toggles
+            .metal_hud
+    {
+        use std::os::unix::process::CommandExt;
+        let error = std::process::Command::new(std::env::current_exe()?)
+            .args(std::env::args_os().skip(1))
+            .env("MTL_HUD_ENABLED", "1")
+            .exec();
+        eprintln!("METAL_HUD_RESTART_FAILED {error}");
+    }
     let _benchmark_activity = options.bench.then(|| {
         let guard = horizon_threads::activity::benchmark_activity();
         eprintln!("BENCH_ACTIVITY_READY scoped=true");
@@ -2387,6 +2468,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         captured: false,
         focused: false,
         occluded: false,
+        raw_mouse: None,
+        frame_timer: debug::FrameTimer::default(),
+        last_frame: None,
         display_checked: Instant::now(),
         auto_captured: false,
         mouse: (0.0, 0.0),
@@ -2450,6 +2534,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             hide_gui: options.smoke_hide_gui,
             perspective: options.smoke_perspective,
             debug: options.smoke_debug,
+            lagometer: options.smoke_lagometer,
             hitboxes: options.smoke_hitboxes,
         },
         screenshot_dir: options
@@ -2480,6 +2565,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             if let Some(percent) = options.render_scale {
                 settings.video.render_scale = percent;
+            }
+            if options.raw_input {
+                settings.toggles.raw_input = true;
             }
             if options.pvp_hud {
                 settings.hud_mut(settings::HudKind::Fps).enabled = true;

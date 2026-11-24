@@ -574,7 +574,10 @@ fn run(
     let incoming = thread::Builder::new()
         .name("Protocol 47 reader".into())
         .spawn(move || {
-            crate::scheduling::apply("packet-decoder", crate::scheduling::Class::Utility);
+            // Knockback, velocity and entity moves arrive here: decrypting and
+            // inflating them must not wait behind background work on the
+            // efficiency cores.
+            crate::scheduling::apply("packet-decoder", crate::scheduling::Class::Interactive);
             loop {
                 let packet = reader.receive();
                 let failed = packet.is_err();

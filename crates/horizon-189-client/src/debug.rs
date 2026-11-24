@@ -263,6 +263,107 @@ pub fn right(info: &Info<'_>) -> Vec<String> {
 
 /// `avv.a(avr)`: each non-empty line on a `0x90505050` backing in `0xE0E0E0`
 /// without shadow, nine pixels apart from the top corners.
+/// `FrameTimer` (`nh`): the last 240 frame-to-frame times, in nanoseconds.
+pub struct FrameTimer {
+    times: [u64; 240],
+    next: usize,
+    count: usize,
+}
+
+impl Default for FrameTimer {
+    fn default() -> Self {
+        Self {
+            times: [0; 240],
+            next: 0,
+            count: 0,
+        }
+    }
+}
+
+impl FrameTimer {
+    pub fn record(&mut self, nanos: u64) {
+        self.times[self.next] = nanos;
+        self.next = (self.next + 1) % self.times.len();
+        self.count = (self.count + 1).min(self.times.len());
+    }
+
+    /// Oldest first.
+    fn samples(&self) -> impl Iterator<Item = u64> + '_ {
+        let start = if self.count < self.times.len() {
+            0
+        } else {
+            self.next
+        };
+        (0..self.count).map(move |i| self.times[(start + i) % self.times.len()])
+    }
+
+    /// Median, 99th percentile and worst frame, in milliseconds.
+    pub fn summary(&self) -> Option<(f64, f64, f64)> {
+        let mut sorted: Vec<u64> = self.samples().collect();
+        if sorted.is_empty() {
+            return None;
+        }
+        sorted.sort_unstable();
+        let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q).round() as usize] as f64 / 1e6;
+        Some((at(0.5), at(0.99), at(1.0)))
+    }
+}
+
+/// `FrameTimer.getLagometerValue`: 1/60 s is `scale` pixels.
+fn lag_pixels(nanos: u64, scale: i32) -> i32 {
+    (nanos as f64 / 1.666_666_6e7 * f64::from(scale)) as i32
+}
+
+/// `GuiOverlayDebug`'s colour blend: green to yellow below 30 pixels, yellow
+/// to red above, per channel and clamped.
+fn lag_color(height: i32) -> u32 {
+    let blend = |from: u32, to: u32, t: f32| -> u32 {
+        (0..4).fold(0, |color, shift| {
+            let a = (from >> (shift * 8)) & 255;
+            let b = (to >> (shift * 8)) & 255;
+            let c = (a as f32 + (b as f32 - a as f32) * t) as i32;
+            color | (c.clamp(0, 255) as u32) << (shift * 8)
+        })
+    };
+    if height < 30 {
+        blend(0xFF00_FF00, 0xFFFF_FF00, height as f32 / 30.0)
+    } else {
+        blend(0xFFFF_FF00, 0xFFFF_0000, (height - 30) as f32 / 30.0)
+    }
+}
+
+/// `GuiOverlayDebug.renderLagometer` (Alt+F3): a bar per frame at the bottom
+/// left, 30 pixels to 1/60 s, with the 60 and 30 FPS lines and, for frame caps
+/// of 120 or less, the cap's line. Above it Bob Client prints the median, 99th
+/// percentile and worst of those frames.
+pub fn lagometer(canvas: &mut Canvas<'_>, timer: &FrameTimer, fps_cap: Option<u32>) {
+    let h = canvas.layout.height.floor();
+    canvas.rect(0.0, h - 60.0, 240.0, h, 0x9050_5050);
+    for (x, nanos) in timer.samples().enumerate() {
+        let height = lag_pixels(nanos, 30).clamp(0, 60);
+        let x = x as f32;
+        canvas.rect(x, h - height as f32, x + 1.0, h, lag_color(height));
+    }
+    for (y, label) in [(h - 30.0, "60"), (h - 60.0, "30")] {
+        canvas.rect(1.0, y + 1.0, 15.0, y + 10.0, 0x9050_5050);
+        canvas.text(label, 2.0, y + 2.0, 0xFFE0_E0E0, false);
+        canvas.rect(0.0, y, 240.0, y + 1.0, 0xFFFF_FFFF);
+    }
+    canvas.rect(0.0, h - 1.0, 240.0, h, 0xFFFF_FFFF);
+    canvas.rect(0.0, h - 59.0, 1.0, h - 1.0, 0xFFFF_FFFF);
+    canvas.rect(239.0, h - 59.0, 240.0, h - 1.0, 0xFFFF_FFFF);
+    if let Some(cap) = fps_cap.filter(|&cap| cap <= 120) {
+        let y = h - 60.0 + (cap / 2) as f32;
+        canvas.rect(0.0, y, 240.0, y + 1.0, 0xFF00_FFFF);
+    }
+    if let Some((median, p99, worst)) = timer.summary() {
+        let line = format!("frame {median:.1} ms  p99 {p99:.1} ms  max {worst:.1} ms");
+        let w = canvas.res.width(&line) as f32;
+        canvas.rect(1.0, h - 71.0, 2.0 + w + 1.0, h - 62.0, 0x9050_5050);
+        canvas.text(&line, 2.0, h - 70.0, 0xFFE0_E0E0, false);
+    }
+}
+
 pub fn draw(canvas: &mut Canvas<'_>, left: &[String], right: &[String]) {
     let width = canvas.layout.width;
     for (i, line) in left.iter().enumerate() {
@@ -289,6 +390,27 @@ pub fn draw(canvas: &mut Canvas<'_>, left: &[String], right: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lagometer_scales_and_colours_like_gui_overlay_debug() {
+        // 1/60 s is 30 pixels; 1/30 s is 60.
+        assert_eq!(lag_pixels(16_666_665, 30), 29);
+        assert_eq!(lag_pixels(16_666_666, 30), 30);
+        assert_eq!(lag_pixels(33_333_334, 30), 60);
+        assert_eq!(lag_color(0), 0xFF00_FF00);
+        assert_eq!(lag_color(30), 0xFFFF_FF00);
+        assert_eq!(lag_color(60), 0xFFFF_0000);
+        assert_eq!(lag_color(15), 0xFF7F_FF00);
+        let mut timer = FrameTimer::default();
+        assert_eq!(timer.summary(), None);
+        for i in 0..300u64 {
+            timer.record(if i == 299 { 50_000_000 } else { 4_000_000 });
+        }
+        // Only the last 240 frames count; the newest is last.
+        assert_eq!(timer.samples().count(), 240);
+        assert_eq!(timer.samples().last(), Some(50_000_000));
+        assert_eq!(timer.summary(), Some((4.0, 4.0, 50.0)));
+    }
 
     fn info() -> Info<'static> {
         Info {

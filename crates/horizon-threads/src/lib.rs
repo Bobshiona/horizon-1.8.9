@@ -18,6 +18,9 @@ pub mod jobs;
 pub mod process_memory;
 #[cfg(target_os = "linux")]
 pub mod profile;
+/// Raw mouse motion from the GameController framework.
+#[cfg(all(target_os = "macos", feature = "raw-mouse"))]
+pub mod raw_mouse;
 #[cfg(target_os = "linux")]
 pub mod sampler;
 pub mod stack_dump;

@@ -269,7 +269,16 @@ impl Chat {
         if !tab {
             self.names_found = false;
         }
+        // AppKit's Control bindings, as in every macOS text field.
+        let emacs = modifiers.control_key() && !modifiers.super_key() && !modifiers.alt_key();
         match key {
+            KeyCode::KeyA if emacs => self.move_to(0, shift),
+            KeyCode::KeyE if emacs => self.move_to(self.text.len(), shift),
+            KeyCode::KeyB if emacs => self.move_to(self.cursor.saturating_sub(1), shift),
+            KeyCode::KeyF if emacs => self.move_to((self.cursor + 1).min(self.text.len()), shift),
+            KeyCode::KeyK if emacs => self.delete_to(self.text.len()),
+            KeyCode::KeyD if emacs => self.delete_to((self.cursor + 1).min(self.text.len())),
+            KeyCode::KeyH if emacs => self.delete_to(self.cursor.saturating_sub(1)),
             KeyCode::Escape => {
                 self.close();
                 return Request::Closed;
@@ -639,6 +648,29 @@ mod tests {
         // Command shortcuts never type their letter.
         chat.key(KeyCode::KeyV, Some("v"), ModifiersState::SUPER);
         assert_eq!(chat.text().chars().count(), MAX_MESSAGE);
+    }
+
+    #[test]
+    fn control_keys_move_and_delete_like_appkit_text_fields() {
+        let mut chat = Chat::default();
+        chat.open_with("", 0.0);
+        typing(&mut chat, "hello world");
+        let ctrl = ModifiersState::CONTROL;
+        chat.key(KeyCode::KeyA, Some("\u{1}"), ctrl);
+        typing(&mut chat, ">");
+        assert_eq!(chat.text(), ">hello world");
+        chat.key(KeyCode::KeyF, None, ctrl);
+        chat.key(KeyCode::KeyD, None, ctrl);
+        assert_eq!(chat.text(), ">hllo world");
+        chat.key(KeyCode::KeyK, None, ctrl);
+        assert_eq!(chat.text(), ">h");
+        chat.key(KeyCode::KeyH, None, ctrl);
+        chat.key(KeyCode::KeyE, None, ctrl);
+        typing(&mut chat, "!");
+        assert_eq!(chat.text(), ">!");
+        chat.key(KeyCode::KeyB, None, ctrl);
+        typing(&mut chat, "?");
+        assert_eq!(chat.text(), ">?!");
     }
 
     #[test]

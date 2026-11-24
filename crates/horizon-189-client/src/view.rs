@@ -15,6 +15,9 @@ pub struct View {
     pub perspective: u8,
     /// `GameSettings.showDebugInfo` (`avh.aC`).
     pub debug: bool,
+    /// `GameSettings.showLagometer` (`avh.aE`): set from Alt whenever F3
+    /// toggles the overlay (`Minecraft.runTick`, `GuiScreen.isAltKeyDown`).
+    pub lagometer: bool,
     /// `RenderManager.debugBoundingBox` (F3+B).
     pub hitboxes: bool,
 }
@@ -33,13 +36,16 @@ pub enum Combo {
 impl View {
     /// A fresh key press. Vanilla hands keys to the open screen instead, so
     /// these only act with none open. Returns whether the key was used.
-    pub fn key(&mut self, key: KeyCode, screen_open: bool) -> bool {
+    pub fn key(&mut self, key: KeyCode, screen_open: bool, alt: bool) -> bool {
         if screen_open {
             return false;
         }
         match key {
             KeyCode::F1 => self.hide_gui = !self.hide_gui,
-            KeyCode::F3 => self.debug = !self.debug,
+            KeyCode::F3 => {
+                self.debug = !self.debug;
+                self.lagometer = alt;
+            }
             KeyCode::F5 => {
                 self.perspective = if self.perspective >= 2 {
                     0
@@ -170,13 +176,13 @@ mod tests {
         assert!(view.hand());
         let modes: Vec<u8> = (0..4)
             .map(|_| {
-                view.key(KeyCode::F5, false);
+                view.key(KeyCode::F5, false, false);
                 view.perspective
             })
             .collect();
         assert_eq!(modes, [1, 2, 0, 1]);
         assert!(!view.hand());
-        assert!(!view.key(KeyCode::F5, true));
+        assert!(!view.key(KeyCode::F5, true, false));
         assert_eq!(view.perspective, 1);
     }
 
@@ -207,9 +213,12 @@ mod tests {
     fn f1_hides_the_gui_only_without_a_screen_and_screens_bring_the_overlay_back() {
         let mut view = View::default();
         assert!(view.overlay(false) && view.world_gui());
-        assert!(!view.key(KeyCode::F1, true), "a screen takes the key");
+        assert!(
+            !view.key(KeyCode::F1, true, false),
+            "a screen takes the key"
+        );
         assert!(!view.hide_gui);
-        assert!(view.key(KeyCode::F1, false));
+        assert!(view.key(KeyCode::F1, false, false));
         assert!(view.hide_gui);
         assert!(!view.overlay(false));
         assert!(
@@ -217,9 +226,14 @@ mod tests {
             "GuiChat and other screens still draw it"
         );
         assert!(!view.world_gui());
-        assert!(!view.key(KeyCode::KeyW, false));
-        assert!(view.key(KeyCode::F3, false) && view.debug);
-        assert!(!view.key(KeyCode::F3, true) && view.debug);
+        assert!(!view.key(KeyCode::KeyW, false, false));
+        assert!(view.key(KeyCode::F3, false, false) && view.debug && !view.lagometer);
+        // Alt+F3 shows the frame-time graph too; F3 alone again hides it.
+        assert!(view.key(KeyCode::F3, false, true) && !view.debug && view.lagometer);
+        assert!(view.key(KeyCode::F3, false, true) && view.debug && view.lagometer);
+        assert!(view.key(KeyCode::F3, false, false) && !view.debug && !view.lagometer);
+        assert!(view.key(KeyCode::F3, false, false) && view.debug);
+        assert!(!view.key(KeyCode::F3, true, false) && view.debug);
         assert_eq!(view.combo(KeyCode::KeyB, false), None);
         assert!(view.hitboxes);
         assert_eq!(view.combo(KeyCode::KeyB, true), None);
@@ -232,7 +246,7 @@ mod tests {
         );
         assert_eq!(view.combo(KeyCode::KeyF, false), None);
         assert_eq!(view.combo(KeyCode::KeyQ, false), None);
-        assert!(view.key(KeyCode::F1, false));
+        assert!(view.key(KeyCode::F1, false, false));
         assert!(!view.hide_gui);
     }
 }

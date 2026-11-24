@@ -17,12 +17,14 @@ pub enum Entry {
     Zoom,
     SmoothZoom,
     ToggleSprint,
+    RawInput,
     Fullbright,
     ScoreboardNumbers,
     Crosshair,
     BlockOutline,
     FpsLimit,
     VanillaMenu,
+    MetalHud,
 }
 
 /// Frame caps the FPS card cycles through; 0 follows the display.
@@ -34,12 +36,14 @@ fn entries() -> Vec<Entry> {
         Entry::Zoom,
         Entry::SmoothZoom,
         Entry::ToggleSprint,
+        Entry::RawInput,
         Entry::Fullbright,
         Entry::ScoreboardNumbers,
         Entry::Crosshair,
         Entry::BlockOutline,
         Entry::FpsLimit,
         Entry::VanillaMenu,
+        Entry::MetalHud,
     ]);
     list
 }
@@ -82,24 +86,28 @@ impl Entry {
             Entry::Zoom => "Zoom (C)",
             Entry::SmoothZoom => "Smooth Zoom",
             Entry::ToggleSprint => "Toggle Sprint",
+            Entry::RawInput => "Raw Input",
             Entry::Fullbright => "Fullbright",
             Entry::ScoreboardNumbers => "Scoreboard Numbers",
             Entry::VanillaMenu => "Vanilla Menu",
             Entry::Crosshair => "Crosshair",
             Entry::BlockOutline => "Block Outline",
             Entry::FpsLimit => "Frame Limit",
+            Entry::MetalHud => "Metal HUD",
         }
     }
 
     pub fn category(self) -> Category {
         match self {
             Entry::Hud(_) => Category::Hud,
-            Entry::Zoom | Entry::SmoothZoom | Entry::ToggleSprint => Category::Gameplay,
+            Entry::Zoom | Entry::SmoothZoom | Entry::ToggleSprint | Entry::RawInput => {
+                Category::Gameplay
+            }
             Entry::Fullbright
             | Entry::ScoreboardNumbers
             | Entry::Crosshair
             | Entry::BlockOutline => Category::Visual,
-            Entry::FpsLimit | Entry::VanillaMenu => Category::General,
+            Entry::FpsLimit | Entry::VanillaMenu | Entry::MetalHud => Category::General,
         }
     }
 
@@ -109,6 +117,8 @@ impl Entry {
             Entry::Hud(_) => "HUD · drag in Edit HUD",
             Entry::FpsLimit => "Frames per second",
             Entry::VanillaMenu => "Esc opens vanilla's menus",
+            Entry::RawInput => "No mouse acceleration",
+            Entry::MetalHud => "GPU stats, next launch",
             _ => self.category().title(),
         }
     }
@@ -122,9 +132,11 @@ impl Entry {
             Entry::Zoom => t.zoom,
             Entry::SmoothZoom => t.smooth_zoom,
             Entry::ToggleSprint => t.toggle_sprint,
+            Entry::RawInput => t.raw_input,
             Entry::Fullbright => t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers,
             Entry::VanillaMenu => t.vanilla_menu,
+            Entry::MetalHud => t.metal_hud,
             Entry::Crosshair | Entry::BlockOutline | Entry::FpsLimit => return None,
         })
     }
@@ -156,9 +168,11 @@ impl Entry {
             Entry::Zoom => t.zoom = !t.zoom,
             Entry::SmoothZoom => t.smooth_zoom = !t.smooth_zoom,
             Entry::ToggleSprint => t.toggle_sprint = !t.toggle_sprint,
+            Entry::RawInput => t.raw_input = !t.raw_input,
             Entry::Fullbright => t.fullbright = !t.fullbright,
             Entry::ScoreboardNumbers => t.scoreboard_numbers = !t.scoreboard_numbers,
             Entry::VanillaMenu => t.vanilla_menu = !t.vanilla_menu,
+            Entry::MetalHud => t.metal_hud = !t.metal_hud,
             Entry::Crosshair => t.crosshair = (t.crosshair + 1) % CROSSHAIRS.len() as u8,
             Entry::BlockOutline => {
                 t.outline = (t.outline + 1) % crate::outline::STYLES.len() as u8;
@@ -398,18 +412,31 @@ impl Menu {
         self.scroll = next.clamp(0, most as i64) as usize;
     }
 
-    /// A key while the menu is open: typing searches, Backspace deletes and
+    /// A key while the menu is open: typing searches, Backspace deletes (a
+    /// word with Option, everything with Command, as macOS text fields do) and
     /// Escape clears the search first. True when the menu used the key.
-    pub fn key(&mut self, key: winit::keyboard::KeyCode, typed: Option<&str>) -> bool {
+    pub fn key(
+        &mut self,
+        key: winit::keyboard::KeyCode,
+        typed: Option<&str>,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
         use winit::keyboard::KeyCode;
         if !self.open {
             return false;
         }
         match key {
             KeyCode::Escape if !self.query.is_empty() => self.query.clear(),
+            KeyCode::Backspace if modifiers.super_key() => self.query.clear(),
+            KeyCode::Backspace if modifiers.alt_key() => {
+                let kept = self.query.trim_end().len();
+                let start = self.query[..kept].rfind(' ').map_or(0, |space| space + 1);
+                self.query.truncate(start);
+            }
             KeyCode::Backspace => {
                 self.query.pop();
             }
+            _ if modifiers.super_key() || modifiers.control_key() => return false,
             _ => {
                 let text: String = typed
                     .unwrap_or("")
@@ -892,7 +919,8 @@ mod tests {
             Click::Changed
         );
         assert!(settings.toggles.toggle_sprint);
-        // The rail picks a category; General holds the frame limit.
+        // The rail picks a category; General holds the frame limit, the
+        // vanilla menu switch and the Metal HUD.
         let (_, general) = *g
             .rail
             .iter()
@@ -901,7 +929,7 @@ mod tests {
         menu.click(layout, centre(general), &mut settings);
         assert_eq!(menu.category, Category::General);
         let g = menu.geometry(layout);
-        assert_eq!(g.cards.len(), 2);
+        assert_eq!(g.cards.len(), 3);
         menu.click(layout, centre(card(&g, Entry::FpsLimit)), &mut settings);
         assert_eq!(settings.toggles.fps_limit, 60);
         assert_eq!(
@@ -970,23 +998,50 @@ mod tests {
         use winit::keyboard::KeyCode;
         let layout = Layout::new((1440, 900), 1.0, 2);
         let mut menu = Menu::default();
+        let none = winit::keyboard::ModifiersState::empty();
         // Closed (or editing), keys are not the menu's.
-        assert!(!menu.key(KeyCode::KeyZ, Some("z")));
+        assert!(!menu.key(KeyCode::KeyZ, Some("z"), none));
         menu.toggle();
-        assert!(menu.key(KeyCode::KeyZ, Some("Z")));
-        assert!(menu.key(KeyCode::KeyO, Some("o")));
+        assert!(menu.key(KeyCode::KeyZ, Some("Z"), none));
+        assert!(menu.key(KeyCode::KeyO, Some("o"), none));
         let g = menu.geometry(layout);
         let found: Vec<Entry> = g.cards.iter().map(|(e, _)| *e).collect();
         assert_eq!(found, [Entry::Zoom, Entry::SmoothZoom]);
-        assert!(menu.key(KeyCode::Backspace, None));
+        assert!(menu.key(KeyCode::Backspace, None, none));
         assert_eq!(menu.query, "Z");
         // Escape clears the search before it closes the menu.
-        assert!(menu.key(KeyCode::Escape, None));
+        assert!(menu.key(KeyCode::Escape, None, none));
         assert!(menu.query.is_empty() && menu.open);
-        assert!(!menu.key(KeyCode::Escape, None));
-        assert!(!menu.key(KeyCode::ArrowUp, None));
-        assert!(menu.key(KeyCode::KeyQ, Some("qqq")));
+        assert!(!menu.key(KeyCode::Escape, None, none));
+        assert!(!menu.key(KeyCode::ArrowUp, None, none));
+        assert!(menu.key(KeyCode::KeyQ, Some("qqq"), none));
         assert!(menu.geometry(layout).cards.is_empty());
+        // Option deletes a word, Command the whole search; Command letters never type.
+        menu.query = "smooth zoom".into();
+        assert!(menu.key(
+            KeyCode::Backspace,
+            None,
+            winit::keyboard::ModifiersState::ALT
+        ));
+        assert_eq!(menu.query, "smooth ");
+        assert!(menu.key(
+            KeyCode::Backspace,
+            None,
+            winit::keyboard::ModifiersState::ALT
+        ));
+        assert_eq!(menu.query, "");
+        menu.query = "zoom".into();
+        assert!(!menu.key(
+            KeyCode::KeyA,
+            Some("a"),
+            winit::keyboard::ModifiersState::SUPER
+        ));
+        assert!(menu.key(
+            KeyCode::Backspace,
+            None,
+            winit::keyboard::ModifiersState::SUPER
+        ));
+        assert!(menu.query.is_empty());
         menu.close();
         assert!(menu.query.is_empty());
         // All 16 cards don't fit a small window: the wheel scrolls by rows
