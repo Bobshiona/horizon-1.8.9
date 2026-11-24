@@ -869,10 +869,14 @@ impl App {
         }
         self.menu.step(dt, &self.settings);
         self.pause.step(dt);
+        let vsync = self.schedule() == pacing::Schedule::Vsync;
         if let Some(renderer) = &mut self.renderer {
             renderer.bench = self.bench;
-            renderer
-                .set_vsync((toggles.fps_limit == 0 || self.smoke_frames.is_some()) && !self.bench);
+            if renderer.set_vsync(vsync) {
+                self.pacer.reset_phase();
+                self.planned = None;
+                self.next_frame = now;
+            }
         }
         if toggles.fullbright != self.fullbright {
             self.fullbright = toggles.fullbright;
@@ -885,14 +889,24 @@ impl App {
         }
     }
 
+    /// How frames are scheduled for the frame limit: benchmarks render back
+    /// to back offscreen, smoke runs follow the display, and interactive
+    /// frames preserve the requested limit in every window mode.
+    fn schedule(&self) -> pacing::Schedule {
+        if self.bench {
+            return pacing::Schedule::Timer(Duration::ZERO);
+        }
+        if self.smoke_frames.is_some() {
+            return pacing::Schedule::Vsync;
+        }
+        pacing::schedule(self.settings.toggles.fps_limit)
+    }
+
     /// The wait between redraws for the frame cap.
     fn redraw_period(&self) -> Duration {
-        match self.settings.toggles.fps_limit {
-            _ if self.bench => Duration::ZERO,
-            _ if self.smoke_frames.is_some() => self.frame_period,
-            0 => self.frame_period,
-            u32::MAX => Duration::ZERO,
-            fps => Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1))),
+        match self.schedule() {
+            pacing::Schedule::Vsync => self.frame_period,
+            pacing::Schedule::Timer(period) => period,
         }
     }
 
@@ -1341,6 +1355,9 @@ impl ApplicationHandler for App {
                 }
                 self.menu_open = menu;
                 self.update_mods();
+                // This frame's schedule, as `update_mods` set the present
+                // mode: paced frames teach the pacer.
+                let vsync = self.schedule() == pacing::Schedule::Vsync;
                 self.apply_look();
                 let pose = self.camera_pose();
                 let tick = self.tick();
@@ -1769,7 +1786,7 @@ impl ApplicationHandler for App {
                                     fps: sample.fps.unwrap_or(0),
                                     chunk_updates: self.rebuilds.2,
                                     fps_limit: (limit != 0 && limit != u32::MAX).then_some(limit),
-                                    vsync: limit == 0,
+                                    vsync,
                                     sections,
                                     view_distance,
                                     mesher: [
@@ -1910,19 +1927,16 @@ impl ApplicationHandler for App {
                         renderer.screenshot = true;
                     }
                     let offscreen = renderer.offscreen_frames;
-                    let vsync = (self.settings.toggles.fps_limit == 0
-                        || self.smoke_frames.is_some())
-                        && !self.bench;
+                    let readback = capture.is_some() || renderer.screenshot;
                     match renderer.render(capture.as_deref(), self.smoke_frames.is_some()) {
                         Ok(true) => {
-                            if vsync && capture.is_none() && renderer.offscreen_frames == offscreen
-                            {
+                            if vsync && !readback && renderer.offscreen_frames == offscreen {
                                 let age = self.pacer.presented(pacing::Frame {
                                     planned: self.planned.take().filter(|_| self.jit),
                                     sampled: frame_started,
                                     waited: renderer.acquire_wait,
                                     acquired: renderer.acquired_at,
-                                    presented: Instant::now(),
+                                    presented: renderer.presented_at,
                                 });
                                 if let Some(age) = age
                                     && self.smoke_frames.is_some()
@@ -2078,14 +2092,8 @@ impl ApplicationHandler for App {
         // Upload rebuilt columns within a frame-sized budget, and when pacing
         // just in time only in the idle time before the next frame starts.
         let started = Instant::now();
-        let upload = if self.jit {
-            self.next_frame
-                .saturating_duration_since(started)
-                .saturating_sub(Duration::from_millis(1))
-                .clamp(Duration::from_millis(1), Duration::from_millis(6))
-        } else {
-            Duration::from_millis(6)
-        };
+        let paced = self.schedule() == pacing::Schedule::Vsync && self.pacer.has_phase();
+        let upload = pacing::upload_budget(started, self.next_frame, self.jit, paced);
         while started.elapsed() < upload {
             let update = self
                 .network

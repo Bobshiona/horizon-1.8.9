@@ -2520,3 +2520,40 @@ in file-backed sections (all executable and other data sections match), plus bin
 metadata. The exact previously captured/A/B-tested default binary was retained and restored.
 Private evidence prefix: resume-entities (paired evidence: nov23-resume-entities).
 Next: validate the separate presentation/pacing candidate, without claiming raw input or late sampling.
+
+## 80. Presentation and pacing bookkeeping
+
+Parent: 793232ea31. Cache presentation capabilities per surface instead of querying them every
+frame. Preserve the requested Vsync/numeric/Unlimited policy across window modes and surface
+recreation. Reset the learned phase on presentation-mode changes. Timestamp presentation before
+CPU housekeeping and exclude screenshot readbacks from the pacing model. A due Vsync-paced frame
+starts without a mesh upload first; short idle intervals retain bounded upload progress. This
+does not add late mouse sampling or change the OS event delivery rate.
+
+Validation: 320 scoped Rust tests, 12 trace tests, seven Python gate tests, strict Clippy including
+alloc-count, fmt, layers/public-tree/privacy, ARM64 default release, VANILLA_189_REFERENCE_GATE_PASS
+and WATCHDOG_PASS packets=235 windows=2. Both inspected 960x600 release captures are pixel-identical.
+Three alternating pairs against 793232ea31 pass: lobby frame p50 +0.77%, CPU submit p99 -5.09%;
+flyover +0.16% / -0.74%, BENCH_REGRESSION=0. No FPS improvement is claimed.
+
+| Phase / metric | Previous default | Pacing candidate |
+| --- | --- | --- |
+| Lobby average FPS / 1% low | 681 / 384 | 681 / 393 |
+| Lobby frame p50 / p99 (us) | 1446 / 1975 | 1451 / 1927 |
+| Lobby CPU submit p99 / GPU p99 (us) | 570 / 1358 | 559 / 1401 |
+| Lobby mesh p99 (ms) | 6.6 | 6.2 |
+| Flyover average FPS / 1% low | 765 / 311 | 764 / 313 |
+| Flyover frame p50 / p99 (us) | 1284 / 2935 | 1286 / 2904 |
+| Flyover CPU submit p99 / GPU p99 (us) | 1490 / 1342 | 1459 / 1364 |
+| Flyover mesh p99 (ms) | 21.4 | 19.9 |
+| Median peak / mean RSS (MiB) | 256 / 234 | 254 / 233 |
+
+All pairs retained; evidence prefix resume-pacing (paired logs: nov23-resume-pacing).
+Four alternating 720-frame visible Vsync runs at about 60 Hz give modeled input-age p50
+6,564 / 7,659 us for the parent and 8,385 / 6,400 us for this change; modeled misses are
+4 / 3 versus 5 / 3. The order reverses the apparent gain, so this is inconclusive and no
+latency reduction is claimed. This estimate is not a physical input-to-photon measurement.
+Separate counted telemetry: 316.7 / 203.8 main-thread allocations per frame, peak/mean RSS
+249/231 MiB. The exact captured and A/B-tested default binary is restored after counting.
+Next: measure the separate byte-domain terrain gamma lookup; native ICB work remains private
+until its own correctness and performance gates pass.

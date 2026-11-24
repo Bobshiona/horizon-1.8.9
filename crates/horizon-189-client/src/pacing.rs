@@ -24,6 +24,48 @@ const SYNC_EVERY: u32 = 120;
 /// Shrink the budget after this many frames without a miss.
 const SHRINK_AFTER: u32 = 240;
 
+/// How the main loop schedules and presents frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Schedule {
+    /// Fifo, each frame started just in time for its vsync.
+    Vsync,
+    /// Immediate presentation, a frame every period (zero: back to back).
+    Timer(Duration),
+}
+
+/// The requested frame limit, independent of window mode and display refresh:
+/// `0` follows the display, `u32::MAX` is unlimited, anything else is FPS.
+pub fn schedule(limit: u32) -> Schedule {
+    match limit {
+        0 => Schedule::Vsync,
+        u32::MAX => Schedule::Timer(Duration::ZERO),
+        fps => Schedule::Timer(Duration::from_nanos(1_000_000_000 / u64::from(fps))),
+    }
+}
+
+/// How long `about_to_wait` may spend uploading meshes: the idle time
+/// before the next frame less a guard, up to 6 ms. When
+/// `paced` (the pacer planned the next frame from a known vsync phase) and
+/// that frame is already due, none: the upload would only start it late,
+/// and the pacer would learn that lateness and start every later frame
+/// earlier, with older input. The idle time right after the frame takes the
+/// uploads instead. The guard is at most half the remaining idle time so
+/// high-refresh displays still make upload progress. Unpaced frames keep
+/// their millisecond, or back-to-back frames would never upload.
+pub fn upload_budget(now: Instant, next_frame: Instant, jit: bool, paced: bool) -> Duration {
+    if !jit {
+        return Duration::from_millis(6);
+    }
+    let idle = next_frame.saturating_duration_since(now);
+    if paced {
+        let guard = Duration::from_millis(1).min(idle / 2);
+        (idle - guard).min(Duration::from_millis(6))
+    } else {
+        idle.saturating_sub(Duration::from_millis(1))
+            .clamp(Duration::from_millis(1), Duration::from_millis(6))
+    }
+}
+
 #[derive(Debug)]
 pub struct Pacer {
     period: Duration,
@@ -84,13 +126,29 @@ impl Pacer {
     pub fn set_period(&mut self, period: Duration) {
         if period != self.period {
             self.period = period;
-            self.vsync = None;
-            self.syncing = true;
+            self.reset_phase();
         }
+    }
+
+    /// Relearn after changing presentation mode or display. Timer-paced
+    /// frames cannot keep an old display phase current.
+    pub fn reset_phase(&mut self) {
+        self.vsync = None;
+        self.syncing = true;
+        self.since_sync = 0;
+        self.late = Duration::ZERO;
+        self.last_presented = None;
+        self.last_lead = Duration::MAX;
     }
 
     pub fn budget(&self) -> Duration {
         self.budget
+    }
+
+    /// Whether the vsync phase is known, so `next_start` plans frames
+    /// instead of starting them at once.
+    pub fn has_phase(&self) -> bool {
+        self.vsync.is_some()
     }
 
     /// The first vsync strictly after `at`, if the phase is known.
@@ -202,6 +260,80 @@ mod tests {
     use super::*;
 
     const P: Duration = Duration::from_micros(16_667);
+
+    #[test]
+    fn only_display_limit_uses_vsync_and_other_limits_keep_their_timer() {
+        // Window mode and monitor refresh are deliberately not policy inputs.
+        assert_eq!(schedule(0), Schedule::Vsync);
+        assert_eq!(schedule(u32::MAX), Schedule::Timer(Duration::ZERO));
+        // Numeric limits retain their requested period, even at or above
+        // a display's refresh rate (including fractional rates like 59.94 Hz).
+        for (fps, nanos) in [
+            (1, 1_000_000_000),
+            (60, 16_666_666),
+            (144, 6_944_444),
+            (240, 4_166_666),
+            (360, 2_777_777),
+        ] {
+            assert_eq!(schedule(fps), Schedule::Timer(Duration::from_nanos(nanos)));
+        }
+    }
+
+    #[test]
+    fn a_due_paced_frame_starts_without_uploading_first() {
+        let t = Instant::now() + Duration::from_secs(1);
+        let ms = Duration::from_millis;
+        // Paced and due (or overdue): no upload ahead of the frame.
+        assert_eq!(upload_budget(t, t, true, true), Duration::ZERO);
+        assert_eq!(upload_budget(t + ms(2), t, true, true), Duration::ZERO);
+        // Idle time: reserve a millisecond, or half a short idle interval.
+        assert_eq!(upload_budget(t, t + ms(4), true, true), ms(3));
+        assert_eq!(upload_budget(t, t + ms(15), true, true), ms(6));
+        assert_eq!(
+            upload_budget(t, t + ms(1), true, true),
+            Duration::from_micros(500)
+        );
+        assert_eq!(
+            upload_budget(t, t + Duration::from_micros(1500), true, true),
+            Duration::from_micros(750)
+        );
+        // Unpaced frames (timers, back to back, phase still unknown) keep
+        // at least a millisecond so uploads never starve.
+        assert_eq!(upload_budget(t, t, true, false), ms(1));
+        assert_eq!(upload_budget(t + ms(3), t, true, false), ms(1));
+        assert_eq!(upload_budget(t, t + ms(4), true, false), ms(3));
+        // --no-jit-pacing keeps the old fixed budget.
+        assert_eq!(upload_budget(t, t, false, true), ms(6));
+    }
+
+    #[test]
+    fn the_phase_is_known_once_an_acquire_blocks() {
+        let t0 = Instant::now() + Duration::from_secs(1);
+        let mut pacer = Pacer::new(P);
+        assert_eq!(pacer.period, P);
+        assert!(!pacer.has_phase());
+        pacer.presented(frame(t0, Duration::ZERO, Duration::from_millis(1)));
+        assert!(!pacer.has_phase(), "an acquire that did not block");
+        pacer.presented(frame(
+            t0 + P,
+            Duration::from_millis(5),
+            Duration::from_millis(1),
+        ));
+        assert!(pacer.has_phase());
+        pacer.reset_phase();
+        assert!(!pacer.has_phase());
+        assert_eq!(pacer.next_start(t0 + P), t0 + P);
+        pacer.presented(frame(
+            t0 + P,
+            Duration::from_millis(5),
+            Duration::from_millis(1),
+        ));
+        assert!(pacer.has_phase());
+        // A new display drops the phase until it is measured again.
+        pacer.set_period(P / 2);
+        assert_eq!(pacer.period, P / 2);
+        assert!(!pacer.has_phase());
+    }
 
     fn frame(sampled: Instant, waited: Duration, presented_after: Duration) -> Frame {
         let acquired = sampled + waited;

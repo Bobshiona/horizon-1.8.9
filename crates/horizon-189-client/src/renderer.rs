@@ -17,6 +17,9 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// The surface can present Immediate (asked once per surface, not each
+    /// frame).
+    immediate: bool,
     drawable: bool,
     scene: Option<Scene>,
     pub registry: Option<Arc<Registry>>,
@@ -52,6 +55,8 @@ pub struct Renderer {
     pub acquire_wait: std::time::Duration,
     /// When the last acquire returned: a vsync, if it blocked.
     pub acquired_at: std::time::Instant,
+    /// When the last drawable was handed to the display, before housekeeping.
+    pub presented_at: std::time::Instant,
     skin_loader: crate::skins::Loader,
     skins: crate::skins::Bindings,
     skin_images: std::collections::HashMap<u128, crate::skins::Loaded, horizon_world_189::Keys>,
@@ -113,15 +118,15 @@ impl Renderer {
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or("Surface has no supported configuration")?;
-        if surface
-            .get_capabilities(&adapter)
-            .usages
-            .contains(wgpu::TextureUsages::COPY_SRC)
-        {
+        let capabilities = surface.get_capabilities(&adapter);
+        if capabilities.usages.contains(wgpu::TextureUsages::COPY_SRC) {
             config.usage |= wgpu::TextureUsages::COPY_SRC;
         }
+        let immediate = capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Immediate);
         config.present_mode = wgpu::PresentMode::Fifo;
-        config.desired_maximum_frame_latency = 1;
+        config.desired_maximum_frame_latency = FRAME_LATENCY;
         Self::add_interface_view(&mut config);
         let registry = assets
             .as_ref()
@@ -156,6 +161,7 @@ impl Renderer {
             device,
             queue,
             config,
+            immediate,
             drawable: false,
             scene,
             registry,
@@ -181,6 +187,7 @@ impl Renderer {
             gpu_time: std::time::Duration::ZERO,
             acquire_wait: std::time::Duration::ZERO,
             acquired_at: std::time::Instant::now(),
+            presented_at: std::time::Instant::now(),
             skin_loader: crate::skins::Loader::new()?,
             skins: Default::default(),
             skin_images: Default::default(),
@@ -263,25 +270,17 @@ impl Renderer {
     }
 
     /// Vsync on (FIFO), or immediate presentation for uncapped frame rates.
-    pub fn set_vsync(&mut self, vsync: bool) {
-        let mode = if vsync
-            || !self
-                .surface
-                .get_capabilities(&self.adapter)
-                .present_modes
-                .contains(&wgpu::PresentMode::Immediate)
-        {
-            wgpu::PresentMode::Fifo
-        } else {
-            wgpu::PresentMode::Immediate
-        };
+    pub fn set_vsync(&mut self, vsync: bool) -> bool {
+        let mode = present_mode(vsync, self.immediate);
         if self.config.present_mode != mode {
             self.config.present_mode = mode;
             if self.drawable {
                 self.surface.configure(&self.device, &self.config);
             }
             eprintln!("present_mode={mode:?}");
+            return true;
         }
+        false
     }
 
     /// The interface draws in gamma space through a non-sRGB view.
@@ -772,13 +771,23 @@ impl Renderer {
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 let previous_format = self.config.format;
+                // The frame limit's present mode carries over: a lost surface
+                // must not silently fall back to vsync.
+                let vsync = self.config.present_mode != wgpu::PresentMode::Immediate;
                 self.surface = self.instance.create_surface(self.window.clone())?;
                 self.config = self
                     .surface
                     .get_default_config(&self.adapter, self.config.width, self.config.height)
                     .ok_or("Recreated surface has no supported configuration")?;
-                self.config.present_mode = wgpu::PresentMode::Fifo;
-                self.config.desired_maximum_frame_latency = 1;
+                let capabilities = self.surface.get_capabilities(&self.adapter);
+                if capabilities.usages.contains(wgpu::TextureUsages::COPY_SRC) {
+                    self.config.usage |= wgpu::TextureUsages::COPY_SRC;
+                }
+                self.immediate = capabilities
+                    .present_modes
+                    .contains(&wgpu::PresentMode::Immediate);
+                self.config.present_mode = present_mode(vsync, self.immediate);
+                self.config.desired_maximum_frame_latency = FRAME_LATENCY;
                 Self::add_interface_view(&mut self.config);
                 if self.config.format != previous_format
                     && let Some(registry) = self.registry.clone()
@@ -999,30 +1008,68 @@ impl Renderer {
         if let Some(scene) = &mut self.scene {
             scene.recall();
         }
-        if !self.bench {
-            // Completes the staging belt's chunk returns without waiting.
-            let _ = self.device.poll(wgpu::PollType::Poll);
-        }
         if self.bench {
             // Submit-to-completion: an upper bound on this frame's GPU time.
             let waited = std::time::Instant::now();
             self.device.poll(wgpu::PollType::wait_indefinitely())?;
             self.gpu_time = waited.elapsed();
         }
+        // Read-backs copy the drawable, so they come before presenting it.
         if let Some(path) = capture {
             self.capture(texture, path)?;
         }
         if std::mem::take(&mut self.screenshot) {
             self.shot = Some(self.read_frame(texture).map_err(|e| e.to_string()));
         }
+        // Present straight after submitting: housekeeping that the frame
+        // doesn't need waits until it is on its way.
         if let Some(frame) = frame {
             self.window.pre_present_notify();
             self.queue.present(frame);
+            self.presented_at = std::time::Instant::now();
+        }
+        if !self.bench {
+            // Completes the staging belt's chunk returns without waiting.
+            let _ = self.device.poll(wgpu::PollType::Poll);
         }
         if reconfigure {
             self.resize(self.window.inner_size());
         }
         Ok(true)
+    }
+}
+
+/// Frames the swap chain may queue ahead of the display. One is Metal's
+/// minimum: the layer keeps two drawables, one on screen and one drawn into.
+const FRAME_LATENCY: u32 = 1;
+
+/// Vsync presents Fifo. Otherwise Immediate where the surface offers it
+/// (Metal turns display sync off); Fifo, which every surface supports,
+/// where it doesn't. Metal has no Mailbox.
+fn present_mode(vsync: bool, immediate: bool) -> wgpu::PresentMode {
+    if vsync || !immediate {
+        wgpu::PresentMode::Fifo
+    } else {
+        wgpu::PresentMode::Immediate
+    }
+}
+
+#[cfg(test)]
+mod present_tests {
+    use super::present_mode;
+    use wgpu::PresentMode;
+
+    #[test]
+    fn vsync_is_fifo_and_unsynced_frames_present_immediately_where_supported() {
+        assert_eq!(present_mode(true, true), PresentMode::Fifo);
+        assert_eq!(present_mode(true, false), PresentMode::Fifo);
+        assert_eq!(present_mode(false, true), PresentMode::Immediate);
+        assert_eq!(present_mode(false, false), PresentMode::Fifo);
+        // A recreated surface keeps the mode it had: Immediate stays
+        // Immediate, and vsync stays Fifo.
+        let carried = |mode: PresentMode| present_mode(mode != PresentMode::Immediate, true);
+        assert_eq!(carried(PresentMode::Immediate), PresentMode::Immediate);
+        assert_eq!(carried(PresentMode::Fifo), PresentMode::Fifo);
     }
 }
 

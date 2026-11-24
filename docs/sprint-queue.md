@@ -120,6 +120,11 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       debouncing for single-slot hotbar steps.
 
 ### 1.4 Input, networking and telemetry
+Presentation/pacing bookkeeping checkpoint (HANDOFF 80): cached surface capabilities, explicit
+frame-limit policy, phase reset, presentation timestamp and bounded idle uploads. 320 scoped +
+12 trace + 7 gate tests. Paired frame p50 +0.77% / +0.16%, CPU p99 -5.09% / -0.74%; captures
+pixel-identical. Visible Vsync model measurements are inconclusive; no input latency gain claimed.
+
 - [ ] Raw mouse at 1000 Hz+ with delta aggregation, no acceleration when locked, cursor
       confinement on fast flicks, late look sampling before submission.
 - [ ] Scan-code bindings for movement and hotbar; no press-and-hold accent popup in game; full
