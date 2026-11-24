@@ -942,7 +942,10 @@ impl Renderer {
                     view: &scene.depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
+                        // Nothing reads the world's depth after the labels (the
+                        // hand and inventory passes clear it): skip writing a
+                        // full-resolution depth buffer back to memory.
+                        store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
                 }),

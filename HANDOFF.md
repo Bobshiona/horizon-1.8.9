@@ -2726,3 +2726,39 @@ blend and mip-chain layout; jar test (water 32 frames at 2 ticks, lava's 38-entr
 an interpolated sprite, a water and lava pool marks exactly those animations). Gate: 322 scoped
 tests plus 12 jar tests, 12 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.
+
+## 85. Smaller terrain vertex outputs; GPU profile of where a frame goes
+
+Previous commit: 3a167b6527. Not a sprint row: found by profiling while closing row 1.2.
+
+- **Metal System Trace** of the trace bench (no crowd): the terrain render pass spends about
+  600 us/frame in its vertex stage and 205 us in fragments at 960x600; at 2560x1600
+  (`BOB_BENCH_SIZE`, below) 553 us vertex and 418 us fragment. Per frame about 77k solid,
+  160k cutout and 20k translucent quads are submitted before GPU culling. Apple GPUs write
+  every vertex's outputs to tile memory, so output size, not shader math, bounds the stage.
+- **Native terrain vertex outputs** shrink from 13 to 10 32-bit values: the linear colour is
+  `half3`, and fog takes the eye distance (one float) instead of the eye-relative vector
+  interpolated and measured per pixel. The fallback WGSL path does the same with `f32`.
+  Interpolating the distance differs from the per-pixel length by under 0.4 blocks inside the
+  fog band; captures differ by at most 5 of 255 (404 pixels over 2) at 960x600.
+- The label pass no longer stores the world's depth (the hand and inventory passes clear it):
+  one full-resolution depth write less per frame, for bandwidth and heat.
+- `BOB_BENCH_SIZE=WxH` sets the benchmark window's physical size (default 960x600).
+- Tried and dropped, each with alternating runs: three per-vertex `pow`s replaced by a lookup
+  table (no change: the stage is not ALU-bound); four horizontal-diagonal facing groups for
+  cross-shaped plants (about 2% slower: more, shorter commands); a 4x4-pixel depth pyramid
+  base instead of full resolution (within noise).
+- **Row 1.2 evaluations.** Frames in flight are already minimal (HANDOFF 84).
+  `MTLBinaryArchive`: every pipeline is created at startup (scene, glass, interface, native
+  terrain; rebuilt only when the surface format changes), the whole GPU setup takes about
+  17 ms with macOS's own per-user Metal cache, and there is no first-use compile during play,
+  so an archive has nothing to remove; not built. Zero-allocation: a 5 s sample of the bench
+  shows the allocator in 4 of 2,524 render-thread samples (0.16%), so allocations cost no
+  frame time; the count reduction in HANDOFF 84 stands and the zero target is not pursued.
+- A/B against 3a167b6527, three alternating pairs: frame p50 lobby -5.78%, flyover -5.83%
+  (lobby 642 -> 681 FPS, flyover 797 -> 849); CPU p99 +0.79% / -0.98%; 1% lows 378 -> 394
+  and 319 -> 329 FPS.
+
+Regressions: the native packed-vertex, occlusion and translucency Metal tests (9) pass on the
+new outputs; captures inspected. Gate: 322 scoped tests, 12 trace-tool tests, 7 Python gate
+tests, VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.

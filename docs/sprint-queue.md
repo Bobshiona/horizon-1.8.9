@@ -116,6 +116,9 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
 - [ ] Zero-allocation hot loop, unified-memory staging rings, capped frames in flight,
       `MTLBinaryArchive` pipeline cache with startup warmup.
       Capped frames in flight: already minimal (frame latency 1, two drawables; HANDOFF 84).
+      `MTLBinaryArchive`: evaluated, not built (all pipelines built at startup, ~17 ms with the
+      system Metal cache, no in-play compiles). Allocator 0.16% of render-thread samples, so the
+      zero-allocation target is not pursued (HANDOFF 85). Vertex outputs trimmed: -5.8% frame time.
       Entity/item geometry caching checkpoint (HANDOFF 79): bounded cuboid cache and registry
       sprite extrusion reuse, 316 scoped + 12 trace + 7 gate tests. Paired frame p50
       -2.49% / -0.15%, CPU submit p99 -11.59% / +2.27%; terrain captures pixel-identical,

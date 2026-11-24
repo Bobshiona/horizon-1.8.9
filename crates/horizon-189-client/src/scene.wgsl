@@ -36,7 +36,9 @@ struct TerrainOut {
     @location(1) @interpolate(flat) layer: u32,
     // Linear-light multiplier: the gamma vertex colour decoded once here.
     @location(2) color: vec3<f32>,
-    @location(3) relative: vec3<f32>,
+    // Eye distance for fog: one varying instead of the eye-relative vector
+    // (vertex output size bounds Apple GPUs' tiling cost).
+    @location(3) distance: f32,
 }
 
 // Three words shared with TerrainVertex: positions in 1/64 blocks,
@@ -66,7 +68,7 @@ fn terrain_vertex(@location(0) words: vec3<u32>, @location(3) base: vec3<f32>) -
     out.uv = decoded.uv;
     out.layer = decoded.layer;
     out.color = srgb_to_linear(decoded.color);
-    out.relative = position - camera.eye.xyz;
+    out.distance = length(position - camera.eye.xyz);
     return out;
 }
 
@@ -74,8 +76,7 @@ fn terrain_vertex(@location(0) words: vec3<u32>, @location(3) base: vec3<f32>) -
 // the linear texel times the decoded vertex colour.
 fn terrain_shade(in: TerrainOut, texel: vec4<f32>) -> vec4<f32> {
     let lit = texel.rgb * in.color;
-    let distance = length(in.relative);
-    let fog = clamp((distance - camera.fog.w) / max(camera.eye.w - camera.fog.w, 1.0), 0.0, 1.0);
+    let fog = clamp((in.distance - camera.fog.w) / max(camera.eye.w - camera.fog.w, 1.0), 0.0, 1.0);
     return vec4<f32>(mix(lit, camera.fog.rgb, fog), texel.a);
 }
 

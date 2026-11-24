@@ -1144,7 +1144,18 @@ impl ApplicationHandler for App {
             // keep paired runs independent of display/backing-scale changes.
             .with_visible(!self.bench)
             .with_inner_size(if self.bench {
-                winit::dpi::Size::Physical(winit::dpi::PhysicalSize::new(960, 600))
+                // `BOB_BENCH_SIZE=WxH` measures at a real display's resolution.
+                let (width, height) = std::env::var("BOB_BENCH_SIZE")
+                    .ok()
+                    .and_then(|size| {
+                        let (w, h) = size.split_once('x')?;
+                        Some((w.parse().ok()?, h.parse().ok()?))
+                    })
+                    .filter(|&(w, h): &(u32, u32)| {
+                        (320..=8192).contains(&w) && (240..=8192).contains(&h)
+                    })
+                    .unwrap_or((960, 600));
+                winit::dpi::Size::Physical(winit::dpi::PhysicalSize::new(width, height))
             } else {
                 winit::dpi::Size::Logical(LogicalSize::new(960.0, 600.0))
             })

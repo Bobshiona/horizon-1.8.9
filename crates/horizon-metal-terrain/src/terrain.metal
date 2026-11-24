@@ -7,7 +7,9 @@ struct Draw { float4 low; float4 high; uint4 args; uint4 page; };
 struct Geometry { array<device const packed_uint3 *, 1024> pages [[id(0)]]; };
 struct Icb { command_buffer commands [[id(0)]]; };
 struct Material { texture2d_array<float> atlas [[id(0)]]; sampler filtering [[id(1)]]; };
-struct Out { float4 position [[position]]; float2 uv; uint layer [[flat]]; float3 color; float3 relative; };
+// Vertex outputs are kept small (half colour, the eye distance rather than the
+// eye-relative vector): their size bounds the tiler's cost on Apple GPUs.
+struct Out { float4 position [[position]]; float2 uv; uint layer [[flat]]; half3 color; float distance; };
 float3 linear_color(float3 value) {
     return select(pow((value + 0.055) / 1.055, float3(2.4)), value / 12.92, value <= 0.04045);
 }
@@ -20,13 +22,13 @@ vertex Out terrain(TerrainIn in [[stage_in]], constant Camera &camera [[buffer(2
     out.position = camera.matrix * float4(position, 1.0);
     out.uv = float2(uint2((words.y >> 16u) & 4095u, (words.y >> 28u) | ((words.z & 255u) << 4u))) / 128.0;
     out.layer = (words.x >> 22u) | (((words.y >> 15u) & 1u) << 10u);
-    out.color = linear_color(float3(uint3((words.z >> 8u) & 255u, (words.z >> 16u) & 255u, words.z >> 24u)) / 255.0);
-    out.relative = position - camera.eye.xyz;
+    out.color = half3(linear_color(float3(uint3((words.z >> 8u) & 255u, (words.z >> 16u) & 255u, words.z >> 24u)) / 255.0));
+    out.distance = length(position - camera.eye.xyz);
     return out;
 }
 float4 shade(Out in, float4 texel, constant Camera &camera) {
-    float fog = clamp((length(in.relative) - camera.fog.w) / max(camera.eye.w - camera.fog.w, 1.0), 0.0, 1.0);
-    return float4(mix(texel.rgb * in.color, camera.fog.rgb, fog), texel.a);
+    float fog = clamp((in.distance - camera.fog.w) / max(camera.eye.w - camera.fog.w, 1.0), 0.0, 1.0);
+    return float4(mix(texel.rgb * float3(in.color), camera.fog.rgb, fog), texel.a);
 }
 fragment float4 solid(Out in [[stage_in]], constant Material &material [[buffer(0)]], constant Camera &camera [[buffer(1)]]) {
     return shade(in, material.atlas.sample(material.filtering, in.uv, in.layer), camera);
