@@ -200,11 +200,11 @@ impl wgpu::wgc::command::NativeCommand for Hook {
                 // would cross pipeline / translucent ordering boundaries.
                 // With occlusion only the occluders are final here; the rest are
                 // optimized after the occlusion test rewrites them (stage 4).
-                let ranges: Vec<std::ops::Range<usize>> = match &f.occlusion {
-                    Some(occlusion) => vec![occlusion.occluders.clone()],
-                    None => f.passes.to_vec(),
+                let ranges: &[std::ops::Range<usize>] = match &f.occlusion {
+                    Some(occlusion) => std::slice::from_ref(&occlusion.occluders),
+                    None => &f.passes,
                 };
-                optimize(command, f, &ranges)?;
+                optimize(command, f, ranges)?;
             } else if self.stage == 4 {
                 encoder.prepare_native_commands();
                 let command = encoder
@@ -244,14 +244,19 @@ impl wgpu::wgc::command::NativeCommand for Hook {
                     Some(occlusion) => occlusion.from..f.passes[0].end,
                     None => f.passes[0].clone(),
                 };
-                let draws: Vec<(usize, std::ops::Range<usize>)> = match self.stage {
-                    1 => vec![(0, solid), (1, f.passes[1].clone())],
-                    3 => f
-                        .occlusion
-                        .iter()
-                        .map(|occlusion| (0, occlusion.occluders.clone()))
-                        .collect(),
-                    _ => vec![(2, f.passes[2].clone())],
+                // At most two (pipeline, command range) pairs; empty ranges skip.
+                let draws: [(usize, std::ops::Range<usize>); 2] = match self.stage {
+                    1 => [(0, solid), (1, f.passes[1].clone())],
+                    3 => [
+                        (
+                            0,
+                            f.occlusion
+                                .as_ref()
+                                .map_or(0..0, |occlusion| occlusion.occluders.clone()),
+                        ),
+                        (0, 0..0),
+                    ],
+                    _ => [(2, f.passes[2].clone()), (2, 0..0)],
                 };
                 for (pass, span) in draws {
                     let span = &span;
@@ -850,14 +855,17 @@ impl TerrainEncoder for Native {
         let indices = raw_buffer(&self.indices)?;
         let camera = raw_buffer(frame.camera)?;
         let bases = raw_buffer(frame.bases)?;
-        let mut buffers = vec![
+        // Sized from last frame's page count so neither list regrows mid-frame.
+        let expected = self.page_count.max(4);
+        let mut buffers = Vec::with_capacity(6 + expected);
+        buffers.extend([
             indices.clone(),
             camera.clone(),
             bases.clone(),
             self.material.clone(),
             storage.raw.container.clone(),
-        ];
-        let mut pages: Vec<(wgpu::Buffer, Buffer)> = Vec::new();
+        ]);
+        let mut pages: Vec<(wgpu::Buffer, Buffer)> = Vec::with_capacity(expected);
         for (draw, record) in frame.draws.iter().zip(&mut self.data) {
             let index = if let Some(index) = pages
                 .iter()

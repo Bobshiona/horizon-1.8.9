@@ -279,6 +279,8 @@ pub struct ColumnMesh {
     pub entity: Vec<Vertex>,
     /// `VisGraph` face connectivity per section (see `visibility`).
     pub visibility: [u64; 16],
+    /// Bits of the `Registry::animations` the terrain passes sample.
+    pub animated: u32,
 }
 
 /// `BlockLeaves` (18) and `BlockNewLeaf` (161).
@@ -393,6 +395,10 @@ pub struct Registry {
     water: u32,
     lava: u32,
     pub textures: Vec<Texture>,
+    /// Animated terrain sprites (at most 32), and each layer's bit among them
+    /// (0 for still layers) so meshes record which animations they show.
+    pub animations: Vec<Animation>,
+    animated: Vec<u32>,
     /// Layers with any texel the terrain alpha test (0.1) discards.
     cutout: Vec<bool>,
     /// Variant models that failed to bake, and metadata states whose exact
@@ -838,6 +844,114 @@ fn first_frame(image: &Texture) -> Option<Vec<u8>> {
     (image.width == 16 && image.height >= 16).then(|| image.rgba[..1024].to_vec())
 }
 
+/// A terrain sprite with a `.mcmeta` animation (water, lava, fire, portal,
+/// prismarine, sea lantern), as `TextureAtlasSprite` plays it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Animation {
+    /// The terrain layer the frames are written into.
+    pub layer: u32,
+    /// The strip's 16x16 RGBA frames, top to bottom.
+    pub frames: Vec<Vec<u8>>,
+    /// (frame index, ticks) in play order. Without a `frames` list every frame
+    /// plays once in order (`loadSprite` builds that list).
+    pub sequence: Vec<(u32, u32)>,
+    pub interpolate: bool,
+}
+
+/// What an [`Animation`] shows after some ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    Frame(u32),
+    /// `updateAnimationInterpolated`: `frame` blended toward `next` with
+    /// `1 - elapsed / ticks` of `frame`.
+    Blend {
+        frame: u32,
+        next: u32,
+        elapsed: u32,
+        ticks: u32,
+    },
+}
+
+impl Animation {
+    /// `AnimationMetadataSection` from the `.mcmeta` JSON. `None` when the
+    /// sprite does not animate or the metadata is malformed.
+    pub fn parse(layer: u32, strip: &Texture, mcmeta: &[u8]) -> Option<Self> {
+        if strip.width != 16 || strip.height <= 16 || !strip.height.is_multiple_of(16) {
+            return None;
+        }
+        let json: serde_json::Value = serde_json::from_slice(mcmeta).ok()?;
+        let animation = json.get("animation")?;
+        let frametime = animation
+            .get("frametime")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1)
+            .max(1) as u32;
+        let interpolate = animation
+            .get("interpolate")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let frames: Vec<Vec<u8>> = strip
+            .rgba
+            .as_chunks::<1024>()
+            .0
+            .iter()
+            .map(|frame| frame.to_vec())
+            .collect();
+        let sequence: Vec<(u32, u32)> = match animation.get("frames") {
+            Some(list) => list
+                .as_array()?
+                .iter()
+                .map(|entry| match entry {
+                    serde_json::Value::Number(index) => Some((index.as_u64()? as u32, frametime)),
+                    serde_json::Value::Object(frame) => Some((
+                        frame.get("index")?.as_u64()? as u32,
+                        frame
+                            .get("time")
+                            .and_then(serde_json::Value::as_u64)
+                            .map_or(frametime, |time| time.max(1) as u32),
+                    )),
+                    _ => None,
+                })
+                .collect::<Option<_>>()?,
+            None => (0..frames.len() as u32)
+                .map(|index| (index, frametime))
+                .collect(),
+        };
+        (!sequence.is_empty()).then_some(Self {
+            layer,
+            frames,
+            sequence,
+            interpolate,
+        })
+    }
+
+    /// `TextureAtlasSprite.updateAnimation` after `ticks` calls: the entry
+    /// whose time holds the tick counter, and, when interpolating, the blend
+    /// toward the next entry.
+    pub fn shown(&self, ticks: u64) -> Shown {
+        let cycle: u64 = self.sequence.iter().map(|&(_, time)| u64::from(time)).sum();
+        let mut left = ticks % cycle;
+        let mut entry = 0;
+        while left >= u64::from(self.sequence[entry].1) {
+            left -= u64::from(self.sequence[entry].1);
+            entry += 1;
+        }
+        let (frame, time) = self.sequence[entry];
+        let next = self.sequence[(entry + 1) % self.sequence.len()].0;
+        let valid = |index: u32| (index as usize) < self.frames.len();
+        if self.interpolate && left > 0 && frame != next && valid(frame) && valid(next) {
+            Shown::Blend {
+                frame,
+                next,
+                elapsed: left as u32,
+                ticks: time,
+            }
+        } else {
+            Shown::Frame(frame)
+        }
+    }
+}
+
 fn face_shade(name: &str) -> f32 {
     match name {
         "up" => 1.0,
@@ -1149,6 +1263,26 @@ impl Registry {
         if textures.len() > TerrainVertex::LAYERS as usize {
             return Err("Terrain texture layers exceed the packed vertex format".into());
         }
+        // `TextureMap.updateAnimations` plays each sprite that ships a `.mcmeta`.
+        let mut animations = Vec::new();
+        let mut animated = vec![0u32; textures.len()];
+        for (sprite, &layer) in &layers {
+            if layer == 0 || animations.len() == 32 {
+                continue;
+            }
+            // `Assets::read` is relative to `assets/minecraft/`.
+            let name = sprite.strip_prefix("minecraft:").unwrap_or(sprite);
+            let Ok(mcmeta) = assets.read(&format!("textures/{name}.png.mcmeta"), 1 << 16) else {
+                continue;
+            };
+            let Ok(strip) = assets.texture(sprite) else {
+                continue;
+            };
+            if let Some(animation) = Animation::parse(layer, &strip, &mcmeta) {
+                animated[layer as usize] = 1 << animations.len();
+                animations.push(animation);
+            }
+        }
         let gui = crate::ui::Resources::load(&assets)?;
         let mut registry = Self {
             models,
@@ -1165,6 +1299,8 @@ impl Registry {
                 .map(|texture| has_cutout(&texture.rgba))
                 .collect(),
             textures,
+            animations,
+            animated,
             model_failures: failures,
             inexact: Vec::new(),
             entity_textures,
@@ -1644,7 +1780,25 @@ impl Registry {
         // Translucent faces keep their order (blending) and are drawn two-sided.
         mesh.solid.sort_by_facing();
         mesh.cutout.sort_by_facing();
+        mesh.animated = self.animated_bits([&mesh.solid, &mesh.cutout, &mesh.translucent]);
         mesh
+    }
+
+    /// The animations sampled by any quad of these passes (one layer per quad).
+    pub fn animated_bits(&self, passes: [&TerrainPass; 3]) -> u32 {
+        if self.animations.is_empty() {
+            return 0;
+        }
+        passes
+            .iter()
+            .flat_map(|pass| pass.vertices.iter().step_by(4))
+            .fold(0, |bits, vertex| {
+                bits | self
+                    .animated
+                    .get(usize::from(vertex.position()[3]))
+                    .copied()
+                    .unwrap_or(0)
+            })
     }
 
     /// Tile-entity-rendered blocks; returns whether the block was one.
@@ -2280,6 +2434,136 @@ mod tests {
             checked > 10_000 && mismatched < 32,
             "{checked} / {mismatched}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn texture_animations_follow_update_animation() {
+        // TextureAtlasSprite.updateAnimation: the tick counter advances each
+        // tick and moves to the next entry once it reaches the entry's time.
+        let strip = |frames: u8| Texture {
+            width: 16,
+            height: 16 * u32::from(frames),
+            rgba: (0..frames).flat_map(|frame| [frame; 1024]).collect(),
+        };
+        let parse = |frames, json: &str| Animation::parse(9, &strip(frames), json.as_bytes());
+        let water = parse(3, r#"{"animation":{"frametime":2}}"#).expect("animated");
+        assert_eq!(water.layer, 9);
+        assert_eq!(water.frames.len(), 3);
+        assert_eq!(water.frames[2], [2; 1024]);
+        let shown: Vec<_> = (0..7).map(|tick| water.shown(tick)).collect();
+        use Shown::Frame;
+        assert_eq!(
+            shown,
+            [
+                Frame(0),
+                Frame(0),
+                Frame(1),
+                Frame(1),
+                Frame(2),
+                Frame(2),
+                Frame(0)
+            ]
+        );
+        // A `frames` list with bare indices and timed objects.
+        let listed =
+            parse(3, r#"{"animation":{"frames":[2,{"index":0,"time":3},1]}}"#).expect("animated");
+        assert_eq!(listed.sequence, [(2, 1), (0, 3), (1, 1)]);
+        let shown: Vec<_> = (0..6).map(|tick| listed.shown(tick)).collect();
+        assert_eq!(
+            shown,
+            [Frame(2), Frame(0), Frame(0), Frame(0), Frame(1), Frame(2)]
+        );
+        // Interpolated (prismarine): plain on the entry's first tick, blended after.
+        let smooth =
+            parse(2, r#"{"animation":{"frametime":4,"interpolate":true}}"#).expect("animated");
+        assert_eq!(smooth.shown(0), Frame(0));
+        assert_eq!(
+            smooth.shown(1),
+            Shown::Blend {
+                frame: 0,
+                next: 1,
+                elapsed: 1,
+                ticks: 4
+            }
+        );
+        assert_eq!(smooth.shown(4), Frame(1));
+        assert_eq!(
+            smooth.shown(7),
+            Shown::Blend {
+                frame: 1,
+                next: 0,
+                elapsed: 3,
+                ticks: 4
+            }
+        );
+        // Still sprites, missing metadata and wrong shapes do not animate.
+        assert!(parse(1, r#"{"animation":{}}"#).is_none());
+        assert!(parse(3, r#"{"texture":{"blur":true}}"#).is_none());
+        assert!(parse(3, "not json").is_none());
+        assert!(
+            Animation::parse(
+                9,
+                &Texture {
+                    width: 32,
+                    height: 64,
+                    rgba: vec![0; 32 * 64 * 4]
+                },
+                br#"{"animation":{}}"#
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires HORIZON_189_TEST_JAR pointing at an owned 1.8.9 jar"]
+    fn jar_animations_cover_vanilla_block_sprites_and_mark_columns() -> Result<(), Box<dyn Error>> {
+        use horizon_world_189::{ColumnData, ColumnUpdate, Section};
+        let jar = std::env::var_os("HORIZON_189_TEST_JAR").ok_or("Set HORIZON_189_TEST_JAR")?;
+        let registry = Registry::open(Path::new(&jar))?;
+        let find = |layer: u32| {
+            registry
+                .animations
+                .iter()
+                .position(|animation| animation.layer == layer)
+        };
+        let water = find(registry.water).ok_or("water_still is not animated")?;
+        let lava = find(registry.lava).ok_or("lava_still is not animated")?;
+        assert_eq!(registry.animations[water].frames.len(), 32);
+        assert!(
+            registry.animations[water]
+                .sequence
+                .iter()
+                .all(|&(_, t)| t == 2)
+        );
+        // lava_still.png.mcmeta plays 0..19 and back down (38 entries).
+        assert_eq!(registry.animations[lava].sequence.len(), 38);
+        assert!(
+            registry
+                .animations
+                .iter()
+                .any(|animation| animation.interpolate)
+        );
+        assert!(registry.animations.len() >= 6);
+        // A pool of still water and one of lava sample exactly those animations.
+        let mut states = [0u16; 4096];
+        states[1 << 8 | 1 << 4 | 1] = 9 << 4;
+        states[1 << 8 | 1 << 4 | 5] = 11 << 4;
+        states[1] = 1 << 4;
+        let mut world = World::default();
+        let mut sections: [Option<Section>; 16] = std::array::from_fn(|_| None);
+        sections[0] = Some(Section::new(&states, &[0; 2048], Some(&[0xff; 2048])));
+        world.apply(ColumnUpdate::Data {
+            x: 0,
+            z: 0,
+            full: true,
+            data: Box::new(ColumnData {
+                sections,
+                biomes: None,
+            }),
+        });
+        let mesh = registry.mesh_column(&world, (0, 0), [0; 3]);
+        assert_eq!(mesh.animated, (1 << water) | (1 << lava));
         Ok(())
     }
 

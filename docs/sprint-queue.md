@@ -108,9 +108,14 @@ smoother 1% lows, 5-15x faster chunk meshing, 5-10x lower RAM.
       and 205 -> 288 FPS; terrain captures pixel-identical. +29 allocations/frame, +32 MB RSS.
 - [x] (Added) Vanilla Graphics: Fast/Fancy (HANDOFF 83): Fast leaves +8% / +12% FPS
       (lobby / flyover) against Fancy; default Fancy unchanged and pixel-identical.
-- [ ] Vanilla VisGraph cave occlusion, entity culling, Smart Animations.
+- [x] Vanilla VisGraph cave occlusion, entity culling, Smart Animations.
+      HANDOFF 84: entities culled by the occlusion walk as `RenderGlobal.renderEntities`;
+      water/lava/fire/portal/prismarine/sea lantern animate as `updateAnimation`, rewritten only
+      while a drawn column samples them. Paired frame p50 +0.00% / +0.00%; allocations/frame
+      275.0 -> 252.2 lobby. Captures differ only in animated water, inspected.
 - [ ] Zero-allocation hot loop, unified-memory staging rings, capped frames in flight,
       `MTLBinaryArchive` pipeline cache with startup warmup.
+      Capped frames in flight: already minimal (frame latency 1, two drawables; HANDOFF 84).
       Entity/item geometry caching checkpoint (HANDOFF 79): bounded cuboid cache and registry
       sprite extrusion reuse, 316 scoped + 12 trace + 7 gate tests. Paired frame p50
       -2.49% / -0.15%, CPU submit p99 -11.59% / +2.27%; terrain captures pixel-identical,

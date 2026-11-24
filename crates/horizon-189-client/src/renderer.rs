@@ -482,8 +482,11 @@ impl Renderer {
         }
         let planes = scene.planes(&self.config);
         let origin = scene.origin();
+        scene.refresh_walk();
+        let walk = scene.walk();
         let in_view = |entity: &horizon_world_189::entities::Entity| {
-            crate::scene::entity_in_view(&planes, entity, partial, origin)
+            crate::scene::entity_reached(walk, entity)
+                && crate::scene::entity_in_view(&planes, entity, partial, origin)
         };
         // F5's own model draws with the others but never gets a name tag.
         let with_own;
@@ -859,6 +862,8 @@ impl Renderer {
         };
         if let Some(scene) = &mut self.scene {
             scene.prepare(&self.device, &self.queue, &self.config);
+            // Texture animations step with 20 Hz client ticks.
+            scene.animate(&self.queue, crate::models::millis() / 50);
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let native = self

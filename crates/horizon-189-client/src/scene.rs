@@ -36,6 +36,22 @@ pub fn entity_in_view(planes: &[Vec4; 5], entity: &Entity, partial: f32, origin:
         feet + Vec3::new(1.5, 3.5, 1.5),
     )
 }
+
+/// `RenderGlobal.renderEntities` walks `renderInfos`, the sections
+/// `setupTerrain`'s occlusion walk reached, and draws only the entities filed
+/// in them: `Chunk.addEntity` files an entity under the section of its
+/// position, `floor(posY / 16)` clamped to 0..15. Players and mobs sealed
+/// off behind walls or in caves are skipped with their name tags. With no
+/// walk (camera outside the loaded world) every section counts.
+pub fn entity_reached(walk: Option<&HashMap<(i32, i32), u16>>, entity: &Entity) -> bool {
+    let Some(walk) = walk else {
+        return true;
+    };
+    let x = (entity.position[0] / 16.0).floor() as i32;
+    let z = (entity.position[2] / 16.0).floor() as i32;
+    let y = ((entity.position[1] / 16.0).floor() as i32).clamp(0, 15);
+    walk.get(&(x, z)).is_some_and(|mask| mask & (1 << y) != 0)
+}
 use std::{collections::HashMap, error::Error};
 
 const MIP_LEVELS: u32 = 5;
@@ -71,6 +87,54 @@ struct GpuColumn {
     passes: [Option<GpuPass>; 3],
     entity: Option<GpuMesh>,
     visibility: [u64; 16],
+    /// `ColumnMesh::animated`.
+    animated: u32,
+}
+
+/// An animated terrain sprite with every frame's mip chain built once.
+struct Animated {
+    animation: crate::terrain::Animation,
+    /// Per frame, levels 0..MIP_LEVELS back to back.
+    chains: Vec<Vec<u8>>,
+    /// What the layer holds now; `None` until first written.
+    shown: Option<crate::terrain::Shown>,
+}
+
+/// Byte offset and side of each mip level in a chain.
+fn mip_levels() -> impl Iterator<Item = (usize, u32)> {
+    (0..MIP_LEVELS).scan(0usize, |offset, level| {
+        let size = 16u32 >> level;
+        let at = *offset;
+        *offset += (size * size * 4) as usize;
+        Some((at, size))
+    })
+}
+
+fn mip_chain(frame: &[u8]) -> Vec<u8> {
+    let mut chain = Vec::with_capacity(1364);
+    let mut level = frame.to_vec();
+    for (_, size) in mip_levels() {
+        chain.extend_from_slice(&level);
+        if size > 1 {
+            level = downsample(&level, size as usize);
+        }
+    }
+    chain
+}
+
+/// `updateAnimationInterpolated` per stored mip level: each colour channel is
+/// `(int)(frame * d + next * (1 - d))` with `d = 1 - elapsed / ticks`; alpha
+/// stays the current frame's.
+fn blend_chains(frame: &[u8], next: &[u8], elapsed: u32, ticks: u32, out: &mut Vec<u8>) {
+    let d = 1.0 - f64::from(elapsed) / f64::from(ticks);
+    out.clear();
+    out.extend(frame.iter().zip(next).enumerate().map(|(index, (&a, &b))| {
+        if index % 4 == 3 {
+            a
+        } else {
+            (f64::from(a) * d + f64::from(b) * (1.0 - d)) as u8
+        }
+    }));
 }
 
 /// Exact conservative union, cached on mesh replacement. Empty sections do not
@@ -271,6 +335,14 @@ pub struct Scene {
     /// Commands GPU occlusion has dropped so far (from completed frames).
     occluded: u64,
     entity_frame: Vec<(i32, i32)>,
+    /// `prepare`'s per-frame lists, kept so a frame allocates nothing.
+    culled: Vec<(f32, (i32, i32), u16, Vec3)>,
+    base_scratch: Vec<[f32; 3]>,
+    /// The terrain sprite array (both binding paths view it) and its
+    /// animated layers, rewritten only while a visible column samples them.
+    terrain_texture: wgpu::Texture,
+    animated: Vec<Animated>,
+    blend: Vec<u8>,
     origin: [i64; 3],
     bindings: wgpu::BindGroup,
     terrain_bindings: Option<wgpu::BindGroup>,
@@ -956,6 +1028,19 @@ impl Scene {
             native_reported: false,
             occluded: 0,
             entity_frame: Vec::new(),
+            culled: Vec::new(),
+            base_scratch: Vec::new(),
+            animated: registry
+                .animations
+                .iter()
+                .map(|animation| Animated {
+                    chains: animation.frames.iter().map(|f| mip_chain(f)).collect(),
+                    animation: animation.clone(),
+                    shown: None,
+                })
+                .collect(),
+            terrain_texture: texture,
+            blend: Vec::new(),
             origin: [0; 3],
             bindings,
             terrain_bindings,
@@ -1096,6 +1181,7 @@ impl Scene {
                         &mesh.translucent,
                     ]),
                     visibility: mesh.visibility,
+                    animated: mesh.animated,
                     passes: [
                         self.pass_buffer(device, queue, &mesh.solid)?,
                         self.pass_buffer(device, queue, &mesh.cutout)?,
@@ -1591,18 +1677,9 @@ impl Scene {
         })
     }
 
-    /// Cull columns and their sections for this frame, nearest first, and
-    /// upload the visible columns' offsets.
-    pub fn prepare(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        config: &wgpu::SurfaceConfiguration,
-    ) {
-        let planes = self.planes(config);
-        self.native_active = false;
-        self.entity_frame.clear();
-        let native = self.native.is_some();
+    /// Reruns the occlusion walk when the camera changed section or columns
+    /// changed (which clears `reached`).
+    pub fn refresh_walk(&mut self) {
         let camera = [
             ((f64::from(self.eye.x) + self.origin[0] as f64) / 16.0).floor() as i32,
             ((f64::from(self.eye.y) + self.origin[1] as f64) / 16.0).floor() as i32,
@@ -1617,13 +1694,115 @@ impl Scene {
             let walk = reachable(camera, |key| columns.get(&key).map(|c| c.visibility));
             self.reached = Some((camera, walk));
         }
+    }
+
+    /// The occlusion walk (after [`Self::refresh_walk`]) for
+    /// [`entity_reached`]; `None` when nothing occludes.
+    pub fn walk(&self) -> Option<&HashMap<(i32, i32), u16>> {
+        self.reached
+            .as_ref()
+            .filter(|(_, walk)| !walk.is_empty())
+            .map(|(_, walk)| walk)
+    }
+
+    /// `TextureMap.updateAnimations` after `ticks` client ticks, with OptiFine's
+    /// Smart Animations: a sprite is rewritten only while a column drawn this
+    /// frame samples it (after [`Self::prepare`]); one out of view keeps its
+    /// stale frame and catches up when it is seen again. Returns the layers
+    /// written.
+    pub fn animate(&mut self, queue: &wgpu::Queue, ticks: u64) -> u32 {
+        if self.animated.is_empty() {
+            return 0;
+        }
+        let seen = self
+            .frame
+            .iter()
+            .filter(|&&(_, mask)| mask != 0)
+            .filter_map(|(key, _)| self.columns.get(key))
+            .fold(0u32, |bits, column| bits | column.animated);
+        let mut written = 0;
+        for (bit, sprite) in self.animated.iter_mut().enumerate() {
+            if seen & (1 << bit) == 0 {
+                continue;
+            }
+            let shown = sprite.animation.shown(ticks);
+            if sprite.shown == Some(shown) {
+                continue;
+            }
+            let data = match shown {
+                crate::terrain::Shown::Frame(frame) => match sprite.chains.get(frame as usize) {
+                    Some(chain) => chain.as_slice(),
+                    // `updateAnimation` skips frame indices past the strip.
+                    None => continue,
+                },
+                crate::terrain::Shown::Blend {
+                    frame,
+                    next,
+                    elapsed,
+                    ticks,
+                } => {
+                    blend_chains(
+                        &sprite.chains[frame as usize],
+                        &sprite.chains[next as usize],
+                        elapsed,
+                        ticks,
+                        &mut self.blend,
+                    );
+                    self.blend.as_slice()
+                }
+            };
+            for (level, (offset, size)) in mip_levels().enumerate() {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.terrain_texture,
+                        mip_level: level as u32,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: sprite.animation.layer,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &data[offset..offset + (size * size * 4) as usize],
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size * 4),
+                        rows_per_image: Some(size),
+                    },
+                    wgpu::Extent3d {
+                        width: size,
+                        height: size,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            sprite.shown = Some(shown);
+            written += 1;
+        }
+        written
+    }
+
+    /// Cull columns and their sections for this frame, nearest first, and
+    /// upload the visible columns' offsets.
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+    ) {
+        let planes = self.planes(config);
+        self.native_active = false;
+        self.entity_frame.clear();
+        let native = self.native.is_some();
+        self.refresh_walk();
         // Outside the loaded world (or above or below it) nothing occludes.
         let occlusion = self
             .reached
             .as_ref()
             .filter(|(_, walk)| !walk.is_empty())
             .map(|(_, walk)| walk);
-        let mut visible: Vec<(f32, (i32, i32), u16, Vec3)> = Vec::new();
+        let mut visible = std::mem::take(&mut self.culled);
+        visible.clear();
         for (&(x, z), column) in &self.columns {
             let min = Vec3::new(
                 (i64::from(x) * 16 - self.origin[0]) as f32,
@@ -1665,7 +1844,8 @@ impl Scene {
                 Vec3::new(centre.x - self.eye.x, 0.0, centre.z - self.eye.z).length_squared();
             visible.push((distance, (x, z), mask, min));
         }
-        visible.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Unstable: the stable sort allocates a merge buffer every frame.
+        visible.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         self.entity_frame
             .extend(visible.iter().filter_map(|&(_, key, _, base)| {
                 (self.columns.get(&key)?.entity.is_some()
@@ -1681,13 +1861,16 @@ impl Scene {
                 mapped_at_creation: false,
             });
         }
-        let bases: Vec<[f32; 3]> = visible.iter().map(|entry| entry.3.to_array()).collect();
-        if !bases.is_empty() {
-            queue.write_buffer(&self.bases, 0, bytemuck::cast_slice(&bases));
+        self.base_scratch.clear();
+        self.base_scratch
+            .extend(visible.iter().map(|entry| entry.3.to_array()));
+        if !self.base_scratch.is_empty() {
+            queue.write_buffer(&self.bases, 0, bytemuck::cast_slice(&self.base_scratch));
         }
         self.frame.clear();
         self.frame
             .extend(visible.iter().map(|&(_, key, mask, _)| (key, mask)));
+        self.culled = visible;
     }
 
     /// Build portable metadata after the conservative column broad phase. The
@@ -1807,13 +1990,18 @@ impl Scene {
         Ok(Some(encoded))
     }
 
-    fn draw_terrain(&self, pass: &mut wgpu::RenderPass<'_>, which: usize, order: &[usize]) {
+    fn draw_terrain(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        which: usize,
+        order: impl Iterator<Item = usize>,
+    ) {
         pass.set_pipeline(&self.terrain_pipelines[which]);
         if let Some(bindings) = &self.terrain_bindings {
             pass.set_bind_group(1, bindings, &[]);
         }
         let mut page = None;
-        for &instance in order {
+        for instance in order {
             let (key, mask) = self.frame[instance];
             let Some(gpu) = self
                 .columns
@@ -1852,12 +2040,12 @@ impl Scene {
             self.draws.set(self.draws.get() + 1);
             pass.draw(0..fixture.count, 0..1);
         }
-        let near_to_far: Vec<usize> = (0..self.frame.len()).collect();
-        if !self.native_active && !near_to_far.is_empty() {
+        let columns = self.frame.len();
+        if !self.native_active && columns > 0 {
             pass.set_index_buffer(self.quads.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(1, self.bases.slice(..));
-            self.draw_terrain(pass, 0, &near_to_far);
-            self.draw_terrain(pass, 1, &near_to_far);
+            self.draw_terrain(pass, 0, 0..columns);
+            self.draw_terrain(pass, 1, 0..columns);
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.entity_bindings, &[]);
@@ -1874,10 +2062,9 @@ impl Scene {
             pass.draw(0..self.entity_count, 0..1);
         }
         pass.set_bind_group(0, &self.bindings, &[]);
-        if !self.native_active && !near_to_far.is_empty() {
+        if !self.native_active && columns > 0 {
             pass.set_vertex_buffer(1, self.bases.slice(..));
-            let far_to_near: Vec<usize> = near_to_far.into_iter().rev().collect();
-            self.draw_terrain(pass, 2, &far_to_near);
+            self.draw_terrain(pass, 2, (0..columns).rev());
         }
     }
 }
@@ -1952,6 +2139,56 @@ mod tests {
         moving.position = [0.0, -1.6, 10.0];
         assert!(!entity_in_view(&planes, &moving, 0.1, [0; 3]));
         assert!(entity_in_view(&planes, &moving, 0.9, [0; 3]));
+    }
+
+    #[test]
+    fn interpolated_frames_blend_colour_and_keep_alpha() {
+        // updateAnimationInterpolated: (int)(a * d + b * (1 - d)), d = 1 - 1/4.
+        let mut out = Vec::new();
+        blend_chains(&[200, 0, 100, 255], &[0, 200, 101, 0], 1, 4, &mut out);
+        assert_eq!(out, [150, 50, 100, 255]);
+        let chain = mip_chain(&[7u8; 1024]);
+        assert_eq!(chain.len(), 1364);
+        let levels: Vec<_> = mip_levels().collect();
+        assert_eq!(
+            levels,
+            [(0, 16), (1024, 8), (1280, 4), (1344, 2), (1360, 1)]
+        );
+    }
+
+    #[test]
+    fn entities_draw_only_in_sections_the_occlusion_walk_reached() {
+        // RenderGlobal.renderEntities: entities of renderInfos sections only,
+        // filed by Chunk.addEntity under floor(posY / 16) clamped to 0..15.
+        let mut tracked = horizon_world_189::entities::Entities::default();
+        tracked.apply(horizon_protocol_47::entities::EntityPacket::SpawnPlayer {
+            id: 1,
+            uuid: 7,
+            position: [0; 3],
+            yaw: 0,
+            pitch: 0,
+            held_item: 0,
+            metadata: vec![],
+        });
+        let base = tracked.get(1).expect("spawned").clone();
+        let mut walk = HashMap::new();
+        walk.insert((0, 0), (1u16 << 1) | (1 << 4) | (1 << 15));
+        let at = |x: f64, y: f64, z: f64| {
+            let mut entity = base.clone();
+            entity.position = [x, y, z];
+            entity_reached(Some(&walk), &entity)
+        };
+        assert!(at(3.0, 20.0, 3.0));
+        assert!(!at(3.0, 40.0, 3.0), "sealed section");
+        assert!(at(15.9, 64.0, 0.0));
+        assert!(!at(16.0, 64.0, 0.0), "column the walk never reached");
+        assert!(!at(-0.1, 20.0, 0.0), "unloaded column");
+        assert!(!at(3.0, -5.0, 3.0), "below the world files under section 0");
+        assert!(
+            at(3.0, 300.0, 3.0),
+            "above the world files under section 15"
+        );
+        assert!(entity_reached(None, &base), "no walk, nothing occludes");
     }
 
     #[test]

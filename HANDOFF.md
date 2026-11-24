@@ -2683,3 +2683,46 @@ changes only); settings default/round-trip and pre-setting files keep Fancy; the
 row and the switch flip the setting; `--fast-graphics` option. Gate: 338 scoped tests, 12
 trace-tool tests, 7 Python gate tests, VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS
 packets=235 windows=2.
+
+## 84. Entity culling by the occlusion walk, texture animations with Smart Animations
+
+Previous commit: b2887724d7. Sprint row 1.2 "Vanilla VisGraph cave occlusion, entity culling,
+Smart Animations"; the VisGraph walk itself shipped earlier (`reachable`, HANDOFF 71-82).
+
+- **Entity culling.** Verified in the 1.8.9 jar (`bfr`, `RenderGlobal.renderEntities`): vanilla
+  iterates `renderInfos` (the sections `setupTerrain`'s walk reached) and draws only the
+  entities `Chunk.addEntity` filed under them (`floor(posY / 16)` clamped to 0..15), then
+  applies `shouldRender`. Bob Client now does the same before its frustum test, so players and
+  mobs sealed behind walls or in caves are skipped with their name tags and hitboxes. No walk
+  (camera outside the loaded world) culls nothing. The walk is refreshed from the entity pass
+  too, so both use this frame's camera section.
+- **Texture animations.** Water, lava, fire, portal, prismarine and sea lantern were frozen on
+  their first frame. Each terrain sprite with a `.mcmeta` now plays as
+  `TextureAtlasSprite.updateAnimation` does (`bmi`): `frametime`, `frames` lists with bare
+  or timed entries, and `interpolate` (prismarine) blending each colour channel as
+  `(int)(a * d + b * (1 - d))` with the current frame's alpha. Every frame's mip chain is built
+  once; the shown frame is computed from 20 Hz ticks, so nothing is stored per tick.
+- **Smart Animations.** Meshes record which animations their quads sample (a 32-bit mask per
+  column, computed on the mesh worker). A sprite's layer is rewritten only when a column drawn
+  this frame samples it and its shown frame changed; out-of-view sprites catch up when seen.
+- Per-frame allocations: `prepare` reuses its culled-column and offset lists and sorts
+  unstably (the stable sort allocated a merge buffer); the non-native terrain draw no longer
+  collects index lists; the native encoder presizes its buffer lists and uses fixed arrays for
+  its ranges. Counted builds: lobby 275.0 -> 252.2 allocations/frame, flyover 233.2 -> 210.3.
+- Frames in flight were already capped: `desired_maximum_frame_latency` 1 gives the layer
+  `maximumDrawableCount` 2, the minimum.
+- A/B against b2887724d7, three alternating pairs: culling + allocations lobby frame p50
+  -0.06%, flyover -0.08%, CPU p99 -7.23% / +0.13%; with animations added lobby +0.00%, flyover
+  +0.00%, CPU p99 +6.28% / -1.28%. The bench crowd stands in the open, so it draws the same
+  entities (identical per-frame entity counts); the gain is where entities are hidden.
+- Captures: terrain pixel-identical with culling alone; with animations only the water band
+  differs (a later water frame), inspected. The 80-player crowd differs only by animation
+  timing, inspected.
+
+Regressions: entity section culling (sealed section, unreached and unloaded columns, below and
+above the world, no walk); `.mcmeta` parsing and playback against `updateAnimation`
+(frametime, listed and timed frames, interpolation, still and malformed sprites); interpolated
+blend and mip-chain layout; jar test (water 32 frames at 2 ticks, lava's 38-entry ping-pong,
+an interpolated sprite, a water and lava pool marks exactly those animations). Gate: 322 scoped
+tests plus 12 jar tests, 12 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.
