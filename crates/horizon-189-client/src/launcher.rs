@@ -280,8 +280,9 @@ impl Setting {
                 v.sensitivity = ((v.sensitivity + 0.05 * d) * 20.0).round().clamp(0.0, 20.0) / 20.0;
             }
             Setting::RenderDistance => {
-                v.render_distance =
-                    (i16::from(v.render_distance) + i16::from(direction)).clamp(2, 16) as u8;
+                v.render_distance = (i16::from(v.render_distance) + i16::from(direction))
+                    .clamp(2, i16::from(crate::settings::MAX_RENDER_DISTANCE))
+                    as u8;
             }
             Setting::GuiScale => {
                 v.gui_scale = (i64::from(v.gui_scale) + i64::from(direction)).clamp(0, 4) as u32;

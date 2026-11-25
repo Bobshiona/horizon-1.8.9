@@ -1066,7 +1066,7 @@ impl Scene {
             view: Mat4::look_at_rh(eye, Vec3::splat(0.5), Vec3::Y),
             eye,
             fov: 60.0,
-            fog_end: f32::from(view_distance.clamp(2, 16)) * 16.0,
+            fog_end: f32::from(view_distance.clamp(2, crate::settings::MAX_RENDER_DISTANCE)) * 16.0,
             depth: Self::depth_view(device, config),
         };
         scene.write_camera(queue, config);
@@ -1370,7 +1370,7 @@ impl Scene {
         config: &wgpu::SurfaceConfiguration,
         chunks: u8,
     ) {
-        self.fog_end = f32::from(chunks.clamp(2, 16)) * 16.0;
+        self.fog_end = f32::from(chunks.clamp(2, crate::settings::MAX_RENDER_DISTANCE)) * 16.0;
         self.write_camera(queue, config);
     }
 

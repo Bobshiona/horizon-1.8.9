@@ -882,6 +882,14 @@ impl App {
     /// the fullbright remesh.
     fn update_mods(&mut self) {
         let toggles = self.settings.toggles;
+        // Keep Chunks follows the render distance.
+        let cache = toggles.keep_chunks.then_some(self.view_distance);
+        if let Some(network) = &self.network
+            && let Ok(mut shared) = network.shared.lock()
+            && shared.chunk_cache != cache
+        {
+            shared.chunk_cache = cache;
+        }
         let now = Instant::now();
         let dt = now.duration_since(self.zoom_at).as_secs_f32().min(0.25);
         self.zoom_at = now;
@@ -2568,6 +2576,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             if options.raw_input {
                 settings.toggles.raw_input = true;
+            }
+            if options.keep_chunks {
+                settings.toggles.keep_chunks = true;
             }
             if options.pvp_hud {
                 settings.hud_mut(settings::HudKind::Fps).enabled = true;

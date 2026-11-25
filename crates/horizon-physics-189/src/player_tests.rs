@@ -319,3 +319,19 @@ fn death_shrinks_the_box_and_starts_a_hop_and_drift() {
     assert_eq!(alive.position[1], 4.0);
     assert!(body.position[1] < 4.0, "{:?}", body.position);
 }
+
+// bew.t_ gates on adm.e(new cj(posX, 0, posZ)); bcz.a(II) is always true,
+// so only the 30,000,000 world border stops a multiplayer player ticking.
+#[test]
+fn the_player_updates_over_terrain_the_server_has_not_sent() {
+    let mut player = Player::default();
+    player.set_position(4101.5, 4.0, 1057.5);
+    assert!(World::default().column(256, 66).is_none());
+    assert!(player.updates());
+    player.set_position(-30_000_000.0, 4.0, 29_999_999.9);
+    assert!(player.updates());
+    player.set_position(30_000_000.0, 4.0, 0.0);
+    assert!(!player.updates());
+    player.set_position(0.0, 4.0, -30_000_000.5);
+    assert!(!player.updates());
+}

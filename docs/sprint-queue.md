@@ -167,8 +167,9 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
 ## Phase 2: World completeness, 32+ render distance, resource packs, audio, parity
 
 ### 2.1 32+ render distance and world rendering
-- [ ] Render distance 2-32 plus optional 48-64 client-side chunk cache; fog, storage and GPU
-      regions scale with it.
+- [x] Render distance 2-32 plus a client-side chunk cache (Keep Chunks); fog, storage and GPU
+      regions scale with it. (HANDOFF 89)
+- [ ] Optional 48-64 render distance.
 - [ ] Instanced block entities with culling: chests (single, double, lid), ender chests, signs
       (formatted text), skulls, banners, beds.
 - [ ] Sky (sun, moon, stars, day-night colors), weather (rain, snow), smooth lighting with

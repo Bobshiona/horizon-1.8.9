@@ -53,7 +53,10 @@ impl Slider {
         match self {
             Slider::Fov => (video.fov - 30.0) / 80.0,
             Slider::Sensitivity => video.sensitivity,
-            Slider::Distance => f32::from(video.render_distance - 2) / 14.0,
+            Slider::Distance => {
+                f32::from(video.render_distance.saturating_sub(2))
+                    / f32::from(crate::settings::MAX_RENDER_DISTANCE - 2)
+            }
             Slider::Scale => f32::from(video.render_scale.saturating_sub(50)) / 50.0,
         }
     }
@@ -63,7 +66,10 @@ impl Slider {
         match self {
             Slider::Fov => video.fov = (30.0 + t * 80.0).round(),
             Slider::Sensitivity => video.sensitivity = (t * 200.0).round() / 200.0,
-            Slider::Distance => video.render_distance = (2.0 + t * 14.0).round() as u8,
+            Slider::Distance => {
+                let span = f32::from(crate::settings::MAX_RENDER_DISTANCE - 2);
+                video.render_distance = (2.0 + t * span).round() as u8;
+            }
             Slider::Scale => {
                 video.render_scale = crate::upscale::percent(50.0 + f64::from(t) * 50.0);
             }
@@ -691,6 +697,9 @@ mod tests {
         let distance = rect(Page::Settings, layout, Target::Slider(Slider::Distance));
         pause.press(layout, (distance[0], distance[1] + 2.0), &mut settings);
         assert_eq!(settings.video.render_distance, 2);
+        // The right end is OptiFine's 32 chunks.
+        pause.moved(layout, (distance[2] + 40.0, distance[1]), &mut settings);
+        assert_eq!(settings.video.render_distance, 32);
         pause.release();
         // Render scale: the left end is 50%, the middle 75%, steps of 5.
         let world = rect(Page::Settings, layout, Target::Slider(Slider::Scale));

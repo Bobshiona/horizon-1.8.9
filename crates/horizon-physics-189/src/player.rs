@@ -402,11 +402,15 @@ impl Player {
         }
     }
 
-    /// Whether `EntityPlayerSP.onUpdate` runs this tick.
-    pub fn chunk_loaded(&self, world: &World) -> bool {
-        world
-            .column(floor(self.position[0]) >> 4, floor(self.position[2]) >> 4)
-            .is_some()
+    /// Whether `EntityPlayerSP.onUpdate` (bew.t_) runs this tick: it asks
+    /// `World.isBlockLoaded(new BlockPos(posX, 0, posZ))` (adm.e), and the
+    /// client's chunk provider (bcz.a(II)) reports every chunk as existing.
+    /// Only the world border check (adm.a(cj)) remains, so the player keeps
+    /// ticking, and sending movement, over terrain the server has not sent
+    /// yet; the server streams the new area from those packets.
+    pub fn updates(&self) -> bool {
+        let (x, z) = (floor(self.position[0]), floor(self.position[2]));
+        (-30_000_000..30_000_000).contains(&x) && (-30_000_000..30_000_000).contains(&z)
     }
 
     pub fn tick(&mut self, world: &World, keys: Keys) {

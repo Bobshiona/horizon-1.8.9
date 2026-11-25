@@ -85,11 +85,12 @@ fn partial_updates_preserve_omitted_sections_and_full_updates_clear_them() {
 }
 
 #[test]
-fn unload_is_distinct_from_an_empty_full_column() {
+fn ground_up_empty_mask_removes_a_loaded_column() {
     let mut world = World::default();
+    world.apply(decode_chunk(&chunk(0, 0, 1, true, &payload(1, true, true)), true).unwrap());
+    assert_eq!(world.block(0, 0, 0), Some(BlockState(0x1234)));
+    // bcy.a(go): ground-up, mask 0, biome bytes still attached.
     world.apply(decode_chunk(&chunk(0, 0, 0, true, &payload(0, true, true)), true).unwrap());
-    assert_eq!(world.block(0, 0, 0), Some(BlockState(0)));
-    world.apply(decode_chunk(&chunk(0, 0, 0, true, &[]), true).unwrap());
     assert!(world.column(0, 0).is_none());
     world.apply(decode_chunk(&chunk(0, 0, 1, false, &payload(1, true, false)), true).unwrap());
     assert!(world.column(0, 0).is_none());
@@ -298,4 +299,19 @@ fn sections_are_stored_compactly_and_block_changes_grow_them() {
     let made = world.column(3, 4).unwrap().section(12).unwrap();
     assert_eq!(made.light(1, 8, 0), Some((0, 15)));
     assert_eq!(made.heap_bytes(), 2048 + 4);
+}
+
+// Vanilla `NetHandlerPlayClient.handleChunkData` (bcy.a(go)) unloads when the
+// packet is ground-up with a zero section mask (go.e() && go.d() == 0), even
+// though a vanilla server still sends the 256 biome bytes with it.
+#[test]
+fn ground_up_empty_mask_unloads_even_with_biome_bytes() {
+    assert!(matches!(
+        decode_chunk(&chunk(4, -5, 0, true, &payload(0, true, true)), true).unwrap(),
+        ColumnUpdate::Unload { x: 4, z: -5 }
+    ));
+    assert!(matches!(
+        decode_chunk(&chunk(4, -5, 0, true, &[]), true).unwrap(),
+        ColumnUpdate::Unload { x: 4, z: -5 }
+    ));
 }

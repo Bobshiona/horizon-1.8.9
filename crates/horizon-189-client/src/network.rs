@@ -38,7 +38,7 @@ pub struct Config {
     pub autopilot: bool,
     /// Scripted flight instead of the walking script (needs allowFlying).
     pub autopilot_fly: bool,
-    /// Requested view distance in chunks (vanilla clamps to 2..=16).
+    /// Requested view distance in chunks (2..=32; vanilla clamps to 16).
     pub view_distance: u8,
 }
 
@@ -187,6 +187,9 @@ pub struct Shared {
     pub reduced_debug: bool,
     /// A new render distance for the server (C15), sent on the next tick.
     pub view_distance: Option<u8>,
+    /// Keep Chunks: the client's render distance, within which columns the
+    /// server unloads stay drawn (the client-side chunk cache); `None` is off.
+    pub chunk_cache: Option<u8>,
     pub vitals: crate::gameplay::Vitals,
     pub yaw: f32,
     pub pitch: f32,
@@ -613,6 +616,58 @@ fn lock(shared: &Mutex<Shared>) -> io::Result<std::sync::MutexGuard<'_, Shared>>
         .map_err(|_| io::Error::other("Shared simulation state poisoned"))
 }
 
+/// Keep Chunks: whether column `x`, `z` lies within `distance` columns
+/// (vanilla's square) of the player's column.
+fn within(center: (i32, i32), distance: u8, x: i32, z: i32) -> bool {
+    x.abs_diff(center.0).max(z.abs_diff(center.1)) <= u32::from(distance)
+}
+
+/// The client-side chunk cache: an unload the server sends for a column still
+/// inside the client's render distance is kept (the column stays drawn, frozen
+/// as last seen); data for a kept column takes it back. Returns whether the
+/// world changed.
+fn apply_column(
+    world: &mut World,
+    update: ColumnUpdate,
+    cached: &mut std::collections::HashSet<(i32, i32)>,
+    keep: Option<((i32, i32), u8)>,
+) -> bool {
+    match update {
+        ColumnUpdate::Unload { x, z }
+            if keep.is_some_and(|(center, distance)| within(center, distance, x, z))
+                && world.column(x, z).is_some() =>
+        {
+            cached.insert((x, z));
+            false
+        }
+        update => {
+            let (ColumnUpdate::Unload { x, z } | ColumnUpdate::Data { x, z, .. }) = &update;
+            cached.remove(&(*x, *z));
+            world.apply(update);
+            true
+        }
+    }
+}
+
+/// Kept columns now outside the render distance (or all of them, with the
+/// cache off), unloaded and returned.
+fn evict_cached(
+    world: &mut World,
+    cached: &mut std::collections::HashSet<(i32, i32)>,
+    keep: Option<((i32, i32), u8)>,
+) -> Vec<(i32, i32)> {
+    let gone: Vec<(i32, i32)> = cached
+        .iter()
+        .copied()
+        .filter(|&(x, z)| !keep.is_some_and(|(center, distance)| within(center, distance, x, z)))
+        .collect();
+    for &(x, z) in &gone {
+        cached.remove(&(x, z));
+        world.apply(ColumnUpdate::Unload { x, z });
+    }
+    gone
+}
+
 /// The column and its four neighbours, whose culling and connections it affects.
 fn around(x: i32, z: i32) -> [(i32, i32); 5] {
     [
@@ -783,6 +838,15 @@ fn run_actor(
     let mut entity_id = 0;
     // Other players' S25 crack stages, by breaker.
     let mut breaking: std::collections::HashMap<i32, ([i32; 3], u8)> = Default::default();
+    // Keep Chunks: columns the server unloaded that stay drawn.
+    let mut cached: std::collections::HashSet<(i32, i32)> = Default::default();
+    let keep = |player: &Player, shared: &Mutex<Shared>| -> io::Result<Option<((i32, i32), u8)>> {
+        let center = (
+            (player.position[0] / 16.0).floor() as i32,
+            (player.position[2] / 16.0).floor() as i32,
+        );
+        Ok(lock(shared)?.chunk_cache.map(|distance| (center, distance)))
+    };
     let mut positioned = false;
     let mut sky_light = None;
     let mut dimension = None;
@@ -815,6 +879,7 @@ fn run_actor(
                             drop(world);
                             dirty(keys);
                             breaking.clear();
+                            cached.clear();
                             mesh_origin = None;
                             let [x, y, z] = player.position;
                             player.width = horizon_physics_189::player::WIDTH;
@@ -923,17 +988,33 @@ fn run_actor(
                         )?;
                         let (ColumnUpdate::Unload { x, z } | ColumnUpdate::Data { x, z, .. }) =
                             update;
-                        write(world)?.apply(update);
-                        dirty(around(x, z).to_vec());
+                        let keep = keep(&player, shared)?;
+                        let mut world = write(world)?;
+                        let mut keys = Vec::new();
+                        if apply_column(&mut world, update, &mut cached, keep) {
+                            keys.extend(around(x, z));
+                        }
+                        for (x, z) in evict_cached(&mut world, &mut cached, keep) {
+                            keys.extend(around(x, z));
+                        }
+                        drop(world);
+                        if !keys.is_empty() {
+                            dirty(keys);
+                        }
                     }
                     play::Packet::Other { id: 0x26, .. } => {
                         let updates = decode_bulk(&body)?;
                         let mut keys = Vec::with_capacity(updates.len() * 5);
+                        let keep = keep(&player, shared)?;
                         let mut world = write(world)?;
                         for update in updates {
                             let (ColumnUpdate::Unload { x, z } | ColumnUpdate::Data { x, z, .. }) =
                                 update;
-                            world.apply(update);
+                            if apply_column(&mut world, update, &mut cached, keep) {
+                                keys.extend(around(x, z));
+                            }
+                        }
+                        for (x, z) in evict_cached(&mut world, &mut cached, keep) {
                             keys.extend(around(x, z));
                         }
                         drop(world);
@@ -1016,6 +1097,7 @@ fn run_actor(
                             dirty(keys);
                             entities.clear_world();
                             breaking.clear();
+                            cached.clear();
                             mesh_origin = None;
                         }
                         positioned = false;
@@ -1464,7 +1546,7 @@ fn run_actor(
                     writer.send(&play::keep_alive(0))?;
                 }
             }
-            if !positioned || !player.chunk_loaded(&world_view) {
+            if !positioned || !player.updates() {
                 continue;
             }
             let (keys, mut input) = {

@@ -95,6 +95,9 @@ pub struct Toggles {
     /// Raw Input: mouse motion in device counts from GameController, before
     /// macOS's pointer acceleration (off: AppKit's accelerated motion, as vanilla).
     pub raw_input: bool,
+    /// Keep Chunks: columns the server unloads inside the render distance stay
+    /// drawn as last seen (a client-side chunk cache).
+    pub keep_chunks: bool,
     /// Apple's Metal Performance HUD (`MTL_HUD_ENABLED=1`), from the next launch.
     pub metal_hud: bool,
     /// Frame cap: 0 follows the display (vsync), otherwise frames per second;
@@ -112,6 +115,9 @@ pub struct Toggles {
     pub outline: u8,
 }
 
+/// The largest render distance in chunks (OptiFine's 32; vanilla stops at 16).
+pub const MAX_RENDER_DISTANCE: u8 = 32;
+
 /// Vanilla's video and control options the settings screen edits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Video {
@@ -119,7 +125,7 @@ pub struct Video {
     pub fov: f32,
     /// `mouseSensitivity`, 0 to 1 (0.5 shows as 100%).
     pub sensitivity: f32,
-    /// Chunks, 2 to 16.
+    /// Chunks, 2 to [`MAX_RENDER_DISTANCE`].
     pub render_distance: u8,
     /// 0 automatic, otherwise the largest allowed scale up to it.
     pub gui_scale: u32,
@@ -160,6 +166,7 @@ impl Default for Toggles {
             fullbright: false,
             raw_input: false,
             metal_hud: false,
+            keep_chunks: false,
             fps_limit: 0,
             scoreboard_numbers: true,
             advanced_tooltips: false,
@@ -283,8 +290,9 @@ impl Settings {
                 fov: number("fov").map_or(d.fov, |n| (n as f32).clamp(30.0, 110.0)),
                 sensitivity: number("sensitivity")
                     .map_or(d.sensitivity, |n| (n as f32).clamp(0.0, 1.0)),
-                render_distance: number("render_distance")
-                    .map_or(d.render_distance, |n| n.clamp(2.0, 16.0) as u8),
+                render_distance: number("render_distance").map_or(d.render_distance, |n| {
+                    n.clamp(2.0, f64::from(MAX_RENDER_DISTANCE)) as u8
+                }),
                 gui_scale: number("gui_scale").map_or(d.gui_scale, |n| n.clamp(0.0, 4.0) as u32),
                 view_bobbing: flag("view_bobbing", d.view_bobbing),
                 fullscreen: flag("fullscreen", d.fullscreen),
@@ -304,6 +312,7 @@ impl Settings {
                 fullbright: flag("fullbright", d.fullbright),
                 raw_input: flag("raw_input", d.raw_input),
                 metal_hud: flag("metal_hud", d.metal_hud),
+                keep_chunks: flag("keep_chunks", d.keep_chunks),
                 fps_limit: t
                     .get("fps_limit")
                     .and_then(Value::as_u64)
@@ -362,6 +371,7 @@ impl Settings {
                 "fullbright": t.fullbright,
                 "raw_input": t.raw_input,
                 "metal_hud": t.metal_hud,
+                "keep_chunks": t.keep_chunks,
                 "fps_limit": t.fps_limit,
                 "scoreboard_numbers": t.scoreboard_numbers,
                 "advanced_tooltips": t.advanced_tooltips,

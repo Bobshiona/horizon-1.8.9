@@ -91,6 +91,11 @@ pub fn decode_chunk(body: &[u8], sky_light: bool) -> io::Result<ColumnUpdate> {
     if length < 0 || length as usize != payload.len() {
         return Err(invalid("Chunk payload length mismatch"));
     }
+    // Vanilla (bcy.a(go)) unloads on ground-up with no sections, whatever
+    // follows: a vanilla server still appends the biome bytes.
+    if full && mask == 0 {
+        return Ok(ColumnUpdate::Unload { x, z });
+    }
     column(x, z, full, mask, sky_light, payload)
 }
 

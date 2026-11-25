@@ -18,6 +18,7 @@ pub enum Entry {
     SmoothZoom,
     ToggleSprint,
     RawInput,
+    KeepChunks,
     Fullbright,
     ScoreboardNumbers,
     Crosshair,
@@ -38,6 +39,7 @@ fn entries() -> Vec<Entry> {
         Entry::ToggleSprint,
         Entry::RawInput,
         Entry::Fullbright,
+        Entry::KeepChunks,
         Entry::ScoreboardNumbers,
         Entry::Crosshair,
         Entry::BlockOutline,
@@ -88,6 +90,7 @@ impl Entry {
             Entry::ToggleSprint => "Toggle Sprint",
             Entry::RawInput => "Raw Input",
             Entry::Fullbright => "Fullbright",
+            Entry::KeepChunks => "Keep Chunks",
             Entry::ScoreboardNumbers => "Scoreboard Numbers",
             Entry::VanillaMenu => "Vanilla Menu",
             Entry::Crosshair => "Crosshair",
@@ -104,6 +107,7 @@ impl Entry {
                 Category::Gameplay
             }
             Entry::Fullbright
+            | Entry::KeepChunks
             | Entry::ScoreboardNumbers
             | Entry::Crosshair
             | Entry::BlockOutline => Category::Visual,
@@ -119,6 +123,7 @@ impl Entry {
             Entry::VanillaMenu => "Esc opens vanilla's menus",
             Entry::RawInput => "No mouse acceleration",
             Entry::MetalHud => "GPU stats, next launch",
+            Entry::KeepChunks => "Past the server's distance",
             _ => self.category().title(),
         }
     }
@@ -134,6 +139,7 @@ impl Entry {
             Entry::ToggleSprint => t.toggle_sprint,
             Entry::RawInput => t.raw_input,
             Entry::Fullbright => t.fullbright,
+            Entry::KeepChunks => t.keep_chunks,
             Entry::ScoreboardNumbers => t.scoreboard_numbers,
             Entry::VanillaMenu => t.vanilla_menu,
             Entry::MetalHud => t.metal_hud,
@@ -170,6 +176,7 @@ impl Entry {
             Entry::ToggleSprint => t.toggle_sprint = !t.toggle_sprint,
             Entry::RawInput => t.raw_input = !t.raw_input,
             Entry::Fullbright => t.fullbright = !t.fullbright,
+            Entry::KeepChunks => t.keep_chunks = !t.keep_chunks,
             Entry::ScoreboardNumbers => t.scoreboard_numbers = !t.scoreboard_numbers,
             Entry::VanillaMenu => t.vanilla_menu = !t.vanilla_menu,
             Entry::MetalHud => t.metal_hud = !t.metal_hud,

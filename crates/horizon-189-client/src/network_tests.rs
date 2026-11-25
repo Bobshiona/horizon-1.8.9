@@ -869,3 +869,71 @@ fn time_difficulty_and_reduced_debug_reach_the_debug_overlay() {
         s.time_of_day
     );
 }
+
+#[test]
+fn keep_chunks_holds_unloads_inside_the_render_distance_until_out_of_range() {
+    let column = |x, z| ColumnUpdate::Data {
+        x,
+        z,
+        full: true,
+        data: Box::new(ColumnData {
+            sections: Default::default(),
+            biomes: None,
+        }),
+    };
+    let mut world = World::default();
+    let mut cached = std::collections::HashSet::new();
+    for (x, z) in [(0, 0), (3, 0), (9, 9)] {
+        assert!(apply_column(&mut world, column(x, z), &mut cached, None));
+    }
+    let keep = Some(((0, 0), 4));
+    // Inside four columns: kept and drawn; outside: unloaded as usual.
+    assert!(!apply_column(
+        &mut world,
+        ColumnUpdate::Unload { x: 3, z: 0 },
+        &mut cached,
+        keep
+    ));
+    assert!(world.column(3, 0).is_some() && cached.contains(&(3, 0)));
+    assert!(apply_column(
+        &mut world,
+        ColumnUpdate::Unload { x: 9, z: 9 },
+        &mut cached,
+        keep
+    ));
+    assert!(world.column(9, 9).is_none());
+    // An unload for a column never loaded is not cached.
+    assert!(apply_column(
+        &mut world,
+        ColumnUpdate::Unload { x: 1, z: 1 },
+        &mut cached,
+        keep
+    ));
+    assert!(!cached.contains(&(1, 1)));
+    // Fresh data takes a kept column back.
+    assert!(apply_column(&mut world, column(3, 0), &mut cached, keep));
+    assert!(cached.is_empty());
+    apply_column(
+        &mut world,
+        ColumnUpdate::Unload { x: 3, z: 0 },
+        &mut cached,
+        keep,
+    );
+    // Still in range from column 6; walking on to 8 with two drops it, and so
+    // does turning the cache off.
+    assert!(evict_cached(&mut world, &mut cached, Some(((6, 0), 4))).is_empty());
+    assert_eq!(
+        evict_cached(&mut world, &mut cached, Some(((8, 0), 2))),
+        [(3, 0)]
+    );
+    assert!(world.column(3, 0).is_none());
+    apply_column(&mut world, column(2, 0), &mut cached, keep);
+    apply_column(
+        &mut world,
+        ColumnUpdate::Unload { x: 2, z: 0 },
+        &mut cached,
+        keep,
+    );
+    assert_eq!(evict_cached(&mut world, &mut cached, None), [(2, 0)]);
+    assert!(world.column(2, 0).is_none() && cached.is_empty());
+}

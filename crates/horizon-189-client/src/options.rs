@@ -22,7 +22,9 @@ pub struct Options {
     pub render_scale: Option<u8>,
     /// Raw Input (GameController mouse motion) for this run.
     pub raw_input: bool,
-    /// Requested view distance in chunks (vanilla default 8 here, 2..=16).
+    /// Keep Chunks (client-side chunk cache) for this run.
+    pub keep_chunks: bool,
+    /// Requested view distance in chunks (vanilla default 8 here, 2..=32).
     pub view_distance: u8,
     /// Vanilla `guiScale`: 0 automatic, otherwise the largest allowed scale.
     pub gui_scale: u32,
@@ -128,9 +130,10 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --fast-graphics               Graphics: Fast (opaque leaves) for this run\n\
     --render-scale PERCENT        World resolution, 50-100% of the window\n\
     --raw-input                   Unaccelerated mouse motion (GameController) for this run\n\
+    --keep-chunks                 Keep columns the server unloads inside the render distance\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
-    --render-distance N           View distance in chunks, 2-16 (default 8)\n\
+    --render-distance N           View distance in chunks, 2-32 (default 8)\n\
     --gui-scale N                 Interface scale 0-4 (0 automatic, as vanilla)\n\
     --no-view-bobbing             Turn off view bobbing (vanilla has it on)\n\
     --install [--update-source URL]
@@ -271,6 +274,7 @@ impl Options {
                 "--pvp-hud" => options.pvp_hud = true,
                 "--fast-graphics" => options.fast_graphics = true,
                 "--raw-input" => options.raw_input = true,
+                "--keep-chunks" => options.keep_chunks = true,
                 "--render-scale" => {
                     let percent: f64 = value()?.parse()?;
                     if !(50.0..=100.0).contains(&percent) {
@@ -294,8 +298,8 @@ impl Options {
                 }
                 "--render-distance" => {
                     let chunks: u8 = value()?.parse()?;
-                    if !(2..=16).contains(&chunks) {
-                        return Err("--render-distance must be between 2 and 16".into());
+                    if !(2..=crate::settings::MAX_RENDER_DISTANCE).contains(&chunks) {
+                        return Err("--render-distance must be between 2 and 32".into());
                     }
                     options.view_distance = chunks;
                 }
@@ -744,6 +748,10 @@ mod tests {
         assert!(parse(&["--smoke-frames", "0"]).is_err());
         assert!(parse(&["--sensitivity", "1.5"]).is_err());
         assert!(parse(&["--render-distance", "40"]).is_err());
+        assert_eq!(
+            parse(&["--render-distance", "32"]).unwrap().view_distance,
+            32
+        );
         let tuned = parse(&["--sensitivity", "0.25", "--render-distance", "12"]).unwrap();
         assert_eq!((tuned.sensitivity, tuned.view_distance), (0.25, 12));
         assert_eq!(parse(&[]).unwrap().sensitivity, 0.5);

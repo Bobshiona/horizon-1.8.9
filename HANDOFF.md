@@ -2879,3 +2879,44 @@ the menu's Gameplay and General cards; `--raw-input`; F3 and Alt+F3 toggling; la
 scaling, colours and the 240-frame window; chat Control keys; search word and full deletes.
 Gate: 331 scoped tests, 12 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.
+
+## 89. Render distance 32, Keep Chunks, vanilla unloads, ticking over unsent terrain
+
+Previous commit: 5580cc743e. Sprint row 2.1 (render distance).
+
+- **Render distance 2-32.** `settings::MAX_RENDER_DISTANCE` (32) bounds the setting, the
+  launcher, `--render-distance` and the pause-menu Distance slider (its right end is 32); fog
+  follows it. GPU regions and storage already scale with the column count.
+- **Keep Chunks** (mod menu, Visual, default off; `--keep-chunks`). Servers send far fewer
+  chunks than 32 (Hypixel lobbies about 10). With Keep Chunks on, a column the server unloads
+  stays in the world and on screen while it is inside your render distance; it is dropped when
+  you move out of range, when the server sends it again, when the option is turned off, and on
+  Join Game or Respawn. Blocks, physics and the server's view are unchanged.
+- **Vanilla unloads.** `NetHandlerPlayClient.handleChunkData` (`bcy.a(go)`) unloads on a
+  ground-up packet with section mask 0 (`go.e() && go.d() == 0`). A vanilla server still sends
+  256 biome bytes with it; the decoder only treated an empty body as an unload, so those
+  columns stayed in the world as empty columns. They are now removed (`decode_chunk`; the old
+  test that assumed otherwise now asserts vanilla's behaviour).
+- **Ticking over unsent terrain.** `EntityPlayerSP.onUpdate` (`bew.t_`) checks
+  `World.isBlockLoaded(new BlockPos(posX, 0, posZ))` (`adm.e`), and the client chunk provider
+  (`bcz.a(II)`) reports every chunk as existing, so only the 30,000,000 world border stops the
+  player ticking. The client stopped ticking (and sending movement) whenever its own column
+  was missing, for example right after a teleport; it now keeps ticking, sinking at -0.1 as
+  vanilla does in an unloaded column (`Player::updates`).
+- 48-64 is not built: past 32 the walk, region and fog costs need their own measurement, and
+  servers rarely send that far. Left as its own sprint row.
+- Evidence. Reference server (view distance 2), two 40-block teleports then one more: 60 scene
+  columns with Keep Chunks against 30 without; captures of both render normally. Trace sweep at
+  `--render-distance 32 --keep-chunks`: lobby 674 / flyover 837 FPS against 670 / 836 default
+  (the recorded session has no unloads). A teleport of 600+ blocks on the view-distance-2
+  reference server gets no chunks back from the server, before and after this change (the
+  server stops streaming; the old client also stopped ticking there).
+- A/B against 5580cc743e, three alternating pairs: frame p50 lobby -1.77%, flyover -2.76%;
+  CPU p99 +14.85% (pairs -63.3 / +14.9 / +15.7) / -25.93%; average FPS lobby 668 -> 679,
+  flyover 806 -> 850; flyover mesh p99 28.9 -> 11.3 ms.
+
+Regressions: Keep Chunks keeps unloads inside the distance and evicts outside it; ground-up
+mask-0 packets unload with or without biome bytes; the player updates over missing columns and
+stops at the world border; the Distance slider reaches 32; `--render-distance 32` parses.
+Gate: 334 scoped tests, 12 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.
