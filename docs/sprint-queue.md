@@ -192,7 +192,7 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
 ### 2.3 Native 1.8.9 PvP sound engine
 - [ ] Portable mixer on CoreAudio with positional 1.8.9 sounds from local assets, wired to the
       nine volume sliders. Done: the engine, server sounds and the local player's own (HANDOFF
-      96). Open: the sliders, music, eating and fall sounds.
+      96), the sliders (HANDOFF 97). Open: music, eating and fall sounds.
 
 ### 2.4 Remaining handoff and Hypixel parity fixes
 - [ ] Crafting grid consumes ingredients on screen when taking the result.

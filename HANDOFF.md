@@ -3163,3 +3163,25 @@ fade and panning by yaw, the mixer's resampling, end of voice and 28-voice limit
 types for 13 ids, and steps every five thirds of a block and none while sneaking.
 Gate: 354 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
+
+## 97. Music & Sounds
+
+Previous commit: 37a010e3da. Sprint row 2.3, the volume sliders.
+
+- `GuiScreenOptionsSounds`: Options has a Music & Sounds... button (in the GuiOptions grid
+  in the vanilla menu; beside Resource Packs... and Done in the glass one), opening a page
+  with the nine `SoundCategory` levels. The vanilla look is button for button: Master across
+  both columns at height/6 - 12, the other eight two by two, Done at height/6 + 168, labels
+  "Master Volume: 100%" or Off. The glass look lists them as slider rows. Escape and Done
+  return to Options; levels save as they change.
+- The master level applies at once to sounds already playing (paulscode's master volume); the
+  category levels apply to sounds started afterwards.
+- Captures: both looks of the new page and of Options with its new button.
+- A/B against 37a010e3da (no audio, as the bench script runs): frame p50 lobby -2.48%, flyover
+  +2.44%; CPU p99 -0.77% / +1.33%. Interface only; the first pair ran during a background spike
+  (+18% / +79%).
+
+Regressions: the page's vanilla geometry, dragging Master off and back to full, its labels,
+Escape back to Options, the glass bottom row inside the sheet.
+Gate: 355 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
