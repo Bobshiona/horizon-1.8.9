@@ -178,8 +178,8 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
       vertex).
 
 ### 2.2 Zero-freeze vanilla resource packs
-- [ ] Resource Packs screen (available/selected, reorder, `pack.mcmeta`, `pack.png`, open
-      folder). Done but `pack.png` icons (HANDOFF 94).
+- [x] Resource Packs screen (available/selected, reorder, `pack.mcmeta`, `pack.png`, open
+      folder). (HANDOFF 94, 95)
 - [ ] Async atlas, font and language rebuild on efficiency cores; atomic swap on a frame
       boundary. Done for textures, animations and the interface (HANDOFF 94); block models
       and colour maps reach meshes at the next world.

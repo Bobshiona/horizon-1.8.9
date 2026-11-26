@@ -3098,3 +3098,24 @@ strip is now two animated frames; a 24x48 one still is not a strip), list clicks
 reordering limits and the Default row, the settings page fitting a 640x480 window.
 Gate: 348 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
+
+## 95. Pack icons
+
+Previous commit: 46e1683e3e. Sprint row 2.2, the packs screen's last open part.
+
+- Each entry on the packs screen shows its `pack.png`, as `ResourcePackListEntry` binds it:
+  the game's own for Default (read under any selected packs), a pack's own, else
+  `misc/unknown_pack`. Icons live in four new interface-atlas layers of sixteen 64-pixel cells,
+  decoded once when first drawn and replaced least-recently-drawn first; larger icons are
+  halved while they divide evenly, others sampled down to fit a cell.
+- Capture: the screen with the Default icon, a 128-pixel and a 16-pixel pack icon, and a pack
+  without one.
+- A/B against 46e1683e3e, three alternating pairs: frame p50 lobby +0.09%, flyover +4.13%;
+  CPU p99 -1.44% / +2.00%. Nothing in the world path changed; a video was playing throughout
+  (both builds near 380-500 FPS rather than the usual 650), so the pairs swing.
+
+Regressions: icon sizing (16, 128, 512x256, 100, 129 pixels and bad data) and cell placement.
+Gate: 349 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2. (One gate run failed
+only because a mesher log line landed in the middle of a test's "ok" line; the rerun passed
+unchanged.)
