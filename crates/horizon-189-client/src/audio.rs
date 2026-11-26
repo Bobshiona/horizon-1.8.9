@@ -299,6 +299,8 @@ pub struct Mixer {
     listener: [f64; 3],
     yaw: f32,
     rate: u32,
+    /// The master level, applied live as paulscode's master volume.
+    master: f32,
 }
 
 /// Left and right gains for a voice: linear attenuation (paulscode's
@@ -347,6 +349,7 @@ impl Mixer {
         let (listener, yaw) = (self.listener, self.yaw);
         for voice in &mut self.voices {
             let (left, right) = gains(voice, listener, yaw);
+            let (left, right) = (left * self.master, right * self.master);
             let samples = &voice.clip.samples;
             let last = samples.len().saturating_sub(1) as f64;
             for frame in out.chunks_mut(channels) {
@@ -396,7 +399,10 @@ impl Audio {
     /// No output and no events: plays nothing.
     pub fn silent() -> Self {
         Self {
-            mixer: Arc::default(),
+            mixer: Arc::new(Mutex::new(Mixer {
+                master: 1.0,
+                ..Mixer::default()
+            })),
             events: HashMap::new(),
             cache: Arc::default(),
             loads: None,
@@ -408,7 +414,7 @@ impl Audio {
 
     pub fn new(sources: Sources, volumes: [f32; 9]) -> Self {
         let mut audio = Self::silent();
-        audio.volumes = volumes;
+        audio.set_volumes(volumes);
         let Some((stream, rate)) = open_output(audio.mixer.clone()) else {
             eprintln!("AUDIO_OUTPUT none");
             return audio;
@@ -460,6 +466,15 @@ impl Audio {
         }
         eprintln!("AUDIO_OUTPUT rate={rate} events={}", audio.events.len());
         audio
+    }
+
+    /// New levels: master at once for everything playing, the categories
+    /// for sounds started from now on.
+    pub fn set_volumes(&mut self, volumes: [f32; 9]) {
+        self.volumes = volumes;
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.master = volumes[0];
+        }
     }
 
     /// Where the camera is and which way it faces.
@@ -522,12 +537,13 @@ impl Audio {
         if entry.stream {
             return;
         }
+        // The master level applies in the mixer.
         let level = if category == 0 {
             1.0
         } else {
             self.volumes[category]
-        } * self.volumes[0];
-        if level <= 0.0 {
+        };
+        if level * self.volumes[0] <= 0.0 {
             return;
         }
         let gain = (volume * entry.volume * level).clamp(0.0, 1.0);
@@ -716,6 +732,7 @@ mod tests {
     fn the_mixer_resamples_drops_finished_voices_and_keeps_28() {
         let mut mixer = Mixer {
             rate: 44_100,
+            master: 1.0,
             ..Mixer::default()
         };
         let request = Request {

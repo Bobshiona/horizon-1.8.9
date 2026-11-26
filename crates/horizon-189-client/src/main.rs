@@ -145,6 +145,7 @@ struct App {
     smoke_menu: bool,
     smoke_hud_editor: bool,
     smoke_settings: bool,
+    smoke_sounds: bool,
     smoke_packs: bool,
     smoke_pack_reload: bool,
     smoke_pause: bool,
@@ -343,6 +344,7 @@ impl App {
         match click {
             pause::Click::Changed => {
                 self.apply_video();
+                self.audio.set_volumes(self.settings.sound);
                 self.save_settings();
             }
             pause::Click::Mods => self.menu.toggle(),
@@ -1434,6 +1436,7 @@ impl ApplicationHandler for App {
                     if self.pause.moved(layout, mouse, &mut self.settings) == pause::Click::Changed
                     {
                         self.apply_video();
+                        self.audio.set_volumes(self.settings.sound);
                     }
                 }
                 if self.menu.editing
@@ -2471,6 +2474,9 @@ impl ApplicationHandler for App {
         if positioned && std::mem::take(&mut self.smoke_settings) {
             self.pause.open_settings();
         }
+        if positioned && std::mem::take(&mut self.smoke_sounds) {
+            self.pause.open_sounds();
+        }
         if positioned && std::mem::take(&mut self.smoke_packs) {
             self.pause.open_packs(&self.settings);
         }
@@ -2744,6 +2750,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_menu: options.smoke_menu,
         smoke_hud_editor: options.smoke_hud_editor,
         smoke_settings: options.smoke_settings,
+        smoke_sounds: options.smoke_sounds,
         smoke_packs: options.smoke_packs,
         smoke_pack_reload: options.smoke_pack_reload,
         smoke_pause: options.smoke_pause,

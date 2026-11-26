@@ -56,6 +56,8 @@ pub struct Options {
     pub smoke_page: usize,
     /// Validation only: open the settings screen once in the world.
     pub smoke_settings: bool,
+    /// Validation only: open Music & Sounds once in the world.
+    pub smoke_sounds: bool,
     /// Validation only: open the resource packs screen once in the world.
     pub smoke_packs: bool,
     /// Validation only: select every pack in the folder and reload once in
@@ -333,6 +335,7 @@ impl Options {
                 "--smoke-launcher" => options.smoke_launcher = true,
                 "--smoke-page" => options.smoke_page = value()?.parse::<usize>()?.min(4),
                 "--smoke-settings" => options.smoke_settings = true,
+                "--smoke-sounds" => options.smoke_sounds = true,
                 "--smoke-packs" => options.smoke_packs = true,
                 "--smoke-pack-reload" => options.smoke_pack_reload = true,
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
@@ -431,6 +434,7 @@ impl Options {
             || options.smoke_pitch.is_some()
             || options.smoke_launcher
             || options.smoke_settings
+            || options.smoke_sounds
             || options.smoke_packs
             || options.smoke_pack_reload
             || options.smoke_hide_gui

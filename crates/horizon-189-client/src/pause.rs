@@ -27,6 +27,8 @@ enum Page {
     Settings,
     /// `GuiScreenResourcePacks`.
     Packs,
+    /// `GuiScreenOptionsSounds`.
+    Sounds,
 }
 
 /// What a click asked the app to do.
@@ -129,6 +131,10 @@ enum Target {
     MenuStyle,
     /// Resource Packs...
     ResourcePacks,
+    /// Music & Sounds...
+    Sounds,
+    /// A `SoundCategory` level slider (`GuiScreenOptionsSounds.Button`).
+    Volume(u8),
     /// A vanilla button this client has nothing behind (translation key).
     Inert(&'static str),
     Done,
@@ -179,11 +185,25 @@ fn vanilla_geometry(page: Page, layout: Layout) -> Geometry {
                 Target::MenuStyle,
                 Target::Slider(Slider::Scale),
                 Target::ResourcePacks,
+                Target::Sounds,
             ];
             for (i, target) in rows.into_iter().enumerate() {
                 let i = i as i32;
                 targets.push((
                     target,
+                    rect(w / 2 - 155 + i % 2 * 160, h / 6 - 12 + 24 * (i >> 1), 150),
+                ));
+            }
+            targets.push((Target::Done, rect(w / 2 - 100, h / 6 + 168, 200)));
+        }
+        Page::Sounds => {
+            // GuiScreenOptionsSounds: Master across both columns, then the
+            // other categories two by two.
+            targets.push((Target::Volume(0), rect(w / 2 - 155, h / 6 - 12, 310)));
+            for category in 1..9u8 {
+                let i = i32::from(category) + 1;
+                targets.push((
+                    Target::Volume(category),
                     rect(w / 2 - 155 + i % 2 * 160, h / 6 - 12 + 24 * (i >> 1), 150),
                 ));
             }
@@ -211,18 +231,22 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
         return vanilla_geometry(page, layout);
     }
     match page {
-        Page::Settings => {
-            let rows = [
-                Target::Slider(Slider::Fov),
-                Target::Slider(Slider::Sensitivity),
-                Target::Slider(Slider::Distance),
-                Target::GuiScale,
-                Target::Bobbing,
-                Target::Fullscreen,
-                Target::Graphics,
-                Target::MenuStyle,
-                Target::Slider(Slider::Scale),
-            ];
+        Page::Settings | Page::Sounds => {
+            let rows: Vec<Target> = if page == Page::Sounds {
+                (0..9).map(Target::Volume).collect()
+            } else {
+                vec![
+                    Target::Slider(Slider::Fov),
+                    Target::Slider(Slider::Sensitivity),
+                    Target::Slider(Slider::Distance),
+                    Target::GuiScale,
+                    Target::Bobbing,
+                    Target::Fullscreen,
+                    Target::Graphics,
+                    Target::MenuStyle,
+                    Target::Slider(Slider::Scale),
+                ]
+            };
             let width = 300.0f32.min(layout.width - 8.0);
             // Rows tighten (never below the GUI-scale picker's 18) to fit short
             // windows; each control stays centred in its row.
@@ -238,7 +262,7 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
                 let y = sheet[1] + 34.0 + index as f32 * row_h;
                 let y = y - inset;
                 let rect = match target {
-                    Target::Slider(_) => {
+                    Target::Slider(_) | Target::Volume(_) => {
                         [sheet[2] - PAD - TRACK, y + 4.0, sheet[2] - PAD, y + 18.0]
                     }
                     Target::GuiScale => [sheet[2] - PAD - 70.0, y + 2.0, sheet[2] - PAD, y + 20.0],
@@ -248,16 +272,24 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
             }
             let bottom = sheet[3] - PAD - BUTTON_H;
             let mid = (sheet[0] + sheet[2]) / 2.0;
-            // Resource Packs... beside Done: no row of its own, so short
-            // windows still fit.
-            targets.push((
-                Target::ResourcePacks,
-                [mid - 124.0, bottom, mid - 4.0, bottom + BUTTON_H],
-            ));
-            targets.push((
-                Target::Done,
-                [mid + 4.0, bottom, mid + 124.0, bottom + BUTTON_H],
-            ));
+            if page == Page::Sounds {
+                targets.push((
+                    Target::Done,
+                    [mid - 60.0, bottom, mid + 60.0, bottom + BUTTON_H],
+                ));
+            } else {
+                // Resource Packs... and Music & Sounds... beside Done: no
+                // rows of their own, so short windows still fit.
+                let third = ((sheet[2] - sheet[0] - 2.0 * PAD - 12.0) / 3.0).floor();
+                let left = sheet[0] + PAD;
+                for (index, target) in [Target::ResourcePacks, Target::Sounds, Target::Done]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let x = left + index as f32 * (third + 6.0);
+                    targets.push((target, [x, bottom, x + third, bottom + BUTTON_H]));
+                }
+            }
             Geometry { sheet, targets }
         }
         _ => {
@@ -296,6 +328,8 @@ pub struct Pause {
     /// Open animation, 0 to 1.
     shown: f32,
     drag: Option<Slider>,
+    /// The sound level slider being dragged.
+    drag_volume: Option<u8>,
     /// The second option leaves for the launcher rather than quitting.
     pub leave_to_launcher: bool,
 }
@@ -314,6 +348,12 @@ impl Pause {
     pub fn open_settings(&mut self) {
         self.page = Page::Settings;
         self.shown = 0.0;
+    }
+
+    /// Straight to Music & Sounds (validation captures).
+    pub fn open_sounds(&mut self) {
+        self.page = Page::Sounds;
+        self.shown = 1.0;
     }
 
     /// `GuiScreenResourcePacks` over the packs folder as it is now.
@@ -335,8 +375,9 @@ impl Pause {
     /// Escape: settings back to the menu, the menu back to the game.
     pub fn back(&mut self) {
         self.drag = None;
+        self.drag_volume = None;
         self.page = match self.page {
-            Page::Packs => Page::Settings,
+            Page::Packs | Page::Sounds => Page::Settings,
             Page::Settings => Page::Menu,
             _ => Page::Closed,
         };
@@ -418,8 +459,20 @@ impl Pause {
                 Click::Leave
             }
             Target::Done => {
-                self.page = Page::Menu;
+                self.page = if self.page == Page::Sounds {
+                    Page::Settings
+                } else {
+                    Page::Menu
+                };
                 Click::Nothing
+            }
+            Target::Sounds => {
+                self.page = Page::Sounds;
+                Click::Nothing
+            }
+            Target::Volume(category) => {
+                self.drag_volume = Some(category);
+                self.moved(layout, mouse, settings)
             }
             Target::Slider(slider) => {
                 self.drag = Some(slider);
@@ -455,6 +508,9 @@ impl Pause {
 
     /// Dragging a slider.
     pub fn moved(&mut self, layout: Layout, mouse: (f32, f32), settings: &mut Settings) -> Click {
+        if let Some(category) = self.drag_volume {
+            return self.moved_volume(layout, mouse, settings, category);
+        }
         let Some(slider) = self.drag else {
             return Click::Nothing;
         };
@@ -478,9 +534,39 @@ impl Pause {
         }
     }
 
+    /// `GuiScreenOptionsSounds.Button.mouseDragged`.
+    fn moved_volume(
+        &mut self,
+        layout: Layout,
+        mouse: (f32, f32),
+        settings: &mut Settings,
+        category: u8,
+    ) -> Click {
+        let vanilla = settings.toggles.vanilla_menu;
+        let g = geometry(self.page, layout, vanilla);
+        let target = Target::Volume(category);
+        let Some(&(_, rect)) = g.targets.iter().find(|(t, _)| *t == target) else {
+            return Click::Nothing;
+        };
+        let t = if vanilla {
+            (mouse.0 - (rect[0] + 4.0)) / (rect[2] - rect[0] - 8.0)
+        } else {
+            (mouse.0 - rect[0]) / (rect[2] - rect[0])
+        };
+        let level = &mut settings.sound[usize::from(category)];
+        let before = *level;
+        *level = t.clamp(0.0, 1.0);
+        if *level == before {
+            Click::Nothing
+        } else {
+            Click::Changed
+        }
+    }
+
     /// True when a slider drag ended (save now).
     pub fn release(&mut self) -> bool {
-        self.drag.take().is_some()
+        let volume = self.drag_volume.take().is_some();
+        self.drag.take().is_some() || volume
     }
 
     pub fn draw(&self, canvas: &mut Canvas<'_>, settings: &Settings, mouse: (f32, f32)) {
@@ -510,6 +596,7 @@ impl Pause {
         let translate = |key: &str| res.translate(key).to_owned();
         let title = match self.page {
             Page::Settings => translate("options.title"),
+            Page::Sounds => translate("options.sounds.title"),
             _ => translate("menu.game"),
         };
         canvas.system_text(
@@ -547,30 +634,21 @@ impl Pause {
                 Target::Done => button(canvas, rect, &translate("gui.done"), hover, true, e),
                 Target::Slider(slider) => {
                     let label = slider.label(video, &translate);
-                    row_label(canvas, g.sheet[0] + PAD, rect, &label, e);
-                    let mut track = Panel::new(rect[0], rect[1] + 4.0, rect[2], rect[3] - 4.0);
-                    track.radius = 3.0;
-                    track.shadow = 0.0;
-                    track.tint = [0.42, 0.44, 0.50, 0.70];
-                    track.opacity = e;
-                    canvas.glass(track);
-                    let t = slider.get(video).clamp(0.0, 1.0);
-                    let x = rect[0] + t * (rect[2] - rect[0]);
-                    let mut fill =
-                        Panel::new(rect[0], rect[1] + 4.0, x.max(rect[0] + 6.0), rect[3] - 4.0);
-                    fill.radius = 3.0;
-                    fill.shadow = 0.0;
-                    fill.tint = [0.04, 0.47, 1.0, 0.9];
-                    fill.opacity = e;
-                    canvas.glass(fill);
-                    let mut knob = Panel::new(x - 5.0, rect[1] - 1.0, x + 5.0, rect[3] + 1.0);
-                    knob.radius = 5.0;
-                    knob.shadow = 0.25;
-                    knob.highlight = 0.2;
-                    knob.tint = [1.0, 1.0, 1.0, 0.96];
-                    knob.opacity = e;
-                    canvas.glass(knob);
+                    glass_slider(canvas, g.sheet[0], rect, &label, slider.get(video), e);
                 }
+                Target::Volume(category) => {
+                    let label = volume_label(settings, category, &translate);
+                    let level = settings.sound[usize::from(category)];
+                    glass_slider(canvas, g.sheet[0], rect, &label, level, e);
+                }
+                Target::Sounds => button(
+                    canvas,
+                    rect,
+                    &format!("{}...", translate("options.sounds").trim_end_matches('.')),
+                    hover,
+                    false,
+                    e,
+                ),
                 Target::GuiScale => {
                     row_label(
                         canvas,
@@ -634,6 +712,7 @@ impl Pause {
         let translate = |key: &str| res.translate(key).to_owned();
         let (title, title_y) = match self.page {
             Page::Settings => (translate("options.title"), 15.0),
+            Page::Sounds => (translate("options.sounds.title"), 15.0),
             _ => (translate("menu.game"), 40.0),
         };
         let (gw, _) = gui_size(canvas.layout);
@@ -684,35 +763,92 @@ impl Pause {
                 Target::MenuStyle => "Menu Style: Vanilla".to_owned(),
                 Target::ResourcePacks => translate("options.resourcepack"),
                 Target::Slider(slider) => {
-                    // GuiOptionSlider: the disabled texture behind, the knob,
-                    // then the text.
-                    let [x, y, width, height] = size;
-                    let half = (width / 2.0).floor();
-                    let white = [1.0; 4];
-                    canvas.sprite(WIDGETS, x, y, 0.0, 46.0, half, height, white);
-                    canvas.sprite(
-                        WIDGETS,
-                        x + half,
-                        y,
-                        200.0 - half,
-                        46.0,
-                        half,
-                        height,
-                        white,
-                    );
-                    let knob = x + (slider.get(video).clamp(0.0, 1.0) * (width - 8.0)).floor();
-                    canvas.sprite(WIDGETS, knob, y, 0.0, 66.0, 4.0, 20.0, white);
-                    canvas.sprite(WIDGETS, knob + 4.0, y, 196.0, 66.0, 4.0, 20.0, white);
-                    let color = if hover { 0xFFFF_FFA0 } else { 0xFFE0_E0E0 };
                     let text = slider.label(video, &translate);
-                    canvas.centered(&text, x + half, y + 6.0, color, true);
+                    vanilla_slider(canvas, size, slider.get(video), &text, hover);
                     continue;
                 }
+                Target::Volume(category) => {
+                    let text = volume_label(settings, category, &translate);
+                    let level = settings.sound[usize::from(category)];
+                    vanilla_slider(canvas, size, level, &text, hover);
+                    continue;
+                }
+                Target::Sounds => translate("options.sounds"),
             };
             let enabled = !matches!(target, Target::Inert(_));
             button_widget(canvas, &label, size, enabled, hover && enabled);
         }
     }
+}
+
+/// A liquid-glass slider row: its label, the track, the filled part and
+/// the knob.
+fn glass_slider(
+    canvas: &mut Canvas<'_>,
+    sheet_x: f32,
+    rect: [f32; 4],
+    label: &str,
+    value: f32,
+    e: f32,
+) {
+    row_label(canvas, sheet_x + PAD, rect, label, e);
+    let mut track = Panel::new(rect[0], rect[1] + 4.0, rect[2], rect[3] - 4.0);
+    track.radius = 3.0;
+    track.shadow = 0.0;
+    track.tint = [0.42, 0.44, 0.50, 0.70];
+    track.opacity = e;
+    canvas.glass(track);
+    let t = value.clamp(0.0, 1.0);
+    let x = rect[0] + t * (rect[2] - rect[0]);
+    let mut fill = Panel::new(rect[0], rect[1] + 4.0, x.max(rect[0] + 6.0), rect[3] - 4.0);
+    fill.radius = 3.0;
+    fill.shadow = 0.0;
+    fill.tint = [0.04, 0.47, 1.0, 0.9];
+    fill.opacity = e;
+    canvas.glass(fill);
+    let mut knob = Panel::new(x - 5.0, rect[1] - 1.0, x + 5.0, rect[3] + 1.0);
+    knob.radius = 5.0;
+    knob.shadow = 0.25;
+    knob.highlight = 0.2;
+    knob.tint = [1.0, 1.0, 1.0, 0.96];
+    knob.opacity = e;
+    canvas.glass(knob);
+}
+
+/// `GuiOptionSlider` from widgets.png: the disabled texture behind, the
+/// knob, then the text.
+fn vanilla_slider(canvas: &mut Canvas<'_>, size: [f32; 4], value: f32, text: &str, hover: bool) {
+    let [x, y, width, height] = size;
+    let half = (width / 2.0).floor();
+    let white = [1.0; 4];
+    canvas.sprite(WIDGETS, x, y, 0.0, 46.0, half, height, white);
+    canvas.sprite(
+        WIDGETS,
+        x + half,
+        y,
+        200.0 - half,
+        46.0,
+        half,
+        height,
+        white,
+    );
+    let knob = x + (value.clamp(0.0, 1.0) * (width - 8.0)).floor();
+    canvas.sprite(WIDGETS, knob, y, 0.0, 66.0, 4.0, 20.0, white);
+    canvas.sprite(WIDGETS, knob + 4.0, y, 196.0, 66.0, 4.0, 20.0, white);
+    let color = if hover { 0xFFFF_FFA0 } else { 0xFFE0_E0E0 };
+    canvas.centered(text, x + half, y + 6.0, color, true);
+}
+
+/// `GuiScreenOptionsSounds.Button`: "Master Volume: 100%", or Off.
+fn volume_label(settings: &Settings, category: u8, translate: &dyn Fn(&str) -> String) -> String {
+    let name = crate::audio::CATEGORIES[usize::from(category)];
+    let level = settings.sound[usize::from(category)];
+    let value = if level <= 0.0 {
+        translate("options.off")
+    } else {
+        format!("{}%", (level * 100.0) as i32)
+    };
+    format!("{}: {value}", translate(&format!("soundCategory.{name}")))
 }
 
 fn row_label(canvas: &mut Canvas<'_>, x: f32, rect: [f32; 4], label: &str, opacity: f32) {
@@ -920,6 +1056,63 @@ mod tests {
                     assert!(r[0] >= g.sheet[0] && r[2] <= g.sheet[2] && r[3] <= g.sheet[3]);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn music_and_sounds_lays_out_like_gui_screen_options_sounds() {
+        let layout = Layout::new((854, 480), 1.0, 2);
+        let mut settings = Settings::default();
+        settings.toggles.vanilla_menu = true;
+        let mut pause = Pause::default();
+        pause.open_settings();
+        let g = geometry(Page::Settings, layout, true);
+        let (_, sounds) = *g
+            .targets
+            .iter()
+            .find(|(t, _)| *t == Target::Sounds)
+            .unwrap();
+        assert_eq!(sounds, [58.0, 148.0, 208.0, 168.0]);
+        pause.press(layout, centre(sounds), &mut settings);
+        assert_eq!(pause.page, Page::Sounds);
+        let g = geometry(Page::Sounds, layout, true);
+        let at = |c: u8| {
+            g.targets
+                .iter()
+                .find(|(t, _)| *t == Target::Volume(c))
+                .unwrap()
+                .1
+        };
+        assert_eq!(at(0), [58.0, 28.0, 368.0, 48.0]);
+        assert_eq!(at(1), [58.0, 52.0, 208.0, 72.0]);
+        assert_eq!(at(2), [218.0, 52.0, 368.0, 72.0]);
+        assert_eq!(at(8), [218.0, 124.0, 368.0, 144.0]);
+        // Dragging Master to the knob's left end turns it off.
+        let master = at(0);
+        assert_eq!(
+            pause.press(layout, (master[0] + 4.0, master[1] + 5.0), &mut settings),
+            Click::Changed
+        );
+        assert_eq!(settings.sound[0], 0.0);
+        let words = |key: &str| key.to_owned();
+        assert_eq!(
+            volume_label(&settings, 0, &words),
+            "soundCategory.master: options.off"
+        );
+        pause.moved(layout, (master[2] - 4.0, master[1] + 5.0), &mut settings);
+        assert_eq!(settings.sound[0], 1.0);
+        assert_eq!(
+            volume_label(&settings, 0, &words),
+            "soundCategory.master: 100%"
+        );
+        assert!(pause.release());
+        // Escape and Done both lead back to the options.
+        pause.back();
+        assert_eq!(pause.page, Page::Settings);
+        let glass = geometry(Page::Settings, layout, false);
+        for target in [Target::ResourcePacks, Target::Sounds, Target::Done] {
+            let rect = glass.targets.iter().find(|(t, _)| *t == target).unwrap().1;
+            assert!(rect[0] >= glass.sheet[0] && rect[2] <= glass.sheet[2]);
         }
     }
 }
