@@ -173,16 +173,19 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
 - [x] Instanced block entities with culling: chests (single, double, lid), ender chests, signs
       (formatted text), skulls, banners, beds. (HANDOFF 90, 91)
 - [ ] Sky (sun, moon, stars, day-night colors), weather (rain, snow), smooth lighting with
-      per-vertex AO. Done: the sky (HANDOFF 92). Open: weather; the night lightmap and smooth
-      lighting, which need sky and block light per vertex (a wider terrain vertex).
+      per-vertex AO. Done: the sky (HANDOFF 92), rain and snow (HANDOFF 93). Open: the night
+      lightmap and smooth lighting, which need sky and block light per vertex (a wider terrain
+      vertex).
 
 ### 2.2 Zero-freeze vanilla resource packs
 - [ ] Resource Packs screen (available/selected, reorder, `pack.mcmeta`, `pack.png`, open
-      folder).
+      folder). Done but `pack.png` icons (HANDOFF 94).
 - [ ] Async atlas, font and language rebuild on efficiency cores; atomic swap on a frame
-      boundary.
+      boundary. Done for textures, animations and the interface (HANDOFF 94); block models
+      and colour maps reach meshes at the next world.
 - [ ] Stacked overrides (blocks, items, models, GUI, fonts, colormaps, sky); server packs
-      (S48/C19) with SHA-1 cache and rollback on disconnect.
+      (S48/C19) with SHA-1 cache and rollback on disconnect. Stacking and HD averaging done
+      (HANDOFF 94); server packs open.
 - [ ] Mipmap alpha-bleed padding and anisotropic filtering (off, 2-16x).
 - [ ] OptiFine pack features baked at load: CTM, CIT, custom skies, clear water, emissive.
 

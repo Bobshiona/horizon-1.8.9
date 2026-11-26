@@ -3029,3 +3029,72 @@ Regressions: celestial angle, sky and fog colours, sunrise, star brightness, moo
 superflat case; the star field's count and radius from Java's random sequence.
 Gate: 341 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
+
+## 93. Rain and snow, weather in the sky and fog
+
+Previous commit: 3558e0e1c9. Sprint row 2.1 (sky, weather, lighting), weather part.
+
+- Change Game State (S2B) drives weather as `NetHandlerPlayClient.handleChangeGameState` does:
+  1 starts rain at strength 0, 2 stops it at strength 1, 7 and 8 set the rain and thunder
+  strengths. The client never steps weather itself (`World.updateWeather` returns early on the
+  client). Weather resets on Join Game and on a Respawn into another dimension.
+- `EntityRenderer.renderRainSnow` (`weather.rs`, `weather.wgsl`): the 5- or 10-block column
+  ring around the camera, each column from the precipitation height (the top solid or liquid
+  block, empty sections skipped) to the camera's height plus the radius. Dry biomes draw
+  nothing; biomes under 0.15 temperature at that height snow. Scroll offsets and jitter come
+  from `java.util.Random` with `nextGaussian`, as vanilla seeds them, and each column is lit
+  from the block light there.
+- The sky and fog follow `getSkyColor` and `getFogColor` under weather: rain greys the sky
+  toward its luminance, thunder darkens it further, and the sun, moon and stars fade with the
+  clear-sky factor. The sunrise blend now comes before the distance blend toward the sky, as
+  `updateFogColor` orders them.
+- Rain costs about 8 us of CPU a frame while it falls and nothing otherwise.
+- Captures on the reference server: rain over the superflat plains and the greyed sky (snow is
+  covered by the temperature tests; the flat world has no cold biome).
+- A/B against 3558e0e1c9 together with section 94's commits, three alternating pairs: frame
+  p50 lobby -10.84%, flyover -1.50%; CPU p99 -17.23% / +3.24%. A video was playing on the
+  machine for every run, so the pairs swing (-25% to +26%); two earlier tries of this commit
+  alone failed on that noise (lobby +8.47%, flyover +5.74% medians with pairs both ways). The
+  bench trace has no rain, so nothing here should cost anything in it.
+
+Regressions: the S2B state machine, precipitation height over empty sections, dry and snowy
+biomes, the Gaussian jitter sequence and the weather-greyed sky colour.
+
+## 94. Resource packs: stacking, HD averaging, the packs screen and live reload
+
+Previous commit: 1c2ac5a2e7. Sprint row 2.2, the screen and the stack.
+
+- Packs live in `resourcepacks` beside the screenshots. A folder or zip with a `pack.mcmeta`
+  is a pack (`horizon-assets-189/src/packs.rs`); its name, description and format come from
+  the metadata. The selected stack (highest priority first) layers over the game files, so a
+  pack replaces only what it has. Settings keep the names; `--resource-pack PATH` (repeatable)
+  overrides them for one run.
+- HD packs: block sprites and animation strips are box-averaged to 16 pixels, and entity, GUI
+  and font sheets to the game's own size, so every UV laid out in vanilla pixels still lines
+  up (a 32x or 64x pack looks like its own art at 16x). Font pages from a pack are averaged
+  the same way instead of being dropped.
+- The packs screen is `GuiScreenResourcePacks`: dirt background, the two 200-wide lists of
+  36-pixel entries, names trimmed to 157 pixels with two lines of description, Default last
+  on the right, incompatible packs on red with the hover text, the `resource_packs.png` arrows
+  on hover. As vanilla, only the icon takes clicks: an available pack's moves it on top of
+  the selected list; a selected pack's left half removes it, the right half's top and bottom
+  move it. The wheel scrolls a list. Open Resource Pack Folder opens it in Finder; Done saves
+  and reloads only if the stack changed. Reached from Settings (beside Done in the glass
+  menu, in the GuiOptions grid in the vanilla one).
+- Reload never blocks a frame: the new registry builds on a background thread and swaps in at
+  the next event-loop turn. Terrain and entity textures, animations and rain and snow are
+  rewritten in place, so loaded chunks stay; the interface atlas rebuilds. Block models and
+  colour maps from the new stack reach meshes at the next world (the meshers keep the
+  registry they started with; Graphics changes reach both).
+- Not yet: pack icons (a tile with the initial stands in for `pack.png`), server packs, mip
+  padding and anisotropic filtering, OptiFine features.
+- Captures: the packs screen with three test packs (a 16x, a 64x and a long description),
+  and the world after `--smoke-pack-reload` selects them all, retextured live
+  (`PACKS_RELOADED packs=3 swapped=true`).
+- A/B: shared with section 93 (one run over both).
+
+Regressions: metadata parsing, stacking order and name safety, HD strip averaging (a 32x64
+strip is now two animated frames; a 24x48 one still is not a strip), list clicks by icon half,
+reordering limits and the Default row, the settings page fitting a 640x480 window.
+Gate: 348 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
