@@ -3185,3 +3185,25 @@ Regressions: the page's vanilla geometry, dragging Master off and back to full, 
 Escape back to Options, the glass bottom row inside the sheet.
 Gate: 355 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
+
+## 98. Fall, landing, eating and drinking sounds
+
+Previous commit: 8a9f1086d1. Sprint row 2.3, the local player's remaining sounds.
+
+- `updateFallState` now reports each landing from the physics (`Player.landing`): the fall
+  distance, `Block.onFallenUpon`'s multiplier (hay 0.2, slime 0 unless sneaking) and the
+  block under the feet; players who may fly never fall (`EntityPlayer.fall`). The client plays
+  `EntityLivingBase.fall` for it: past three blocks less the Jump Boost levels, the small or
+  (over four) big fall sound, then the block's step sound at half volume and 0.75 pitch.
+- `EntityPlayer.onUpdate`'s `updateItemUse` while eating or drinking: from 25 ticks left,
+  every fourth tick, `random.eat` (volume 0.5 or 1) or `random.drink` (potions, milk).
+- Checked on the reference server: survival, teleported 12 blocks up: `damage/fallbig`, the
+  grass landing step and the hurt sound load and play.
+- A/B against 8a9f1086d1: frame p50 lobby -2.20%, flyover -3.48%; CPU p99 -4.56% / +0.79%. A
+  first run failed on flyover (+23.06% p50, +40.98% CPU p99) with pairs from +6% to +217%
+  while a video played; the per-run averages were within 6%, and the rerun above passed.
+
+Regressions: landing on stone and hay with its multiplier and the block under the feet,
+and none for a player who may fly.
+Gate: 356 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
