@@ -932,6 +932,46 @@ pub fn inventory(
     }
 }
 
+/// `GuiPlayerTabOverlay.drawScoreboardValues` for a hearts objective:
+/// a heart a two points, at least ten containers, squeezed to fit the
+/// column; past four pixels a heart, the value as "10.0hp" instead, green
+/// to red. (Vanilla also blinks the row for a second after a change.)
+fn tab_hearts(canvas: &mut Canvas<'_>, points: i32, start: i32, end: i32, top: i32) {
+    let shown = (points.max(0) as f32 / 2.0).ceil() as i32;
+    let slots = (points / 2).max(10);
+    if shown <= 0 {
+        return;
+    }
+    let step = ((end - start - 4) as f32 / slots as f32).min(9.0);
+    let white = [1.0; 4];
+    if step > 3.0 {
+        for slot in shown..slots {
+            let x = start as f32 + slot as f32 * step;
+            canvas.sprite(ICONS, x, top as f32, 16.0, 0.0, 9.0, 9.0, white);
+        }
+        for slot in 0..shown {
+            let x = start as f32 + slot as f32 * step;
+            canvas.sprite(ICONS, x, top as f32, 16.0, 0.0, 9.0, 9.0, white);
+            let row = if slot >= 10 { 108.0 } else { 0.0 };
+            if slot * 2 + 1 < points {
+                canvas.sprite(ICONS, x, top as f32, 52.0 + row, 0.0, 9.0, 9.0, white);
+            } else if slot * 2 + 1 == points {
+                canvas.sprite(ICONS, x, top as f32, 61.0 + row, 0.0, 9.0, 9.0, white);
+            }
+        }
+    } else {
+        let share = (points as f32 / 20.0).clamp(0.0, 1.0);
+        let colour =
+            0xFF00_0000 | (((1.0 - share) * 255.0) as u32) << 16 | ((share * 255.0) as u32) << 8;
+        let mut text = format!("{:?}", points as f32 / 2.0);
+        if end - canvas.res.width(&format!("{text}hp")) >= start {
+            text.push_str("hp");
+        }
+        let x = (end + start) / 2 - canvas.res.width(&text) / 2;
+        canvas.text(&text, x as f32, top as f32, colour, true);
+    }
+}
+
 /// `GuiPlayerTabOverlay.renderPlayerlist`: header, columns of at most 20
 /// players with faces, list-slot scores and ping bars, then the footer.
 fn tab_list(canvas: &mut Canvas<'_>, frame: &Frame<'_>) {
@@ -1041,13 +1081,17 @@ fn tab_list(canvas: &mut Canvas<'_>, frame: &Frame<'_>) {
             );
         } else {
             canvas.text(&name, x as f32, top as f32, 0xFFFF_FFFF, true);
-            if let Some((objective, _)) = objective {
+            if let Some((objective, info)) = objective {
                 let start = x + name_width + 1;
                 if score_space > 5 {
                     let points = board.points(objective, &entry.name).unwrap_or(0);
-                    let value = format!("§e{points}");
-                    let value_x = start + score_space - res.width(&value);
-                    canvas.text(&value, value_x as f32, top as f32, 0xFFFF_FFFF, true);
+                    if info.hearts {
+                        tab_hearts(canvas, points, start, start + score_space, top);
+                    } else {
+                        let value = format!("§e{points}");
+                        let value_x = start + score_space - res.width(&value);
+                        canvas.text(&value, value_x as f32, top as f32, 0xFFFF_FFFF, true);
+                    }
                 }
             }
         }
