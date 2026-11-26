@@ -196,8 +196,8 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
 
 ### 2.4 Remaining handoff and Hypixel parity fixes
 - [ ] Crafting grid consumes ingredients on screen when taking the result.
-- [ ] Heart symbols and bold formatting on Hypixel nametags and holograms.
-- [ ] Tab-list health objectives as hearts.
+- [x] Heart symbols and bold formatting on Hypixel nametags and holograms. (HANDOFF 99)
+- [x] Tab-list health objectives as hearts. (HANDOFF 100; the change blink is open)
 - [ ] Full chunk, entity and skin-cache cleanup on every lobby or server transfer.
 
 ## Phase 3: Complete vanilla ESC menu, every option, function keys

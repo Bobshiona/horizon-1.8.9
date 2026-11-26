@@ -3207,3 +3207,43 @@ Regressions: landing on stone and hay with its multiplier and the block under th
 and none for a player who may fly.
 Gate: 356 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
+
+## 99. Name tags: bold, italic and unicode glyphs
+
+Previous commit: 7c02a443b1. Sprint row 2.4, Hypixel name tags and holograms.
+
+- World labels (player name tags, the below-name score, custom names on mobs and armour-stand
+  holograms) now draw as `FontRenderer.renderStringAtPos` does: colour codes reset the style,
+  `§l` draws each glyph twice a pixel apart and adds a pixel, `§o` leans. Labels centre on
+  `getStringWidth` with its quirk that a colour code does not end bold, and the backing uses
+  the same width.
+- Unicode glyphs (Hypixel's hearts, stars, swords) draw from their `unicode_page_XX` at the
+  columns `glyph_sizes.bin` gives, half size, as `renderUnicodeChar` does. Pages a frame's
+  labels need are found from the names, team affixes and the below-name title, decoded once
+  and kept in eight new entity-array layers at 128 pixels (each 2x2 keeps its strongest
+  texel, so thin strokes survive), least recently used first out. A pack reload empties them.
+- The sign-text path keeps its ascii glyphs; the old label line and its byte-for-byte test
+  against a reference copy are gone with it.
+- Capture: armour stands named "§c§l20 ❤ §rBob ✫" and "§aplain §lbold§r §oitalic".
+
+Regressions: unicode and quirky bold widths, bold doubling, a colour code ending bold, the
+heart's layer and texels, an unloaded page drawing nothing, the pages a label needs.
+
+## 100. Tab-list hearts
+
+Previous commit: 778cc8bdc7. Sprint row 2.4.
+
+- A list-slot objective of the health type draws as `drawScoreboardValues` does: a container
+  per two points (at least ten), full and half hearts (the second row's colours past ten),
+  squeezed to the 90-pixel score column; at four pixels a heart or less, the value as "10.0hp"
+  from green to red. Not yet: the second of blinking after a change.
+- Capture: a `health` objective in the list slot beside the player's own three hearts.
+- A/B for 99 and 100 together against 7c02a443b1: frame p50 lobby +4.41%, flyover +4.04%; CPU
+  p99 +2.85% / +13.43%. The machine was very busy (both builds near 220-300 FPS, single pairs to
+  +81%); a first run failed on flyover p50 (+7.36%, pairs +28%, -2.7%, +7.4%) and this one
+  passed. The trace's labels are ascii; the added per-frame work is a scan of names for
+  unicode pages. Worth rechecking on a quiet machine.
+
+Gate: 356 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2. (One gate run failed only
+because a log line landed between a test's name and its "ok"; the unchanged rerun passed.)
