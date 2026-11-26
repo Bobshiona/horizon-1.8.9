@@ -291,6 +291,8 @@ fn inside(rect: [f32; 4], (x, y): (f32, f32)) -> bool {
 pub struct Pause {
     page: Page,
     packs: Option<packs_screen::Screen>,
+    /// A button took the last press: `GuiButton.playPressSound`.
+    pub pressed: bool,
     /// Open animation, 0 to 1.
     shown: f32,
     drag: Option<Slider>,
@@ -355,7 +357,12 @@ impl Pause {
             self.page = Page::Settings;
             return Click::Nothing;
         };
-        match screen.press(layout, mouse) {
+        let action = screen.press(layout, mouse);
+        self.pressed = matches!(
+            action,
+            packs_screen::Action::OpenFolder | packs_screen::Action::Done
+        );
+        match action {
             packs_screen::Action::OpenFolder => Click::OpenFolder,
             packs_screen::Action::Done => {
                 let selected = std::mem::take(&mut screen.selected);
@@ -391,6 +398,7 @@ impl Pause {
         else {
             return Click::Nothing;
         };
+        self.pressed = !matches!(target, Target::Inert(_));
         let video = &mut settings.video;
         match target {
             Target::Resume => {

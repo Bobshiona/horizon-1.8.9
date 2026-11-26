@@ -335,3 +335,36 @@ fn the_player_updates_over_terrain_the_server_has_not_sent() {
     player.set_position(0.0, 4.0, -30_000_000.5);
     assert!(!player.updates());
 }
+
+#[test]
+fn steps_sound_every_five_thirds_of_a_block_and_not_while_sneaking() {
+    // Entity.moveEntity: 0.6 of the distance a move, a step each time it
+    // passes the next whole number.
+    let world = world(&[]);
+    let walk = |sneak: bool| {
+        let mut player = standing(&world, 0.5, 4.0, 0.5);
+        let keys = Keys {
+            forward: true,
+            sneak,
+            ..Keys::default()
+        };
+        let (start, mut steps) = (player.position[2], Vec::new());
+        for _ in 0..60 {
+            player.tick(&world, keys);
+            if let Some(step) = player.step.take() {
+                steps.push((player.position[2] - start, step));
+            }
+        }
+        (player.position[2] - start, steps)
+    };
+    let (walked, steps) = walk(false);
+    assert_eq!(steps.len(), (walked * 0.6) as usize);
+    assert!(
+        steps
+            .iter()
+            .all(|(_, step)| step.at[1] == 3 && step.swim.is_none())
+    );
+    assert!((steps[0].0 - 1.0 / 0.6).abs() < 0.22, "{}", steps[0].0);
+    let (_, sneaking) = walk(true);
+    assert!(sneaking.is_empty());
+}

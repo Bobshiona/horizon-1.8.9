@@ -164,6 +164,31 @@ impl Dispatch {
     }
 }
 
+/// S29 Sound Effect: `handleSoundEffect` plays it at the position given.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sound {
+    pub name: String,
+    pub at: [f64; 3],
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// Name, position in eighths of a block, volume, pitch times 63.
+pub fn decode_sound(fields: &[u8]) -> io::Result<Sound> {
+    use std::io::Read;
+    let mut input = std::io::Cursor::new(fields);
+    let name = horizon_protocol_47::read_string(&mut input, 256)?;
+    let mut rest = [0u8; 17];
+    input.read_exact(&mut rest)?;
+    let int = |at: usize| i32::from_be_bytes([rest[at], rest[at + 1], rest[at + 2], rest[at + 3]]);
+    Ok(Sound {
+        name,
+        at: [0, 4, 8].map(|at| f64::from(int(at)) / 8.0),
+        volume: f32::from_be_bytes([rest[12], rest[13], rest[14], rest[15]]),
+        pitch: f32::from(rest[16]) / 63.0,
+    })
+}
+
 /// State the window thread and the simulation exchange every frame/tick.
 #[derive(Default)]
 pub struct Shared {
@@ -236,6 +261,8 @@ pub struct Shared {
     /// local player's own breaks), for break particles.
     pub visuals: Vec<crate::particles::Event>,
     pub breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
+    /// Named sounds (S29) the window has not played yet.
+    pub sounds: Vec<Sound>,
     /// Worn armour, helmet first, for the armour HUD.
     pub armor: [Option<horizon_protocol_47::nbt::Item>; 4],
     /// Active effects: ID, amplifier and remaining ticks (counted down each
@@ -620,6 +647,30 @@ fn run(
     result
 }
 
+/// A sound the local player makes itself (`EntityPlayerSP.playSound` and
+/// the controller's), queued for the window.
+fn push_sound(state: &mut Shared, name: impl Into<String>, at: [f64; 3], volume: f32, pitch: f32) {
+    if state.sounds.len() < 64 {
+        state.sounds.push(Sound {
+            name: name.into(),
+            at,
+            volume,
+            pitch,
+        });
+    }
+}
+
+/// `rand.nextFloat() - rand.nextFloat()` for sound pitches.
+fn jitter(seed: &mut u64) -> f32 {
+    let mut next = || {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        (*seed >> 40) as f32 / (1u64 << 24) as f32
+    };
+    next() - next()
+}
+
 fn lock(shared: &Mutex<Shared>) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
     shared
         .lock()
@@ -832,6 +883,7 @@ fn run_actor(
     let mut entities = Entities::default();
     let mut inventory = crate::inventory::Inventory::default();
     let mut controller = crate::gameplay::Controller::default();
+    let mut sound_seed = 0x9e37_79b9_7f4a_7c15u64;
     let mut game_mode = 0;
     let mut vitals = crate::gameplay::Vitals::default();
     let mut potions: Vec<(u8, i8, i32)> = Vec::new();
@@ -1143,6 +1195,7 @@ fn run_actor(
                             state.effects.clear();
                             state.visuals.clear();
                             state.breaks.clear();
+                            state.sounds.clear();
                         }
                     }
                     play::Packet::Other { id: 0x38, fields } => {
@@ -1238,6 +1291,18 @@ fn run_actor(
                                         value as i32,
                                     );
                                 }
+                                // An arrow of ours hit a player.
+                                6 => {
+                                    let [x, y, z] = player.position;
+                                    let eye = f64::from(horizon_physics_189::player::EYE_HEIGHT);
+                                    push_sound(
+                                        &mut *lock(shared)?,
+                                        "random.successful_hit",
+                                        [x, y + eye, z],
+                                        0.18,
+                                        0.45,
+                                    );
+                                }
                                 7 => lock(shared)?.weather.rain = value.clamp(0.0, 1.0),
                                 8 => lock(shared)?.weather.thunder = value.clamp(0.0, 1.0),
                                 _ => {}
@@ -1314,10 +1379,20 @@ fn run_actor(
                     {
                         if let Some(packet) = entity_packets::decode(id, fields)? {
                             match &packet {
+                                // handleStatusUpdate(2): EntityPlayerSP
+                                // plays its own hurt sound.
                                 entity_packets::EntityPacket::Status { id, status: 2 }
                                     if *id == entity_id =>
                                 {
                                     hand.hurt();
+                                    let pitch = jitter(&mut sound_seed) * 0.2 + 1.0;
+                                    push_sound(
+                                        &mut *lock(shared)?,
+                                        "game.player.hurt",
+                                        player.position,
+                                        1.0,
+                                        pitch,
+                                    );
                                 }
                                 // EntityPlayer.handleStatusUpdate 22 and 23.
                                 entity_packets::EntityPacket::Status {
@@ -1330,6 +1405,14 @@ fn run_actor(
                                 entity_packets::EntityPacket::Status { id, status: 3 }
                                     if *id == entity_id =>
                                 {
+                                    let pitch = jitter(&mut sound_seed) * 0.2 + 1.0;
+                                    push_sound(
+                                        &mut *lock(shared)?,
+                                        "game.player.die",
+                                        player.position,
+                                        1.0,
+                                        pitch,
+                                    );
                                     player.on_death();
                                 }
                                 entity_packets::EntityPacket::Animation {
@@ -1367,6 +1450,13 @@ fn run_actor(
                             player.set_velocity(x, y, z);
                         } else {
                             entities.set_velocity(entity, [x, y, z]);
+                        }
+                    }
+                    play::Packet::Other { id: 0x29, fields } => {
+                        let sound = decode_sound(fields)?;
+                        let mut state = lock(shared)?;
+                        if state.sounds.len() < 64 {
+                            state.sounds.push(sound);
                         }
                     }
                     play::Packet::Other { id: 0x28, fields } => {
@@ -1796,6 +1886,47 @@ fn run_actor(
                         && state.breaks.len() < 64
                     {
                         state.breaks.push((at, block));
+                    }
+                }
+                // onPlayerDamageBlock's hit sound, every fourth tick.
+                for at in controller.hits.drain(..) {
+                    if let Some(block) = world_view
+                        .block(at[0], at[1], at[2])
+                        .filter(|block| block.block_id() != 0)
+                    {
+                        let sound = crate::audio::block_sound(block.block_id());
+                        let centre = at.map(|v| f64::from(v) + 0.5);
+                        let volume = (sound.volume + 1.0) / 8.0;
+                        push_sound(&mut state, sound.step(), centre, volume, sound.pitch * 0.5);
+                    }
+                }
+                // Entity.moveEntity: the swim sound in water, then
+                // playStepSound (a snow layer on top steps as snow; liquids
+                // are silent).
+                if let Some(step) = player.step.take() {
+                    if let Some(volume) = step.swim {
+                        let pitch = 1.0 + jitter(&mut sound_seed) * 0.4;
+                        push_sound(
+                            &mut state,
+                            "game.player.swim",
+                            player.position,
+                            volume,
+                            pitch,
+                        );
+                    }
+                    let [x, y, z] = step.at;
+                    let id = |y| world_view.block(x, y, z).map_or(0, |b| b.block_id());
+                    let (below, above) = (id(y), id(y + 1));
+                    if above == 78 || !crate::audio::is_liquid(below) {
+                        let sound = crate::audio::block_sound(if above == 78 { 78 } else { below });
+                        let volume = sound.volume * 0.15;
+                        push_sound(
+                            &mut state,
+                            sound.step(),
+                            player.position,
+                            volume,
+                            sound.pitch,
+                        );
                     }
                 }
                 state.cracks.clear();

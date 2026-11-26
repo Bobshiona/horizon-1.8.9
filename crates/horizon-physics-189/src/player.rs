@@ -151,12 +151,25 @@ pub struct Player {
     /// `distanceWalkedModified` and its previous tick, for view bobbing.
     pub distance_walked: f32,
     pub previous_distance_walked: f32,
+    /// `distanceWalkedOnStepModified` and `nextStepDistance`.
+    distance_on_step: f32,
+    next_step: i32,
+    /// The last move's `playStepSound`, for the window to play.
+    pub step: Option<Step>,
     /// `cameraYaw` and `cameraPitch`, and their previous tick.
     pub camera: [f32; 2],
     pub previous_camera: [f32; 2],
     fly_toggle_timer: i32,
     previous_jump: bool,
     boxes: Vec<Aabb>,
+}
+
+/// `Entity.moveEntity`'s step: the block stepped on (`playStepSound`) and,
+/// in water, the swim sound's volume.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Step {
+    pub at: [i32; 3],
+    pub swim: Option<f32>,
 }
 
 impl Default for Player {
@@ -196,6 +209,9 @@ impl Default for Player {
             fall_distance: 0.0,
             distance_walked: 0.0,
             previous_distance_walked: 0.0,
+            distance_on_step: 0.0,
+            next_step: 1,
+            step: None,
             camera: [0.0; 2],
             previous_camera: [0.0; 2],
             fly_toggle_timer: 0,
@@ -955,7 +971,7 @@ impl Player {
             self.distance_walked =
                 (f64::from(self.distance_walked) + (x * x + z * z).sqrt() * 0.6) as f32;
         }
-        let (bx, by, bz) = (
+        let (bx, mut by, bz) = (
             floor(self.position[0]),
             floor(self.position[1] - 0.20000000298023224),
             floor(self.position[2]),
@@ -965,6 +981,7 @@ impl Player {
             let under = state(world, bx, by - 1, bz).block_id();
             if is_fence(under) || under == 139 || is_fence_gate(under) {
                 below = under;
+                by -= 1;
             }
         }
         if d3 != x {
@@ -987,6 +1004,24 @@ impl Player {
             let scale = 0.4 + self.motion[1].abs() * 0.2;
             self.motion[0] *= scale;
             self.motion[2] *= scale;
+        }
+        // The step sound: height counts only on a ladder.
+        if !edge && !self.flying {
+            let rise = if below == 65 { y } else { 0.0 };
+            self.distance_on_step = (f64::from(self.distance_on_step)
+                + (x * x + rise * rise + z * z).sqrt() * 0.6)
+                as f32;
+            if self.distance_on_step > self.next_step as f32 && below != 0 {
+                self.next_step = self.distance_on_step as i32 + 1;
+                let swim = self.in_water.then(|| {
+                    let [mx, my, mz] = self.motion;
+                    ((mx * mx * 0.2 + my * my + mz * mz * 0.2).sqrt() as f32 * 0.35).min(1.0)
+                });
+                self.step = Some(Step {
+                    at: [bx, by, bz],
+                    swim,
+                });
+            }
         }
         self.block_collisions(world);
     }

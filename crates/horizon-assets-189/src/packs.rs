@@ -30,6 +30,39 @@ fn open(path: &Path) -> io::Result<ResourceSource> {
     }
 }
 
+/// The selected packs opened once, for what the game's jar doesn't hold
+/// (sounds live in the launcher's asset index).
+#[derive(Clone, Default)]
+pub struct Overlay {
+    /// Highest priority first.
+    packs: Vec<ResourceSource>,
+}
+
+impl Overlay {
+    pub fn open(selected: &[PathBuf]) -> Self {
+        Self {
+            packs: selected.iter().filter_map(|path| open(path).ok()).collect(),
+        }
+    }
+
+    /// `name` from the highest-priority pack that has it.
+    pub fn read(&self, name: &str, limit: u64) -> Option<Vec<u8>> {
+        self.packs
+            .iter()
+            .find_map(|pack| pack.read_limited(name, limit).ok())
+    }
+
+    /// `name` from every pack that has it, lowest priority first (as
+    /// `getAllResources` lists them).
+    pub fn read_each(&self, name: &str, limit: u64) -> Vec<Vec<u8>> {
+        self.packs
+            .iter()
+            .rev()
+            .filter_map(|pack| pack.read_limited(name, limit).ok())
+            .collect()
+    }
+}
+
 /// Every pack in `folder` with a readable `pack.mcmeta`, in name order.
 /// Anything else there is left out, as `ResourcePackRepository` does.
 pub fn discover(folder: &Path) -> Vec<Pack> {

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod arena;
+mod audio;
 mod chat;
 mod connection;
 mod container_input;
@@ -174,6 +175,9 @@ struct App {
     pack_override: Vec<std::path::PathBuf>,
     /// A registry building over a newly chosen pack stack.
     pack_reload: Option<std::sync::mpsc::Receiver<Result<Arc<terrain::Registry>, String>>>,
+    /// The sound engine; silent until the window opens, or with
+    /// `HORIZON_NO_AUDIO`.
+    audio: audio::Audio,
     screenshots: (
         std::sync::mpsc::Sender<Result<String, String>>,
         std::sync::mpsc::Receiver<Result<String, String>>,
@@ -238,6 +242,7 @@ struct Snapshot {
     cracks: Vec<([i32; 3], horizon_world_189::BlockState, u8)>,
     visuals: Vec<particles::Event>,
     breaks: Vec<([i32; 3], horizon_world_189::BlockState)>,
+    sounds: Vec<network::Sound>,
     armor: [Option<horizon_protocol_47::nbt::Item>; 4],
     potions: Vec<(u8, i8, i32)>,
     current: [f64; 3],
@@ -262,6 +267,7 @@ impl App {
         if let Some(renderer) = &mut self.renderer {
             renderer.clear_world();
         }
+        self.audio.stop_all();
         self.chat = chat::Chat::default();
         self.hud = hud::Hud::default();
         self.particles = particles::Particles::default();
@@ -396,6 +402,7 @@ impl App {
         self.pack_reload = None;
         match result {
             Ok(registry) => {
+                self.open_audio();
                 registry.set_fancy_graphics(self.settings.video.fancy_graphics);
                 let swapped = self
                     .renderer
@@ -408,6 +415,26 @@ impl App {
             }
             Err(error) => eprintln!("PACKS_RELOAD_FAILED {error}"),
         }
+    }
+
+    /// The sound engine over the selected packs and the launcher's assets
+    /// beside the game jar (`.../minecraft/versions/1.8.9/1.8.9.jar`).
+    fn open_audio(&mut self) {
+        if std::env::var_os("HORIZON_NO_AUDIO").is_some() {
+            return;
+        }
+        let assets = self
+            .assets
+            .as_deref()
+            .and_then(|jar| jar.ancestors().nth(3))
+            .map(|minecraft| minecraft.join("assets"));
+        let packs = if self.pack_override.is_empty() {
+            packs::selected(&self.settings.resource_packs)
+        } else {
+            self.pack_override.clone()
+        };
+        let sources = audio::Sources::open(assets.as_deref(), &packs);
+        self.audio = audio::Audio::new(sources, self.settings.sound);
     }
 
     /// The launcher is on screen: no world and no connection screen.
@@ -788,6 +815,9 @@ impl App {
                 if pressed {
                     let mouse = self.mouse_gui();
                     let click = self.pause.press(layout, mouse, &mut self.settings);
+                    if std::mem::take(&mut self.pause.pressed) {
+                        self.audio.play("gui.button.press", None, 1.0, 1.0);
+                    }
                     self.pause_click(event_loop, click);
                 } else if self.pause.release() {
                     self.save_settings();
@@ -1300,6 +1330,7 @@ impl ApplicationHandler for App {
             });
         match result {
             Ok(mut renderer) => {
+                self.open_audio();
                 // Meshing starts with the saved Graphics setting, the first
                 // frame with the saved render scale.
                 if let Some(registry) = &renderer.registry {
@@ -1555,6 +1586,7 @@ impl ApplicationHandler for App {
                         cracks: s.cracks.clone(),
                         visuals: std::mem::take(&mut s.visuals),
                         breaks: std::mem::take(&mut s.breaks),
+                        sounds: std::mem::take(&mut s.sounds),
                         armor: s.armor.clone(),
                         potions: s.potions.clone(),
                         current: s.current,
@@ -1625,6 +1657,21 @@ impl ApplicationHandler for App {
                                 self.particles.destroy(at, layer, color);
                             }
                         }
+                    }
+                    if let Some((pose, _, _)) = &pose {
+                        self.audio.set_listener(pose.position, pose.yaw);
+                    }
+                    // RenderGlobal.playAuxSFX 2001: the block's break sound.
+                    for &(at, state) in &snapshot.breaks {
+                        let sound = audio::block_sound(state.block_id());
+                        let centre = at.map(|v| f64::from(v) + 0.5);
+                        let volume = (sound.volume + 1.0) / 2.0;
+                        self.audio
+                            .play(&sound.dig(), Some(centre), volume, sound.pitch * 0.8);
+                    }
+                    for sound in &snapshot.sounds {
+                        self.audio
+                            .play(&sound.name, Some(sound.at), sound.volume, sound.pitch);
                     }
                 }
                 if let Some((_, _, entities)) = &pose {
@@ -2724,6 +2771,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         pack_override: options.resource_packs.clone(),
         pack_reload: None,
+        audio: audio::Audio::silent(),
         screenshot_dir: options
             .smoke_screenshot
             .clone()

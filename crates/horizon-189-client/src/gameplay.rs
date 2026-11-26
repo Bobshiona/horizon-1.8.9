@@ -75,6 +75,10 @@ pub struct Controller {
     /// PlayerControllerMP.currentPlayerItem survives replacement of the local player.
     sent_slot: u8,
     digging: Option<([i32; 3], u8, f32, Option<Item>)>,
+    /// `stepSoundTickCounter`: the dig's hit sound plays every fourth tick.
+    step_ticks: u32,
+    /// Blocks whose hit sound plays this tick (`onPlayerDamageBlock`).
+    pub hits: Vec<[i32; 3]>,
     delay: u8,
     right_delay: u8,
     miss_delay: u8,
@@ -492,10 +496,16 @@ impl Controller {
             return Ok(());
         };
         *damage += progress;
-        if *damage >= 1.0 {
+        let done = *damage >= 1.0;
+        if self.step_ticks.is_multiple_of(4) {
+            self.hits.push(at);
+        }
+        self.step_ticks += 1;
+        if done {
             writer.send(&packet::dig(2, at, face)?)?;
             self.digging = None;
             self.delay = 5;
+            self.step_ticks = 0;
             self.destroy(at);
         }
         self.swing(writer)?;
@@ -580,6 +590,7 @@ impl Controller {
             self.destroy(at);
         } else {
             self.digging = Some((at, face, 0.0, inventory.held().cloned()));
+            self.step_ticks = 0;
         }
         Ok(())
     }

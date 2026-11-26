@@ -187,6 +187,8 @@ pub struct Settings {
     /// Selected resource packs, highest priority first: names in the packs
     /// folder (`options.txt` `resourcePacks`).
     pub resource_packs: Vec<String>,
+    /// `soundCategory_*`: master first, in `audio::CATEGORIES` order.
+    pub sound: [f32; 9],
     path: Option<PathBuf>,
 }
 
@@ -207,6 +209,7 @@ impl Default for Settings {
             toggles: Toggles::default(),
             servers: default_servers(),
             resource_packs: Vec::new(),
+            sound: [1.0; 9],
             video: Video::default(),
             path: None,
         }
@@ -271,6 +274,15 @@ impl Settings {
                         .filter(|v| v.is_finite())
                         .map_or(default.scale, |v| v.clamp(0.5, 3.0)),
                 };
+            }
+        }
+        if let Some(Value::Object(levels)) = root.get("sound") {
+            for (index, name) in crate::audio::CATEGORIES.iter().enumerate() {
+                if let Some(level) = levels.get(*name).and_then(Value::as_f64)
+                    && level.is_finite()
+                {
+                    settings.sound[index] = (level as f32).clamp(0.0, 1.0);
+                }
             }
         }
         if let Some(Value::Array(packs)) = root.get("resource_packs") {
@@ -367,6 +379,11 @@ impl Settings {
             "hud": Value::Object(huds),
             "servers": servers,
             "resource_packs": self.resource_packs,
+            "sound": crate::audio::CATEGORIES
+                .iter()
+                .zip(self.sound)
+                .map(|(name, level)| ((*name).to_owned(), json!(level)))
+                .collect::<serde_json::Map<String, Value>>(),
             "video": {
                 "fov": self.video.fov,
                 "sensitivity": self.video.sensitivity,
