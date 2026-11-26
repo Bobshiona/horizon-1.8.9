@@ -2967,3 +2967,32 @@ column; owned heads parse with and without an `Id`; the 64-block block-entity bo
 Teleport answers are not ticks (trace tool).
 Gate: 337 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
+
+## 91. Formatted sign text and banner patterns
+
+Previous commit: 363da5b292. Sprint row 2.1 (block entities) complete.
+
+- **Sign text.** Lines keep their style as `getFormattedText` gives it (colour, bold and italic
+  as `§` codes from the chat component, plus codes inside the text). The renderer draws them as
+  `FontRenderer.renderStringAtPos` does: bold draws each glyph twice a pixel apart and one pixel
+  wider, italic leans the top a pixel right and the bottom a pixel left, a colour code ends the
+  styles and `§r` returns to black. `TileEntitySignRenderer` shows only the first line
+  `splitText` makes at 90 pixels; lines are cut to 90 pixels, back to the last space inside.
+  Obfuscated, underline and strikethrough are read but not drawn.
+- **Banner patterns.** `Patterns` (id and dye, `EnumBannerPattern` `aku$a` order, unknown ids
+  left out) are kept. A patterned banner within 64 blocks draws each frame with a composite
+  built like `LayeredColorMaskTexture` (`bmc`): over `banner_base`, the base pattern in the base
+  dye, then each pattern, at most 17 layers; where a mask is set, its red is the alpha and the
+  colour is `banner_base` times the dye's map colour, drawn source over. Composites live in 64
+  texture layers after the skins, cached by pattern list and reused least recently used first.
+  Banners without patterns stay in the baked mesh.
+- Captures: a white banner with a red creeper, blue border and black gradient; a plain yellow
+  banner beside it; a sign with a gold bold line, a green line ending in italic, a long line cut
+  at a space, and a plain line.
+- A/B against 363da5b292, three alternating pairs: frame p50 lobby +0.00%, flyover +0.16%;
+  CPU p99 -0.58% / +1.43%.
+
+Regressions: sign formatting kept and capped; 90-pixel fitting with bold; bold, italic, colour
+and reset drawing; banner pattern parsing; composite tint and blending.
+Gate: 339 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.

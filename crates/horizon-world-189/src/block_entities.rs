@@ -14,11 +14,57 @@ pub enum BlockEntity {
         rotation: u8,
         owner: Option<Owner>,
     },
-    /// `Base` dye colour (0 black … 15 white, dye order).
+    /// `Base` dye colour (0 black … 15 white, dye order) and the `Patterns`
+    /// drawn over it: an index into `BANNER_PATTERNS` and a dye colour each.
     Banner {
         base: u8,
+        patterns: Vec<(u8, u8)>,
     },
 }
+
+/// `TileEntityBanner.EnumBannerPattern` (aku$a) in order: texture name and
+/// the id `Patterns` entries use.
+pub const BANNER_PATTERNS: [(&str, &str); 39] = [
+    ("base", "b"),
+    ("square_bottom_left", "bl"),
+    ("square_bottom_right", "br"),
+    ("square_top_left", "tl"),
+    ("square_top_right", "tr"),
+    ("stripe_bottom", "bs"),
+    ("stripe_top", "ts"),
+    ("stripe_left", "ls"),
+    ("stripe_right", "rs"),
+    ("stripe_center", "cs"),
+    ("stripe_middle", "ms"),
+    ("stripe_downright", "drs"),
+    ("stripe_downleft", "dls"),
+    ("small_stripes", "ss"),
+    ("cross", "cr"),
+    ("straight_cross", "sc"),
+    ("triangle_bottom", "bt"),
+    ("triangle_top", "tt"),
+    ("triangles_bottom", "bts"),
+    ("triangles_top", "tts"),
+    ("diagonal_left", "ld"),
+    ("diagonal_up_right", "rd"),
+    ("diagonal_up_left", "lud"),
+    ("diagonal_right", "rud"),
+    ("circle", "mc"),
+    ("rhombus", "mr"),
+    ("half_vertical", "vh"),
+    ("half_horizontal", "hh"),
+    ("half_vertical_right", "vhr"),
+    ("half_horizontal_bottom", "hhb"),
+    ("border", "bo"),
+    ("curly_border", "cbo"),
+    ("creeper", "cre"),
+    ("gradient", "gra"),
+    ("gradient_up", "gru"),
+    ("bricks", "bri"),
+    ("skull", "sku"),
+    ("flower", "flo"),
+    ("mojang", "moj"),
+];
 
 /// A player head's owner (`NBTUtil.readGameProfileFromNBT`): the profile
 /// id, or a stand-in from the skin when the server sends none, and the
@@ -85,77 +131,34 @@ impl BlockEntity {
                 rotation: (tag.get("Rot").and_then(Tag::as_int).unwrap_or(0) & 15) as u8,
                 owner: tag.get("Owner").and_then(Owner::from_nbt),
             }),
+            // TileEntityBanner.initializeBannerData: unknown ids are left out.
             6 => Some(BlockEntity::Banner {
                 base: (tag.get("Base").and_then(Tag::as_int).unwrap_or(0) & 15) as u8,
+                patterns: tag
+                    .get("Patterns")
+                    .map(Tag::as_list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|entry| {
+                        let id = entry.get("Pattern").and_then(Tag::as_str)?;
+                        let index = BANNER_PATTERNS.iter().position(|(_, code)| *code == id)?;
+                        let colour = entry.get("Color").and_then(Tag::as_int).unwrap_or(0) & 15;
+                        Some((index as u8, colour as u8))
+                    })
+                    .collect(),
             }),
             _ => None,
         }
     }
 }
 
-/// Plain text of a 1.8 sign line: a JSON string or chat component tree.
-/// Collects every `"text"` value in order and drops `§` formatting codes.
+/// A 1.8 sign line (`TileEntitySign.signText`) as `getFormattedText`: the
+/// chat component's text with its styles as `§` codes, which the renderer
+/// draws and fits to the sign. Malformed JSON shows as written.
 pub fn sign_text(json: &str) -> String {
-    fn read_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
-        let mut out = String::new();
-        while let Some(c) = chars.next() {
-            match c {
-                '"' => break,
-                '\\' => match chars.next() {
-                    Some('n') => out.push(' '),
-                    Some('u') => {
-                        let hex: String = chars.by_ref().take(4).collect();
-                        if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
-                        {
-                            out.push(c);
-                        }
-                    }
-                    Some(other) => out.push(other),
-                    None => break,
-                },
-                c => out.push(c),
-            }
-        }
-        out
-    }
-    let trimmed = json.trim();
-    let mut text = String::new();
-    let mut chars = trimmed.chars().peekable();
-    if trimmed.starts_with('"') {
-        chars.next();
-        text = read_string(&mut chars);
-    } else {
-        let mut previous_key = String::new();
-        while let Some(c) = chars.next() {
-            if c != '"' {
-                continue;
-            }
-            let value = read_string(&mut chars);
-            while chars.peek().is_some_and(|c| c.is_whitespace()) {
-                chars.next();
-            }
-            if chars.peek() == Some(&':') {
-                previous_key = value;
-            } else if previous_key == "text" {
-                text.push_str(&value);
-                previous_key.clear();
-            } else {
-                previous_key.clear();
-            }
-        }
-    }
-    let mut plain = String::with_capacity(text.len());
-    let mut skip = false;
-    for c in text.chars() {
-        if skip {
-            skip = false;
-        } else if c == '§' {
-            skip = true;
-        } else {
-            plain.push(c);
-        }
-    }
-    plain.chars().take(32).collect()
+    let text = horizon_protocol_47::text::format(json, &|_| None).text;
+    // The server sends at most a few hundred characters; keep memory bounded.
+    text.chars().take(384).collect()
 }
 
 #[cfg(test)]
@@ -163,14 +166,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sign_lines_flatten_components_and_strip_formatting() {
-        assert_eq!(sign_text("\"Hello\""), "Hello");
-        assert_eq!(sign_text("\"\""), "");
+    fn sign_lines_keep_their_formatting() {
+        // getFormattedText: each component's style codes, its text, then §r.
+        assert_eq!(sign_text("\"Hello\""), "Hello§r");
+        assert_eq!(sign_text("\"\""), "§r");
         assert_eq!(
             sign_text(r#"{"extra":[{"color":"gold","text":"§lBed"},{"text":" Wars"}],"text":""}"#),
-            "Bed Wars"
+            "§r§6§lBed§r Wars§r"
         );
-        assert_eq!(sign_text(r#"{"text":"a\"b!"}"#), "a\"b!");
+        assert_eq!(sign_text(r#"{"text":"a\"b!"}"#), "a\"b!§r");
+        assert_eq!(
+            sign_text(&format!("\"{}\"", "x".repeat(500)))
+                .chars()
+                .count(),
+            384
+        );
         let skull = Tag::Compound(vec![
             ("SkullType".into(), Tag::Byte(3)),
             ("Rot".into(), Tag::Byte(9)),
@@ -223,5 +233,29 @@ mod tests {
         assert_eq!(stand_in(&textures(None)), stand_in(&textures(None)));
         assert_ne!(stand_in(&textures(None)), 42);
         assert_eq!(BlockEntity::from_nbt(1, &skull), None);
+        let pattern = |id: &str, colour: i32| {
+            Tag::Compound(vec![
+                ("Pattern".into(), Tag::String(id.into())),
+                ("Color".into(), Tag::Int(colour)),
+            ])
+        };
+        let banner = Tag::Compound(vec![
+            ("Base".into(), Tag::Int(4)),
+            (
+                "Patterns".into(),
+                Tag::List(vec![
+                    pattern("cre", 15),
+                    pattern("nope", 2),
+                    pattern("bo", 0),
+                ]),
+            ),
+        ]);
+        assert_eq!(
+            BlockEntity::from_nbt(6, &banner),
+            Some(BlockEntity::Banner {
+                base: 4,
+                patterns: vec![(32, 15), (30, 0)],
+            })
+        );
     }
 }

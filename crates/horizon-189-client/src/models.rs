@@ -2073,7 +2073,156 @@ pub fn sign(
         * Mat4::from_translation(Vec3::new(0.0, 0.5 * scale, 0.07 * scale))
         * Mat4::from_scale(Vec3::new(text_scale, -text_scale, text_scale));
     for (row, line) in lines.iter().enumerate() {
-        text_line(out, text, line, row as f32 * 10.0 - 20.0, widths, [0.0; 3]);
+        let line = sign_fit(line, widths);
+        styled_line(out, text, &line, row as f32 * 10.0 - 20.0, widths, [0.0; 3]);
+    }
+}
+
+/// One glyph of `§`-formatted text as `FontRenderer.renderStringAtPos` draws
+/// it: colour, bold (a second copy a pixel right, one pixel wider) and
+/// italic (top leaned a pixel right, bottom a pixel left).
+#[derive(Clone, Copy)]
+struct Glyph {
+    index: usize,
+    colour: [f32; 3],
+    bold: bool,
+    italic: bool,
+}
+
+/// A colour code resets the styles; `§r` resets everything; `§k`, `§m` and
+/// `§n` are read but not drawn.
+fn styled_glyphs(text: &str, base: [f32; 3]) -> impl Iterator<Item = Glyph> + Clone + '_ {
+    let mut style = Glyph {
+        index: 0,
+        colour: base,
+        bold: false,
+        italic: false,
+    };
+    let mut chars = text.chars();
+    std::iter::from_fn(move || {
+        while let Some(c) = chars.next() {
+            if c == '§' {
+                match chars.next().map(|c| c.to_ascii_lowercase()) {
+                    Some(code @ ('0'..='9' | 'a'..='f')) => {
+                        let index = code.to_digit(16).unwrap_or(15) as usize;
+                        style.colour = crate::ui::color_code(index);
+                        style.bold = false;
+                        style.italic = false;
+                    }
+                    Some('l') => style.bold = true,
+                    Some('o') => style.italic = true,
+                    Some('r') => {
+                        style.colour = base;
+                        style.bold = false;
+                        style.italic = false;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if let Some(index) = crate::ui::ascii_index(c) {
+                return Some(Glyph { index, ..style });
+            }
+        }
+        None
+    })
+}
+
+/// `FontRenderer.getStringWidth` of a glyph: bold adds a pixel.
+fn advance(glyph: &Glyph, widths: &[u8; 256]) -> f32 {
+    f32::from(widths[glyph.index]) + if glyph.bold { 1.0 } else { 0.0 }
+}
+
+/// `TileEntitySignRenderer` shows the first line `GuiUtilRenderComponents
+/// .splitText` makes at 90 pixels: cut to fit, back to the last space when
+/// one falls inside.
+fn sign_fit(text: &str, widths: &[u8; 256]) -> String {
+    let mut width = 0.0;
+    let mut cut = text.len();
+    let mut chars = text.char_indices().peekable();
+    let mut probe = Glyph {
+        index: 0,
+        colour: [0.0; 3],
+        bold: false,
+        italic: false,
+    };
+    while let Some((at, c)) = chars.next() {
+        if c == '§' {
+            match chars.next().map(|(_, c)| c.to_ascii_lowercase()) {
+                Some('0'..='9' | 'a'..='f' | 'r') => probe.bold = false,
+                Some('l') => probe.bold = true,
+                _ => {}
+            }
+            continue;
+        }
+        let Some(index) = crate::ui::ascii_index(c) else {
+            continue;
+        };
+        probe.index = index;
+        width += advance(&probe, widths);
+        if width > 90.0 {
+            cut = at;
+            break;
+        }
+    }
+    if cut == text.len() {
+        return text.to_owned();
+    }
+    let head = &text[..cut];
+    match head.rfind(' ') {
+        Some(space)
+            if styled_glyphs(&head[..space], [0.0; 3]).any(|glyph| widths[glyph.index] > 0) =>
+        {
+            head[..space].to_owned()
+        }
+        _ => head.to_owned(),
+    }
+}
+
+/// `text_line` with bold and italic, for sign text.
+fn styled_line(
+    out: &mut Vec<Vertex>,
+    matrix: Mat4,
+    text: &str,
+    y: f32,
+    widths: &[u8; 256],
+    base: [f32; 3],
+) {
+    let glyphs = styled_glyphs(text, base);
+    let total: f32 = glyphs.clone().map(|glyph| advance(&glyph, widths)).sum();
+    let mut x = (-total / 2.0).trunc();
+    let scale = 1.0 / LAYER_SIZE as f32;
+    for glyph in glyphs {
+        let width = f32::from(widths[glyph.index]);
+        if glyph.index != 32 && width > 1.0 {
+            let (u, v) = ((glyph.index % 16 * 8) as f32, (glyph.index / 16 * 8) as f32);
+            let w = width - 1.01;
+            let lean = if glyph.italic { 1.0 } else { 0.0 };
+            let copies: &[f32] = if glyph.bold { &[0.0, 1.0] } else { &[0.0] };
+            for &shift in copies {
+                let left = x + shift;
+                let corners = [
+                    Vec3::new(left + lean, y, 0.0),
+                    Vec3::new(left - lean, y + 7.99, 0.0),
+                    Vec3::new(left + w - lean, y + 7.99, 0.0),
+                    Vec3::new(left + w + lean, y, 0.0),
+                ]
+                .map(|point| matrix.transform_point3(point).to_array());
+                let uv = [[u, v], [u, v + 7.99], [u + w, v + 7.99], [u + w, v]]
+                    .map(|[a, b]| [a * scale, b * scale]);
+                // Text faces the sign front; draw both windings so either side is visible.
+                for index in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+                    out.push(Vertex {
+                        position: corners[index],
+                        uv: uv[index],
+                        layer: Texture::Font as u32,
+                        color: glyph.colour,
+                        hurt: 0.0,
+                    });
+                }
+            }
+        }
+        x += advance(&glyph, widths);
     }
 }
 
@@ -2163,8 +2312,90 @@ fn dye(base: u8) -> [f32; 3] {
     ]
 }
 
+/// A banner with patterns to draw this frame (`terrain::banners`); `layers`
+/// starts with the base pattern in the base colour.
+#[derive(Clone)]
+pub struct PatternedBanner {
+    pub at: Vec3,
+    pub standing: bool,
+    pub meta: u8,
+    pub layers: Vec<(u8, u8)>,
+    pub light: f32,
+}
+
+/// `LayeredColorMaskTexture.loadTexture` (bmc): over `banner_base`, each
+/// layer's mask where its alpha is set takes alpha from the mask's red and
+/// colour from `banner_base` times the dye's map colour, then draws source
+/// over. `base` and every mask are 64x64 RGBA.
+pub fn banner_composite(base: &[u8], masks: &[Vec<u8>], layers: &[(u8, u8)]) -> Vec<u8> {
+    let mut out = base.to_vec();
+    for &(pattern, colour) in layers.iter().take(17) {
+        let Some(mask) = masks.get(usize::from(pattern)) else {
+            continue;
+        };
+        if mask.len() != out.len() {
+            continue;
+        }
+        let tint = dye(colour).map(|channel| (channel * 255.0).round() as u32);
+        for ((dst, src), under) in out
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(mask.as_chunks::<4>().0)
+            .zip(base.as_chunks::<4>().0)
+        {
+            if src[3] == 0 {
+                continue;
+            }
+            // MathHelper.multiplyColor, then the mask's red as alpha.
+            let colour: [u32; 3] = std::array::from_fn(|i| u32::from(under[i]) * tint[i] / 255);
+            let alpha = f32::from(src[0]) / 255.0;
+            let below = f32::from(dst[3]) / 255.0;
+            let total = alpha + below * (1.0 - alpha);
+            if total <= 0.0 {
+                continue;
+            }
+            for i in 0..3 {
+                let value =
+                    (colour[i] as f32 * alpha + f32::from(dst[i]) * below * (1.0 - alpha)) / total;
+                dst[i] = value.round().clamp(0.0, 255.0) as u8;
+            }
+            dst[3] = (total * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
+/// A patterned banner in the composite at texture layer `layer`.
+pub fn patterned_banner(out: &mut Vec<Vertex>, banner: &PatternedBanner, layer: u32) {
+    let light = [banner.light; 3];
+    banner_model(
+        out,
+        banner.at,
+        banner.standing,
+        banner.meta,
+        layer,
+        light,
+        light,
+    );
+}
+
 /// `TileEntityBannerRenderer` with `ModelBanner`; the cloth takes the base dye.
 pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u8, light: f32) {
+    let wood = [light; 3];
+    let cloth = dye(base).map(|channel| channel * light);
+    banner_model(out, at, standing, meta, Texture::Banner as u32, cloth, wood);
+}
+
+fn banner_model(
+    out: &mut Vec<Vertex>,
+    at: Vec3,
+    standing: bool,
+    meta: u8,
+    texture: u32,
+    cloth: [f32; 3],
+    wood: [f32; 3],
+) {
     let scale = 0.666_666_7f32;
     let mut matrix = Mat4::from_translation(at + Vec3::new(0.5, 0.75 * scale, 0.5));
     if standing {
@@ -2180,13 +2411,11 @@ pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u
             * Mat4::from_translation(Vec3::new(0.0, -0.3125, -0.4375));
     }
     let model = matrix * Mat4::from_scale(Vec3::new(scale, -scale, -scale));
-    let wood = [light; 3];
-    let cloth = dye(base).map(|channel| channel * light);
     add(
         out,
         part(model, [0.0, -32.0, 0.0], [-0.0125 * PI, 0.0, 0.0]),
         cuboid(0.0, 0.0, [-10.0, 0.0, -2.0], [20, 40, 1]),
-        Texture::Banner,
+        texture,
         cloth,
     );
     if standing {
@@ -2194,7 +2423,7 @@ pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u
             out,
             part(model, [0.0; 3], [0.0; 3]),
             cuboid(44.0, 0.0, [-1.0, -30.0, -1.0], [2, 42, 2]),
-            Texture::Banner,
+            texture,
             wood,
         );
     }
@@ -2202,7 +2431,7 @@ pub fn banner(out: &mut Vec<Vertex>, at: Vec3, standing: bool, meta: u8, base: u
         out,
         part(model, [0.0; 3], [0.0; 3]),
         cuboid(0.0, 42.0, [-10.0, -32.0, -1.0], [20, 2, 2]),
-        Texture::Banner,
+        texture,
         wood,
     );
 }
@@ -2279,6 +2508,73 @@ mod tests {
             }
             x += advance;
         }
+    }
+
+    #[test]
+    fn banner_layers_tint_the_base_and_blend_by_the_mask_red() {
+        // One-pixel-wide checks on a 64x64 image: grey base, opaque.
+        let base = [200u8, 100, 50, 255].repeat(64 * 64);
+        let mask = |red: u8, alpha: u8| [red, 0, 0, alpha].repeat(64 * 64);
+        // Red dye 0x993333 over the base where the mask is fully red.
+        let out = banner_composite(&base, &[mask(255, 255)], &[(0, 1)]);
+        assert_eq!(
+            &out[..4],
+            &[
+                (200 * 0x99 / 255) as u8,
+                (100 * 0x33 / 255) as u8,
+                (50 * 0x33 / 255) as u8,
+                255
+            ]
+        );
+        // Mask alpha 0 leaves the base; a half-red mask blends halfway.
+        assert_eq!(banner_composite(&base, &[mask(255, 0)], &[(0, 1)]), base);
+        let half = banner_composite(&base, &[mask(128, 255)], &[(0, 15)]);
+        assert_eq!(&half[..4], &[200, 100, 50, 255], "white dye over itself");
+        let half = banner_composite(&base, &[mask(128, 255)], &[(0, 0)]);
+        let black = [200u32 * 0x19 / 255, 100 * 0x19 / 255, 50 * 0x19 / 255];
+        for i in 0..3 {
+            let expected = (f32::from(black[i] as u8) * 128.0 / 255.0
+                + f32::from(base[i]) * (1.0 - 128.0 / 255.0))
+                .round() as u8;
+            assert_eq!(half[i], expected);
+        }
+        // Unknown pattern indices and wrong-sized masks are skipped.
+        assert_eq!(
+            banner_composite(&base, &[vec![255; 4]], &[(0, 1), (5, 1)]),
+            base
+        );
+    }
+
+    #[test]
+    fn sign_text_fits_ninety_pixels_with_bold_and_italic() {
+        let widths = [6u8; 256];
+        // Fifteen 6-pixel glyphs fill 90 pixels; the sixteenth is cut.
+        assert_eq!(sign_fit(&"a".repeat(16), &widths), "a".repeat(15));
+        assert_eq!(sign_fit(&"a".repeat(15), &widths), "a".repeat(15));
+        // Bold glyphs are 7 pixels wide: twelve fit; back to the space.
+        assert_eq!(sign_fit("§laaaaa aaaaaaaaa", &widths), "§laaaaa");
+        assert_eq!(
+            sign_fit("§cbbbbbbbbbbbbbbbbb", &widths),
+            "§cbbbbbbbbbbbbbbb"
+        );
+        let quads = |text: &str| {
+            let mut out = Vec::new();
+            styled_line(&mut out, Mat4::IDENTITY, text, 0.0, &widths, [0.0; 3]);
+            out
+        };
+        assert_eq!(quads("ab").len(), 2 * 12);
+        assert_eq!(quads("§lab").len(), 4 * 12, "bold draws each glyph twice");
+        let red = quads("§cab");
+        assert!(red.iter().all(|v| v.color == crate::ui::color_code(12)));
+        // §r after a colour returns to black.
+        assert!(quads("§cA§rB")[12..].iter().all(|v| v.color == [0.0; 3]));
+        // Italic leans the top right and the bottom left.
+        let italic = quads("§oa");
+        let plain = quads("a");
+        assert_eq!(italic[0].position[0], plain[0].position[0] + 1.0);
+        assert_eq!(italic[1].position[0], plain[1].position[0] - 1.0);
+        // A colour code ends bold.
+        assert_eq!(quads("§la§cb").len(), 3 * 12);
     }
 
     #[test]

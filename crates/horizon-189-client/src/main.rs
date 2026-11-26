@@ -1592,6 +1592,7 @@ impl ApplicationHandler for App {
                             &[],
                             &[],
                             &[],
+                            &[],
                             None,
                         ) {
                             self.fail(event_loop, error);
@@ -1641,6 +1642,7 @@ impl ApplicationHandler for App {
                             .map_or((&empty, ""), |s| (&*s.scoreboard, s.username.as_str()));
                         let mut extra = Vec::new();
                         let mut heads = Vec::new();
+                        let mut banners = Vec::new();
                         if let Some(scene_origin) = renderer.origin() {
                             self.particles.draw(
                                 &mut extra,
@@ -1654,6 +1656,7 @@ impl ApplicationHandler for App {
                             {
                                 terrain::open_chests(&mut extra, &world, partial, scene_origin);
                                 heads = terrain::heads(&world, pose.position, scene_origin);
+                                banners = terrain::banners(&world, pose.position, scene_origin);
                             }
                         }
                         let own = snapshot.as_ref().and_then(|s| s.own.as_ref());
@@ -1762,6 +1765,7 @@ impl ApplicationHandler for App {
                             snapshot.as_ref().map_or(&[][..], |s| &s.cracks),
                             &extra,
                             &heads,
+                            &banners,
                             outline,
                         ) {
                             self.fail(event_loop, error);

@@ -142,6 +142,9 @@ fn blend_chains(frame: &[u8], next: &[u8], elapsed: u32, ticks: u32, out: &mut V
 /// Exact conservative union, cached on mesh replacement. Empty sections do not
 /// inject zero bounds. This is only a column broad phase; native compute still
 /// applies the five frustum planes independently to every candidate section.
+/// Texture layers for patterned banner composites, after the skins'.
+pub const BANNER_LAYERS: u32 = 64;
+
 /// `TileEntity.getMaxRenderDistanceSquared`: chests, signs, skulls and
 /// banners draw only within 64 blocks of the camera.
 const BLOCK_ENTITY_DISTANCE: f32 = 64.0;
@@ -378,6 +381,9 @@ pub struct Scene {
     entity_texture: wgpu::Texture,
     pub skin_base: u32,
     skin_capacity: u32,
+    /// Banner composites by layer list: slot and the frame it was last used.
+    banner_slots: HashMap<Vec<(u8, u8)>, (u32, u64)>,
+    banner_frame: u64,
     /// Moving entities, rewritten every frame.
     entities: wgpu::Buffer,
     entity_capacity: u64,
@@ -875,7 +881,8 @@ impl Scene {
         });
         let entity_size = crate::models::LAYER_SIZE;
         let skin_base = registry.entity_textures.len() as u32;
-        let entity_layers = (skin_base + 256).min(device.limits().max_texture_array_layers);
+        let entity_layers =
+            (skin_base + 256 + BANNER_LAYERS).min(device.limits().max_texture_array_layers);
         let entity_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Owned legacy entity textures"),
             size: wgpu::Extent3d {
@@ -1076,6 +1083,8 @@ impl Scene {
             entity_texture,
             skin_base,
             skin_capacity: entity_layers,
+            banner_slots: HashMap::new(),
+            banner_frame: 0,
             entities,
             entity_capacity,
             entity_count: 0,
@@ -1228,6 +1237,87 @@ impl Scene {
         }
         self.regions.trim();
         Ok(())
+    }
+
+    /// The first of the `BANNER_LAYERS` banner composite layers, if the
+    /// device has room for them.
+    pub fn banner_base(&self) -> Option<u32> {
+        let first = self.skin_base + 256;
+        (first + BANNER_LAYERS <= self.skin_capacity).then_some(first)
+    }
+
+    /// The texture layer holding the composite for `layers`, composing and
+    /// uploading it on first use; the least recently used slot is reused
+    /// when all are taken. `None` without room or without the images.
+    pub fn banner_layer(
+        &mut self,
+        queue: &wgpu::Queue,
+        layers: &[(u8, u8)],
+        images: Option<&(Vec<u8>, Vec<Vec<u8>>)>,
+    ) -> Option<u32> {
+        let base = self.banner_base()?;
+        let frame = self.banner_frame;
+        if let Some((slot, used)) = self.banner_slots.get_mut(layers) {
+            *used = frame;
+            return Some(base + *slot);
+        }
+        let (image, masks) = images?;
+        let slot = if (self.banner_slots.len() as u32) < BANNER_LAYERS {
+            self.banner_slots.len() as u32
+        } else {
+            let (key, (slot, used)) = self
+                .banner_slots
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(key, value)| (key.clone(), *value))?;
+            // Every slot drawn this frame already: keep them.
+            if used == frame {
+                return None;
+            }
+            self.banner_slots.remove(&key);
+            slot
+        };
+        let rgba = crate::models::banner_composite(image, masks, layers);
+        let layer = self.upload_banner(queue, slot, &rgba)?;
+        self.banner_slots.insert(layers.to_vec(), (slot, frame));
+        Some(layer)
+    }
+
+    /// Advance the banner cache's clock: one call a frame.
+    pub fn next_banner_frame(&mut self) {
+        self.banner_frame += 1;
+    }
+
+    /// Write a 64x64 banner composite into banner slot `slot`.
+    pub fn upload_banner(&self, queue: &wgpu::Queue, slot: u32, rgba: &[u8]) -> Option<u32> {
+        let layer = self.banner_base()? + slot;
+        if slot >= BANNER_LAYERS || rgba.len() != 64 * 64 * 4 {
+            return None;
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.entity_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(64 * 4),
+                rows_per_image: Some(64),
+            },
+            wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
+        Some(layer)
     }
 
     pub fn upload_skin(

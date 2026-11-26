@@ -433,6 +433,7 @@ impl Renderer {
         cracks: &[([i32; 3], horizon_world_189::BlockState, u8)],
         extra: &[crate::terrain::Vertex],
         heads: &[crate::models::Head],
+        banners: &[crate::models::PatternedBanner],
         outline: Option<([f64; 3], [f64; 3], crate::outline::Style)>,
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
@@ -524,6 +525,24 @@ impl Renderer {
                     vertex.layer = layer;
                     vertex.color = [1.0; 3];
                 }
+            }
+        }
+        scene.next_banner_frame();
+        let images = self
+            .registry
+            .as_ref()
+            .and_then(|r| r.banner_images.as_ref());
+        for banner in banners {
+            match scene.banner_layer(&self.queue, &banner.layers, images) {
+                Some(layer) => crate::models::patterned_banner(&mut vertices, banner, layer),
+                None => crate::models::banner(
+                    &mut vertices,
+                    banner.at,
+                    banner.standing,
+                    banner.meta,
+                    banner.layers.first().map_or(15, |&(_, colour)| colour),
+                    banner.light,
+                ),
             }
         }
         let planes = scene.planes(&self.world_config);

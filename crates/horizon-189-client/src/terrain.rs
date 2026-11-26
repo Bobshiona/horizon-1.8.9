@@ -407,6 +407,9 @@ pub struct Registry {
     pub inexact: Vec<String>,
     /// 128-pixel entity layers in `models::Texture` order, and font advances.
     pub entity_textures: Vec<Texture>,
+    /// `banner_base` and the pattern masks in `BANNER_PATTERNS` order, 64x64
+    /// RGBA each, for patterned banner composites.
+    pub banner_images: Option<(Vec<u8>, Vec<Vec<u8>>)>,
     pub glyphs: [u8; 256],
     /// Interface sheets, fonts and language.
     pub gui: crate::ui::Resources,
@@ -811,6 +814,54 @@ pub fn heads(world: &World, camera: [f64; 3], origin: [i64; 3]) -> Vec<crate::mo
         });
     }
     heads
+}
+
+/// Patterned banners near the camera, drawn each frame with a composite
+/// texture (`TileEntityBannerRenderer` and `LayeredColorMaskTexture`): the
+/// base pattern in the base colour, then each pattern, at most 17 layers.
+pub fn banners(
+    world: &World,
+    camera: [f64; 3],
+    origin: [i64; 3],
+) -> Vec<crate::models::PatternedBanner> {
+    let mut banners = Vec::new();
+    for (at, entity) in world.block_entities() {
+        let horizon_world_189::block_entities::BlockEntity::Banner { base, patterns } = entity
+        else {
+            continue;
+        };
+        if patterns.is_empty() {
+            continue;
+        }
+        let distance: f64 = (0..3)
+            .map(|axis| (f64::from(at[axis]) + 0.5 - camera[axis]).powi(2))
+            .sum();
+        if distance >= 64.0 * 64.0 {
+            continue;
+        }
+        let Some(state) = world.block(at[0], at[1], at[2]) else {
+            continue;
+        };
+        if !matches!(state.block_id(), 176 | 177) {
+            continue;
+        }
+        let layers = std::iter::once((0u8, *base))
+            .chain(patterns.iter().copied())
+            .take(17)
+            .collect();
+        banners.push(crate::models::PatternedBanner {
+            at: glam::Vec3::new(
+                (i64::from(at[0]) - origin[0]) as f32,
+                (i64::from(at[1]) - origin[1]) as f32,
+                (i64::from(at[2]) - origin[2]) as f32,
+            ),
+            standing: state.block_id() == 176,
+            meta: state.metadata(),
+            layers,
+            light: brightness(light_level(world, at)),
+        });
+    }
+    banners
 }
 
 /// `TileEntityChestRenderer`'s model choice: the half of a double chest with
@@ -1234,6 +1285,21 @@ impl Registry {
             height: size as u32,
             rgba: vec![255; size * size * 4],
         }];
+        let banner_images = (|| {
+            let load = |name: &str| {
+                let image = assets.texture(name).ok()?;
+                (image.width == 64 && image.height == 64).then_some(image.rgba)
+            };
+            let base = load("minecraft:entity/banner_base")?;
+            let masks = horizon_world_189::block_entities::BANNER_PATTERNS
+                .iter()
+                .map(|(name, _)| load(&format!("minecraft:entity/banner/{name}")))
+                .collect::<Option<Vec<_>>>()?;
+            Some((base, masks))
+        })();
+        if banner_images.is_none() {
+            eprintln!("LEGACY_BANNER_PATTERNS_MISSING");
+        }
         let mut glyphs = [6u8; 256];
         for source in crate::models::SOURCES {
             let mut canvas = vec![0u8; size * size * 4];
@@ -1413,6 +1479,7 @@ impl Registry {
             model_failures: failures,
             inexact: Vec::new(),
             entity_textures,
+            banner_images,
             glyphs,
             gui,
             item_meshes,
@@ -1956,13 +2023,14 @@ impl Registry {
                 }
                 _ => models::skull(out, at, meta & 7, 0, 0, light),
             },
-            _ => {
-                let base = match world.block_entity([x, y, z]) {
-                    Some(&BlockEntity::Banner { base }) => base,
-                    _ => 15,
-                };
-                models::banner(out, at, id == 176, meta, base, light);
-            }
+            _ => match world.block_entity([x, y, z]) {
+                // Patterned banners draw each frame with their composite (`banners`).
+                Some(BlockEntity::Banner { patterns, .. }) if !patterns.is_empty() => {}
+                Some(&BlockEntity::Banner { base, .. }) => {
+                    models::banner(out, at, id == 176, meta, base, light);
+                }
+                _ => models::banner(out, at, id == 176, meta, 15, light),
+            },
         }
         true
     }
