@@ -27,6 +27,7 @@ mod network;
 mod options;
 mod outline;
 mod pacing;
+mod packs;
 mod particles;
 mod pause;
 mod pvp_metrics;
@@ -166,6 +167,8 @@ struct App {
     view: view::View,
     /// F2: where screenshots go, and the worker's results for chat.
     screenshot_dir: Option<std::path::PathBuf>,
+    /// `--resource-pack`: this run's packs instead of the selected ones.
+    pack_override: Vec<std::path::PathBuf>,
     screenshots: (
         std::sync::mpsc::Sender<Result<String, String>>,
         std::sync::mpsc::Receiver<Result<String, String>>,
@@ -1214,6 +1217,11 @@ impl ApplicationHandler for App {
                 pollster::block_on(Renderer::new(
                     Arc::new(window),
                     self.assets.clone(),
+                    if self.pack_override.is_empty() {
+                        packs::selected(&self.settings.resource_packs)
+                    } else {
+                        self.pack_override.clone()
+                    },
                     self.server.is_some() || self.launcher.is_some(),
                     self.view_distance,
                     self.gui_scale,
@@ -2619,6 +2627,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             lagometer: options.smoke_lagometer,
             hitboxes: options.smoke_hitboxes,
         },
+        pack_override: options.resource_packs.clone(),
         screenshot_dir: options
             .smoke_screenshot
             .clone()

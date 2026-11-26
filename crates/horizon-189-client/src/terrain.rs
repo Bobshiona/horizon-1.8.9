@@ -1023,7 +1023,48 @@ fn has_cutout(rgba: &[u8]) -> bool {
 }
 
 fn first_frame(image: &Texture) -> Option<Vec<u8>> {
-    (image.width == 16 && image.height >= 16).then(|| image.rgba[..1024].to_vec())
+    frames(image)?.into_iter().next()
+}
+
+/// A sprite strip's square frames, top to bottom, each brought to 16x16:
+/// resource packs ship 32x to 512x sprites, which are box-averaged down.
+fn frames(image: &Texture) -> Option<Vec<Vec<u8>>> {
+    let size = image.width as usize;
+    if !(16..=512).contains(&size)
+        || !size.is_power_of_two()
+        || (image.height as usize) < size
+        || !(image.height as usize).is_multiple_of(size)
+    {
+        return None;
+    }
+    let step = size / 16;
+    let count = image.height as usize / size;
+    Some(
+        (0..count)
+            .map(|frame| {
+                let base = frame * size * size * 4;
+                let mut out = vec![0u8; 16 * 16 * 4];
+                for y in 0..16 {
+                    for x in 0..16 {
+                        let mut sum = [0u32; 4];
+                        for dy in 0..step {
+                            for dx in 0..step {
+                                let at = base + ((y * step + dy) * size + x * step + dx) * 4;
+                                for (channel, total) in sum.iter_mut().enumerate() {
+                                    *total += u32::from(image.rgba[at + channel]);
+                                }
+                            }
+                        }
+                        let n = (step * step) as u32;
+                        for channel in 0..4 {
+                            out[(y * 16 + x) * 4 + channel] = (sum[channel] / n) as u8;
+                        }
+                    }
+                }
+                out
+            })
+            .collect(),
+    )
 }
 
 /// A terrain sprite with a `.mcmeta` animation (water, lava, fire, portal,
@@ -1058,9 +1099,7 @@ impl Animation {
     /// `AnimationMetadataSection` from the `.mcmeta` JSON. `None` when the
     /// sprite does not animate or the metadata is malformed.
     pub fn parse(layer: u32, strip: &Texture, mcmeta: &[u8]) -> Option<Self> {
-        if strip.width != 16 || strip.height <= 16 || !strip.height.is_multiple_of(16) {
-            return None;
-        }
+        let frames = frames(strip).filter(|frames| frames.len() > 1)?;
         let json: serde_json::Value = serde_json::from_slice(mcmeta).ok()?;
         let animation = json.get("animation")?;
         let frametime = animation
@@ -1072,13 +1111,6 @@ impl Animation {
             .get("interpolate")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let frames: Vec<Vec<u8>> = strip
-            .rgba
-            .as_chunks::<1024>()
-            .0
-            .iter()
-            .map(|frame| frame.to_vec())
-            .collect();
         let sequence: Vec<(u32, u32)> = match animation.get("frames") {
             Some(list) => list
                 .as_array()?
@@ -1145,7 +1177,15 @@ fn face_shade(name: &str) -> f32 {
 
 impl Registry {
     pub fn open(jar: &Path) -> Result<Self, Box<dyn Error>> {
-        let assets = Assets::open(jar)?;
+        Self::open_with_packs(jar, &[])
+    }
+
+    /// The registry with resource packs (highest priority first) over the jar.
+    pub fn open_with_packs(
+        jar: &Path,
+        packs: &[std::path::PathBuf],
+    ) -> Result<Self, Box<dyn Error>> {
+        let assets = Assets::open_with_packs(jar, packs)?;
         let mut missing = vec![0; 16 * 16 * 4];
         for (index, pixel) in missing.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let light = ((index % 16) / 8 + (index / 16) / 8) % 2 == 0;
@@ -1289,7 +1329,7 @@ impl Registry {
             });
         }
         let colormap = |name: &str| -> Result<Vec<[u8; 3]>, Box<dyn Error>> {
-            let image = assets.texture(name)?;
+            let image = assets.texture_at_vanilla_size(name)?;
             if image.width != 256 || image.height != 256 {
                 return Err(format!("{name} must be 256x256").into());
             }
@@ -1309,7 +1349,7 @@ impl Registry {
         }];
         let banner_images = (|| {
             let load = |name: &str| {
-                let image = assets.texture(name).ok()?;
+                let image = assets.texture_at_vanilla_size(name).ok()?;
                 (image.width == 64 && image.height == 64).then_some(image.rgba)
             };
             let base = load("minecraft:entity/banner_base")?;
@@ -1324,7 +1364,7 @@ impl Registry {
         }
         let weather_images = (|| {
             let load = |name: &str| {
-                let image = assets.texture(name).ok()?;
+                let image = assets.texture_at_vanilla_size(name).ok()?;
                 (image.width == 64 && image.height == 256).then_some(image.rgba)
             };
             Some([
@@ -1335,7 +1375,7 @@ impl Registry {
         let mut glyphs = [6u8; 256];
         for source in crate::models::SOURCES {
             let mut canvas = vec![0u8; size * size * 4];
-            match assets.texture(source) {
+            match assets.texture_at_vanilla_size(source) {
                 Ok(image) => {
                     let (w, h) = (image.width as usize, image.height as usize);
                     if source.ends_with("entity/explosion") {
@@ -1401,7 +1441,7 @@ impl Registry {
         // Two-layer item sprites the interface tints: potions and leather.
         let mut overlays = HashMap::default();
         for name in OVERLAY_SPRITES {
-            if let Ok(image) = assets.texture(&format!("minecraft:items/{name}")) {
+            if let Ok(image) = assets.texture_at_vanilla_size(&format!("minecraft:items/{name}")) {
                 let w = image.width.min(size as u32) as usize;
                 let h = image.height.min(size as u32) as usize;
                 let mut canvas = vec![0u8; size * size * 4];
@@ -1431,7 +1471,7 @@ impl Registry {
         }
         // `RenderGlobal.destroyBlockIcons`, drawn over blocks being broken.
         for name in DESTROY_STAGES {
-            if let Ok(image) = assets.texture(&format!("minecraft:blocks/{name}")) {
+            if let Ok(image) = assets.texture_at_vanilla_size(&format!("minecraft:blocks/{name}")) {
                 let mut canvas = vec![0u8; size * size * 4];
                 for y in 0..16usize.min(image.height as usize) {
                     let start = y * image.width as usize * 4;
@@ -1447,7 +1487,7 @@ impl Registry {
             }
         }
         // `RenderItem.RES_ITEM_GLINT`, sampled with wrapping by the glint pass.
-        if let Ok(image) = assets.texture("minecraft:misc/enchanted_item_glint") {
+        if let Ok(image) = assets.texture_at_vanilla_size("minecraft:misc/enchanted_item_glint") {
             let w = image.width.min(size as u32) as usize;
             let h = image.height.min(size as u32) as usize;
             let mut canvas = vec![0u8; size * size * 4];

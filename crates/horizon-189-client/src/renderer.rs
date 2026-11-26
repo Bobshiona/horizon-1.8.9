@@ -74,6 +74,7 @@ impl Renderer {
     pub async fn new(
         window: Arc<Window>,
         assets: Option<PathBuf>,
+        packs: Vec<PathBuf>,
         world_view: bool,
         view_distance: u8,
         gui_scale: u32,
@@ -138,7 +139,7 @@ impl Renderer {
         Self::add_interface_view(&mut config);
         let registry = assets
             .as_ref()
-            .map(|jar| Registry::open(jar).map(Arc::new))
+            .map(|jar| Registry::open_with_packs(jar, &packs).map(Arc::new))
             .transpose()?;
         let world_config = config.clone();
         let scene = registry

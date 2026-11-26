@@ -17,6 +17,8 @@ use std::{
     path::Path,
 };
 
+pub mod packs;
+
 pub struct Assets {
     source: ResourceSource,
     models: ModelLibrary,
@@ -32,6 +34,14 @@ pub struct Texture {
 impl Assets {
     pub fn open(jar: &Path) -> Result<Self, Box<dyn Error>> {
         Self::from_source(ResourceSource::archive(jar)?)
+    }
+
+    /// The jar with resource packs (highest priority first) stacked over it.
+    pub fn open_with_packs(
+        jar: &Path,
+        packs: &[std::path::PathBuf],
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::from_source(packs::stack(jar, packs)?)
     }
 
     pub fn from_source(source: ResourceSource) -> Result<Self, Box<dyn Error>> {
@@ -106,7 +116,7 @@ impl Assets {
                 .read_limited(&format!("assets/{namespace}/models/{path}.json"), 1 << 20)?;
             let model = CuboidModel::from_json(std::str::from_utf8(&bytes)?)?;
             if let Some(TextureSlot::Material(material)) = model.textures.get("layer0") {
-                return self.texture(&material.sprite);
+                return self.texture_at_vanilla_size(&material.sprite);
             }
             let Some(parent) = model.parent else { break };
             name = if parent.contains(':') {
@@ -180,6 +190,27 @@ impl Assets {
         Self::decode_png(&data)
     }
 
+    /// A texture at the jar's own size: a resource pack's larger version
+    /// (2x, 4x… of the jar's) is box-averaged down, so models laid out for
+    /// vanilla's pixels still line up. Otherwise as `texture`.
+    pub fn texture_at_vanilla_size(&self, identifier: &str) -> Result<Texture, Box<dyn Error>> {
+        let texture = self.texture(identifier)?;
+        let Some(jar) = self.source.underlay() else {
+            return Ok(texture);
+        };
+        let (namespace, name) = identifier
+            .split_once(':')
+            .unwrap_or(("minecraft", identifier));
+        let Ok(data) =
+            jar.read_limited(&format!("assets/{namespace}/textures/{name}.png"), 16 << 20)
+        else {
+            return Ok(texture);
+        };
+        let reader = png::Decoder::new(Cursor::new(data)).read_info()?;
+        let (width, height) = (reader.info().width, reader.info().height);
+        Ok(downscale(texture, width, height))
+    }
+
     pub fn decode_png(data: &[u8]) -> Result<Texture, Box<dyn Error>> {
         let mut decoder = png::Decoder::new(Cursor::new(data));
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -226,10 +257,72 @@ impl Assets {
     }
 }
 
+/// `texture` brought to `width` x `height` when it is a whole power-of-two
+/// multiple of that size; unchanged otherwise.
+pub fn downscale(texture: Texture, width: u32, height: u32) -> Texture {
+    if width == 0 || texture.width <= width || !texture.width.is_multiple_of(width) {
+        return texture;
+    }
+    let step = texture.width / width;
+    if !step.is_power_of_two() || texture.height != height * step {
+        return texture;
+    }
+    let (step, source_width) = (step as usize, texture.width as usize);
+    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let mut sum = [0u32; 4];
+            for dy in 0..step {
+                for dx in 0..step {
+                    let at = ((y * step + dy) * source_width + x * step + dx) * 4;
+                    for (channel, total) in sum.iter_mut().enumerate() {
+                        *total += u32::from(texture.rgba[at + channel]);
+                    }
+                }
+            }
+            for channel in 0..4 {
+                rgba[(y * width as usize + x) * 4 + channel] =
+                    (sum[channel] / (step * step) as u32) as u8;
+            }
+        }
+    }
+    Texture {
+        width,
+        height,
+        rgba,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use horizon_assets::resource_source::Resource;
+
+    #[test]
+    fn larger_pack_textures_average_down_to_the_jars_size() {
+        let texture = Texture {
+            width: 4,
+            height: 2,
+            rgba: [
+                [0, 0, 0, 255],
+                [255, 255, 255, 255],
+                [10, 20, 30, 255],
+                [10, 20, 30, 255],
+            ]
+            .repeat(2)
+            .concat(),
+        };
+        let small = downscale(texture, 2, 1);
+        assert_eq!((small.width, small.height), (2, 1));
+        assert_eq!(&small.rgba[..4], &[127, 127, 127, 255]);
+        assert_eq!(&small.rgba[4..], &[10, 20, 30, 255]);
+        let odd = Texture {
+            width: 6,
+            height: 2,
+            rgba: vec![0; 48],
+        };
+        assert_eq!(downscale(odd, 2, 1).width, 6, "3x is left alone");
+    }
 
     #[test]
     fn legacy_parent_and_texture_slots_bake_through_upstream() {

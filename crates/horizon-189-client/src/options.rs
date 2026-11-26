@@ -24,6 +24,9 @@ pub struct Options {
     pub raw_input: bool,
     /// Keep Chunks (client-side chunk cache) for this run.
     pub keep_chunks: bool,
+    /// Resource packs for this run, highest priority first, instead of the
+    /// selected ones.
+    pub resource_packs: Vec<std::path::PathBuf>,
     /// Requested view distance in chunks (vanilla default 8 here, 2..=32).
     pub view_distance: u8,
     /// Vanilla `guiScale`: 0 automatic, otherwise the largest allowed scale.
@@ -131,6 +134,7 @@ pub const HELP: &str = "Horizon 1.8.9\n\
     --render-scale PERCENT        World resolution, 50-100% of the window\n\
     --raw-input                   Unaccelerated mouse motion (GameController) for this run\n\
     --keep-chunks                 Keep columns the server unloads inside the render distance\n\
+    --resource-pack PATH          Use this pack (repeat; first is highest) instead of the selected ones\n\
     --fov F                       World vertical FOV 30-110 degrees (default 70)\n\
     --sensitivity F               Mouse sensitivity 0.0-1.0 (vanilla default 0.5)\n\
     --render-distance N           View distance in chunks, 2-32 (default 8)\n\
@@ -275,6 +279,7 @@ impl Options {
                 "--fast-graphics" => options.fast_graphics = true,
                 "--raw-input" => options.raw_input = true,
                 "--keep-chunks" => options.keep_chunks = true,
+                "--resource-pack" => options.resource_packs.push(value()?.into()),
                 "--render-scale" => {
                     let percent: f64 = value()?.parse()?;
                     if !(50.0..=100.0).contains(&percent) {

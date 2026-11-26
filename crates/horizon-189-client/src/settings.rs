@@ -184,6 +184,9 @@ pub struct Settings {
     /// The launcher's server list: shown name and `host[:port]`.
     pub servers: Vec<(String, String)>,
     pub video: Video,
+    /// Selected resource packs, highest priority first: names in the packs
+    /// folder (`options.txt` `resourcePacks`).
+    pub resource_packs: Vec<String>,
     path: Option<PathBuf>,
 }
 
@@ -203,6 +206,7 @@ impl Default for Settings {
             hud: HudKind::ALL.map(HudKind::default_hud),
             toggles: Toggles::default(),
             servers: default_servers(),
+            resource_packs: Vec::new(),
             video: Video::default(),
             path: None,
         }
@@ -268,6 +272,14 @@ impl Settings {
                         .map_or(default.scale, |v| v.clamp(0.5, 3.0)),
                 };
             }
+        }
+        if let Some(Value::Array(packs)) = root.get("resource_packs") {
+            settings.resource_packs = packs
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|name| crate::packs::safe_name(name))
+                .map(str::to_owned)
+                .collect();
         }
         if let Some(Value::Array(servers)) = root.get("servers") {
             settings.servers = servers
@@ -354,6 +366,7 @@ impl Settings {
             "version": 1,
             "hud": Value::Object(huds),
             "servers": servers,
+            "resource_packs": self.resource_packs,
             "video": {
                 "fov": self.video.fov,
                 "sensitivity": self.video.sensitivity,
