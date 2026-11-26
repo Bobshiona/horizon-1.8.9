@@ -1900,6 +1900,47 @@ fn run_actor(
                         push_sound(&mut state, sound.step(), centre, volume, sound.pitch * 0.5);
                     }
                 }
+                // updateItemUse: eating and drinking.
+                if let Some(drink) = controller.use_sound.take() {
+                    if drink {
+                        let pitch = (jitter(&mut sound_seed) * 0.5 + 0.5) * 0.1 + 0.9;
+                        push_sound(&mut state, "random.drink", player.position, 0.5, pitch);
+                    } else {
+                        let volume = if jitter(&mut sound_seed) > 0.0 {
+                            1.0
+                        } else {
+                            0.5
+                        };
+                        let pitch = jitter(&mut sound_seed) * 0.2 + 1.0;
+                        push_sound(&mut state, "random.eat", player.position, volume, pitch);
+                    }
+                }
+                // EntityLivingBase.fall: past three blocks (and Jump Boost's
+                // levels) the fall sound, then the block's step sound.
+                if let Some(landing) = player.landing.take() {
+                    let jump = potions
+                        .iter()
+                        .find(|potion| potion.0 == 8)
+                        .map_or(0.0, |potion| f32::from(potion.1) + 1.0);
+                    let damage = ((landing.distance - 3.0 - jump) * landing.multiplier).ceil();
+                    if damage > 0.0 {
+                        let name = if damage > 4.0 {
+                            "game.player.hurt.fall.big"
+                        } else {
+                            "game.player.hurt.fall.small"
+                        };
+                        push_sound(&mut state, name, player.position, 1.0, 1.0);
+                        let [x, y, z] = landing.at;
+                        if let Some(block) = world_view
+                            .block(x, y, z)
+                            .filter(|block| block.block_id() != 0)
+                        {
+                            let sound = crate::audio::block_sound(block.block_id());
+                            let (volume, pitch) = (sound.volume * 0.5, sound.pitch * 0.75);
+                            push_sound(&mut state, sound.step(), player.position, volume, pitch);
+                        }
+                    }
+                }
                 // Entity.moveEntity: the swim sound in water, then
                 // playStepSound (a snow layer on top steps as snow; liquids
                 // are silent).

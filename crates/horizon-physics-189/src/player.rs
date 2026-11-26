@@ -156,6 +156,8 @@ pub struct Player {
     next_step: i32,
     /// The last move's `playStepSound`, for the window to play.
     pub step: Option<Step>,
+    /// The last move's landing (`Block.onFallenUpon`), for the fall sounds.
+    pub landing: Option<Landing>,
     /// `cameraYaw` and `cameraPitch`, and their previous tick.
     pub camera: [f32; 2],
     pub previous_camera: [f32; 2],
@@ -170,6 +172,14 @@ pub struct Player {
 pub struct Step {
     pub at: [i32; 3],
     pub swim: Option<f32>,
+}
+
+/// A landing: `fall(distance, multiplier)` onto the block at `at`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Landing {
+    pub distance: f32,
+    pub multiplier: f32,
+    pub at: [i32; 3],
 }
 
 impl Default for Player {
@@ -212,6 +222,7 @@ impl Default for Player {
             distance_on_step: 0.0,
             next_step: 1,
             step: None,
+            landing: None,
             camera: [0.0; 2],
             previous_camera: [0.0; 2],
             fly_toggle_timer: 0,
@@ -962,9 +973,12 @@ impl Player {
         self.on_ground = self.collided_vertically && d4 < 0.0;
         // Entity.updateFallState and the walked distance view bobbing reads;
         // sneaking on the ground and flying do not count as walking.
-        if self.on_ground {
-            self.fall_distance = 0.0;
-        } else if y < 0.0 {
+        let fell = if self.on_ground {
+            std::mem::take(&mut self.fall_distance)
+        } else {
+            0.0
+        };
+        if !self.on_ground && y < 0.0 {
             self.fall_distance = (f64::from(self.fall_distance) - y) as f32;
         }
         if !edge && !self.flying {
@@ -1004,6 +1018,21 @@ impl Player {
             let scale = 0.4 + self.motion[1].abs() * 0.2;
             self.motion[0] *= scale;
             self.motion[2] *= scale;
+        }
+        // updateFallState: Block.onFallenUpon calls fall() with hay's 0.2 and,
+        // unless sneaking, slime's 0; EntityPlayer.fall skips players that may fly.
+        if fell > 0.0 && !self.allow_flying {
+            let multiplier = match below {
+                170 => 0.2,
+                165 if !self.sneaking => 0.0,
+                _ => 1.0,
+            };
+            self.landing = Some(Landing {
+                distance: fell,
+                multiplier,
+                // fall() looks below the feet again, past no fence.
+                at: [bx, floor(self.position[1] - 0.20000000298023224), bz],
+            });
         }
         // The step sound: height counts only on a ladder.
         if !edge && !self.flying {

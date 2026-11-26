@@ -86,6 +86,8 @@ pub struct Controller {
     pub using: bool,
     /// Ticks the held item has been in use.
     pub use_ticks: u32,
+    /// `updateItemUse` this tick: true drinks, false eats.
+    pub use_sound: Option<bool>,
     /// Critical-hit particles to show: target and whether magic (Sharpness).
     pub effects: Vec<(i32, bool)>,
     /// Blocks this player just broke, for `addBlockDestroyEffects`.
@@ -445,10 +447,16 @@ impl Controller {
         // onItemUseFinish: food and drinks end after 32 ticks without a
         // release packet; the server finishes them too.
         if self.using {
-            self.use_ticks += 1;
             let consumable = inventory
                 .held()
                 .is_some_and(|i| !is_sword(i.id) && i.id != 261);
+            // EntityPlayer.onUpdate: updateItemUse while itemInUseCount <= 25
+            // and a multiple of 4, before it counts down from 32.
+            let count = 32u32.saturating_sub(self.use_ticks);
+            if consumable && count <= 25 && count.is_multiple_of(4) && count > 0 {
+                self.use_sound = inventory.held().map(|i| i.id == 335 || i.id == 373);
+            }
+            self.use_ticks += 1;
             if consumable && self.use_ticks >= 32 {
                 self.using = false;
             }

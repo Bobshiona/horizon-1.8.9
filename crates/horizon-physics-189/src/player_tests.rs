@@ -368,3 +368,37 @@ fn steps_sound_every_five_thirds_of_a_block_and_not_while_sneaking() {
     let (_, sneaking) = walk(true);
     assert!(sneaking.is_empty());
 }
+
+#[test]
+fn landing_reports_the_fall_for_its_sounds() {
+    let world = world(&[([0, 3, 2], 170 << 4)]);
+    let drop = |x: f64, z: f64| {
+        let mut player = Player::default();
+        player.set_position(x, 10.0, z);
+        let mut landing = None;
+        for _ in 0..40 {
+            player.tick(&world, Keys::default());
+            if let Some(found) = player.landing.take() {
+                landing = Some(found);
+            }
+        }
+        landing.expect("landed")
+    };
+    // Six blocks onto stone (less the landing tick's own move, which
+    // updateFallState does not add), then onto hay (0.2 of the damage).
+    let stone = drop(0.5, 0.5);
+    assert!((5.5..6.0).contains(&stone.distance), "{}", stone.distance);
+    assert_eq!((stone.multiplier, stone.at), (1.0, [0, 3, 0]));
+    let hay = drop(0.5, 2.5);
+    assert_eq!((hay.multiplier, hay.at), (0.2, [0, 3, 2]));
+    // Creative players never fall.
+    let mut flier = Player {
+        allow_flying: true,
+        ..Player::default()
+    };
+    flier.set_position(0.5, 10.0, 0.5);
+    for _ in 0..40 {
+        flier.tick(&world, Keys::default());
+        assert!(flier.landing.take().is_none());
+    }
+}
