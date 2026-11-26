@@ -176,6 +176,16 @@ impl Resources {
         })
     }
 
+    /// `glyph_sizes.bin`: each unicode glyph's first and last column.
+    pub fn glyph_sizes(&self) -> &[u8] {
+        &self.glyph_sizes
+    }
+
+    /// `unicode_page_XX.png` as read, if the font has that page.
+    pub fn page_png(&self, page: u8) -> Option<&[u8]> {
+        self.pages.get(usize::from(page))?.as_deref()
+    }
+
     /// `I18n.format` without arguments: the key itself when absent.
     pub fn translate<'a>(&'a self, key: &'a str) -> &'a str {
         self.language.get(key).map_or(key, String::as_str)

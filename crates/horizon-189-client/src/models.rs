@@ -1522,7 +1522,7 @@ pub fn nametags(
     partial: f32,
     origin: [i64; 3],
     camera: horizon_protocol_47::play::PositionLook,
-    widths: &[u8; 256],
+    font: &LabelFont<'_>,
     board: &crate::scoreboard::Scoreboard,
     own_name: &str,
     in_view: &dyn Fn(&Entity) -> bool,
@@ -1545,16 +1545,18 @@ pub fn nametags(
         } else {
             &mut *through
         };
-        label_backing(faint, matrix, text_width(text, widths) / 2);
+        // RenderEntity.renderLivingLabel centres on getStringWidth / 2.
+        let half = font.width(text) / 2;
+        label_backing(faint, matrix, half);
         let start = faint.len();
-        text_line(faint, matrix, text, 0.0, widths, [1.0; 3]);
+        label_line(faint, matrix, text, -half as f32, font, [1.0; 3]);
         // 553648127: white at alpha 0x20; colour codes keep that alpha.
         for vertex in &mut faint[start..] {
             vertex.hurt = 32.0 / 255.0;
         }
         if !sneaking {
             let start = tested.len();
-            text_line(tested, matrix, text, 0.0, widths, [1.0; 3]);
+            label_line(tested, matrix, text, -half as f32, font, [1.0; 3]);
             for vertex in &mut tested[start..] {
                 vertex.hurt = 1.0;
             }
@@ -1923,19 +1925,157 @@ pub fn fishing_lines(
 }
 
 /// `FontRenderer.getStringWidth` over ascii glyphs, skipping `§` codes.
-fn text_width(text: &str, widths: &[u8; 256]) -> i32 {
-    let mut total = 0;
+/// What world labels draw text with: `ascii.png`'s advances, the unicode
+/// glyph sizes and the unicode pages resident in entity layers.
+pub struct LabelFont<'a> {
+    pub widths: &'a [u8; 256],
+    /// `glyph_sizes.bin`.
+    pub sizes: &'a [u8],
+    /// Resident pages: page and entity layer.
+    pub pages: &'a [(u8, u32)],
+}
+
+impl LabelFont<'_> {
+    /// `FontRenderer.getCharWidth`: ascii advances, or a unicode glyph's
+    /// columns halved plus one (a last column past 7 counts the full 16).
+    fn char_width(&self, c: char) -> i32 {
+        if c == ' ' {
+            return 4;
+        }
+        if let Some(index) = crate::ui::ascii_index(c) {
+            return i32::from(self.widths[index]);
+        }
+        let size = self.sizes.get(c as usize).copied().unwrap_or(0);
+        if size == 0 {
+            return 0;
+        }
+        let (mut first, mut last) = (i32::from(size >> 4), i32::from(size & 15));
+        if last > 7 {
+            last = 15;
+            first = 0;
+        }
+        (last + 1 - first) / 2 + 1
+    }
+
+    /// `getStringWidth`, with its quirk: a colour code does not end bold.
+    pub fn width(&self, text: &str) -> i32 {
+        let (mut total, mut bold) = (0, false);
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '§' {
+                match chars.next().map(|c| c.to_ascii_lowercase()) {
+                    Some('l') => bold = true,
+                    Some('r') => bold = false,
+                    _ => {}
+                }
+                continue;
+            }
+            let width = self.char_width(c);
+            total += width + i32::from(bold && width > 0);
+        }
+        total
+    }
+
+    fn layer(&self, page: u8) -> Option<u32> {
+        self.pages
+            .iter()
+            .find(|(resident, _)| *resident == page)
+            .map(|(_, layer)| *layer)
+    }
+}
+
+/// The unicode pages world labels would need for `text`.
+pub fn label_pages(text: &str, pages: &mut Vec<u8>) {
+    for c in text.chars() {
+        if c != '§' && c != ' ' && crate::ui::ascii_index(c).is_none() && (c as u32) < 0x1_0000 {
+            let page = (c as u32 >> 8) as u8;
+            if !pages.contains(&page) {
+                pages.push(page);
+            }
+        }
+    }
+}
+
+/// `FontRenderer.renderStringAtPos` for world labels from `x`: colour codes
+/// reset the style, bold draws twice a pixel apart, italic leans, unicode
+/// glyphs come from their resident page.
+fn label_line(
+    out: &mut Vec<Vertex>,
+    matrix: Mat4,
+    text: &str,
+    mut x: f32,
+    font: &LabelFont<'_>,
+    base: [f32; 3],
+) {
+    let scale = 1.0 / LAYER_SIZE as f32;
+    let (mut colour, mut bold, mut italic) = (base, false, false);
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
         if c == '§' {
-            chars.next();
+            match chars.next().map(|c| c.to_ascii_lowercase()) {
+                Some(code @ ('0'..='9' | 'a'..='f')) => {
+                    colour = crate::ui::color_code(code.to_digit(16).unwrap_or(15) as usize);
+                    (bold, italic) = (false, false);
+                }
+                Some('l') => bold = true,
+                Some('o') => italic = true,
+                Some('r') => (colour, bold, italic) = (base, false, false),
+                _ => {}
+            }
             continue;
         }
-        if let Some(index) = crate::ui::ascii_index(c) {
-            total += i32::from(widths[index]);
+        let width = font.char_width(c);
+        // Corners in label pixels and texels on the 128-pixel layer.
+        let quad = if c == ' ' {
+            None
+        } else if let Some(index) = crate::ui::ascii_index(c) {
+            (width > 1).then(|| {
+                let (u, v) = ((index % 16 * 8) as f32, (index / 16 * 8) as f32);
+                let w = width as f32 - 1.01;
+                (Texture::Font as u32, [u, v, w, 7.99], w)
+            })
+        } else {
+            let size = font.sizes.get(c as usize).copied().unwrap_or(0);
+            let page = font.layer((c as u32 >> 8) as u8);
+            page.filter(|_| size != 0).map(|layer| {
+                let (first, last) = (f32::from(size >> 4), f32::from((size & 15) + 1));
+                let code = c as u32 & 255;
+                let (u, v) = ((code % 16 * 16) as f32 + first, (code / 16 * 16) as f32);
+                let span = last - first - 0.02;
+                (
+                    layer,
+                    [u / 2.0, v / 2.0, span / 2.0, 15.98 / 2.0],
+                    span / 2.0,
+                )
+            })
+        };
+        if let Some((layer, [u, v, uw, vh], w)) = quad {
+            let lean = if italic { 1.0 } else { 0.0 };
+            let copies: &[f32] = if bold { &[0.0, 1.0] } else { &[0.0] };
+            for &shift in copies {
+                let left = x + shift;
+                let corners = [
+                    Vec3::new(left + lean, 0.0, 0.0),
+                    Vec3::new(left - lean, 7.99, 0.0),
+                    Vec3::new(left + w - lean, 7.99, 0.0),
+                    Vec3::new(left + w + lean, 0.0, 0.0),
+                ]
+                .map(|point| matrix.transform_point3(point).to_array());
+                let uv = [[u, v], [u, v + vh], [u + uw, v + vh], [u + uw, v]]
+                    .map(|[a, b]| [a * scale, b * scale]);
+                for index in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+                    out.push(Vertex {
+                        position: corners[index],
+                        uv: uv[index],
+                        layer,
+                        color: colour,
+                        hurt: 0.0,
+                    });
+                }
+            }
         }
+        x += (width + i32::from(bold && width > 0)) as f32;
     }
-    total
 }
 
 /// The label's backing: black at alpha 0.25 from (-half - 1, -1) to
@@ -1957,75 +2097,6 @@ fn label_backing(out: &mut Vec<Vertex>, matrix: Mat4, half: i32) {
             color: [0.0; 3],
             hurt: 0.25,
         });
-    }
-}
-
-fn text_line(
-    out: &mut Vec<Vertex>,
-    matrix: Mat4,
-    text: &str,
-    y: f32,
-    widths: &[u8; 256],
-    base: [f32; 3],
-) {
-    // `§` colour codes recolour, other codes are skipped; glyphs outside
-    // ascii.png (unicode pages) are left out of world text.
-    let mut colour = base;
-    let mut chars = text.chars();
-    // Clone the initial iterator for the width pass; the drawing pass starts
-    // with the same characters and base colour, without a temporary glyph Vec.
-    let glyphs = std::iter::from_fn(move || {
-        while let Some(c) = chars.next() {
-            if c == '§' {
-                match chars.next().map(|c| c.to_ascii_lowercase()) {
-                    Some(code @ ('0'..='9' | 'a'..='f')) => {
-                        let index = code.to_digit(16).unwrap_or(15) as usize;
-                        colour = crate::ui::color_code(index);
-                    }
-                    Some('r') => colour = base,
-                    _ => {}
-                }
-                continue;
-            }
-            if let Some(index) = crate::ui::ascii_index(c) {
-                return Some((index, colour));
-            }
-        }
-        None
-    });
-    // Keep the original left-to-right f32 sum and truncation for centering.
-    let total: f32 = glyphs
-        .clone()
-        .map(|(code, _)| f32::from(widths[code]))
-        .sum();
-    let mut x = (-total / 2.0).trunc();
-    let scale = 1.0 / LAYER_SIZE as f32;
-    for (code, colour) in glyphs {
-        let advance = f32::from(widths[code]);
-        if code != 32 && advance > 1.0 {
-            let (u, v) = ((code % 16 * 8) as f32, (code / 16 * 8) as f32);
-            let w = advance - 1.01;
-            let corners = [
-                Vec3::new(x, y, 0.0),
-                Vec3::new(x, y + 7.99, 0.0),
-                Vec3::new(x + w, y + 7.99, 0.0),
-                Vec3::new(x + w, y, 0.0),
-            ]
-            .map(|point| matrix.transform_point3(point).to_array());
-            let uv = [[u, v], [u, v + 7.99], [u + w, v + 7.99], [u + w, v]]
-                .map(|[a, b]| [a * scale, b * scale]);
-            // Text faces the sign front; draw both windings so either side is visible.
-            for index in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
-                out.push(Vertex {
-                    position: corners[index],
-                    uv: uv[index],
-                    layer: Texture::Font as u32,
-                    color: colour,
-                    hurt: 0.0,
-                });
-            }
-        }
-        x += advance;
     }
 }
 
@@ -2183,7 +2254,7 @@ fn sign_fit(text: &str, widths: &[u8; 256]) -> String {
     }
 }
 
-/// `text_line` with bold and italic, for sign text.
+/// Sign text with bold and italic (`renderStringAtPos`).
 fn styled_line(
     out: &mut Vec<Vertex>,
     matrix: Mat4,
@@ -2444,74 +2515,47 @@ fn banner_model(
 mod tests {
     use super::*;
 
-    /// Independent pre-optimization implementation: materialize colored glyphs
-    /// before summing advances and emitting vertices. Do not share the new iterator.
-    fn text_line_reference(
-        out: &mut Vec<Vertex>,
-        matrix: Mat4,
-        text: &str,
-        y: f32,
-        widths: &[u8; 256],
-        colour: [f32; 3],
-    ) {
-        // `§` colour codes recolour, other codes are skipped; glyphs outside
-        // ascii.png (unicode pages) are left out of world text.
-        let base = colour;
-        let glyphs: Vec<(usize, [f32; 3])> = {
-            let mut colour = base;
-            let mut glyphs = Vec::with_capacity(text.len());
-            let mut chars = text.chars();
-            while let Some(c) = chars.next() {
-                if c == '§' {
-                    match chars.next().map(|c| c.to_ascii_lowercase()) {
-                        Some(code @ ('0'..='9' | 'a'..='f')) => {
-                            let index = code.to_digit(16).unwrap_or(15) as usize;
-                            colour = crate::ui::color_code(index);
-                        }
-                        Some('r') => colour = base,
-                        _ => {}
-                    }
-                    continue;
-                }
-                if let Some(index) = crate::ui::ascii_index(c) {
-                    glyphs.push((index, colour));
-                }
-            }
-            glyphs
+    #[test]
+    fn world_labels_draw_bold_and_unicode_hearts() {
+        let mut widths = [6u8; 256];
+        widths[32] = 4;
+        let mut sizes = vec![0u8; 1 << 16];
+        // U+2764 HEAVY BLACK HEART: columns 1 to 14 of its cell.
+        sizes[0x2764] = 0x1e;
+        let resident = [(0x27u8, 300u32)];
+        let font = LabelFont {
+            widths: &widths,
+            sizes: &sizes,
+            pages: &resident,
         };
-        let total: f32 = glyphs
-            .iter()
-            .map(|(code, _)| f32::from(widths[*code]))
-            .sum();
-        let mut x = (-total / 2.0).trunc();
+        // A unicode glyph past column 7 counts the whole cell: 16 / 2 + 1.
+        assert_eq!(font.char_width('\u{2764}'), 9);
+        assert_eq!(font.width("20 \u{2764}"), 6 + 6 + 4 + 9);
+        // getStringWidth: a colour code does not end bold, §r does.
+        assert_eq!(font.width("§la§cb"), 14);
+        assert_eq!(font.width("§la§rb"), 13);
+        let quads = |font: &LabelFont<'_>, text: &str| {
+            let mut out = Vec::new();
+            label_line(&mut out, Mat4::IDENTITY, text, 0.0, font, [1.0; 3]);
+            out
+        };
+        let heart = quads(&font, "\u{2764}");
+        assert_eq!(heart.len(), 12);
+        assert!(heart.iter().all(|v| v.layer == 300));
+        // Its texels: column 1 of cell (4, 6) on the half-size page.
         let scale = 1.0 / LAYER_SIZE as f32;
-        for (code, colour) in glyphs {
-            let advance = f32::from(widths[code]);
-            if code != 32 && advance > 1.0 {
-                let (u, v) = ((code % 16 * 8) as f32, (code / 16 * 8) as f32);
-                let w = advance - 1.01;
-                let corners = [
-                    Vec3::new(x, y, 0.0),
-                    Vec3::new(x, y + 7.99, 0.0),
-                    Vec3::new(x + w, y + 7.99, 0.0),
-                    Vec3::new(x + w, y, 0.0),
-                ]
-                .map(|point| matrix.transform_point3(point).to_array());
-                let uv = [[u, v], [u, v + 7.99], [u + w, v + 7.99], [u + w, v]]
-                    .map(|[a, b]| [a * scale, b * scale]);
-                // Text faces the sign front; draw both windings so either side is visible.
-                for index in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
-                    out.push(Vertex {
-                        position: corners[index],
-                        uv: uv[index],
-                        layer: Texture::Font as u32,
-                        color: colour,
-                        hurt: 0.0,
-                    });
-                }
-            }
-            x += advance;
-        }
+        assert_eq!(
+            heart[0].uv,
+            [(4.0 * 16.0 + 1.0) / 2.0 * scale, 6.0 * 16.0 / 2.0 * scale]
+        );
+        assert_eq!(quads(&font, "§l\u{2764}").len(), 24, "bold draws twice");
+        assert_eq!(quads(&font, "§lab").len(), 4 * 12);
+        assert_eq!(quads(&font, "§la§cb").len(), 3 * 12, "a colour ends bold");
+        let unloaded = LabelFont { pages: &[], ..font };
+        assert!(quads(&unloaded, "\u{2764}").is_empty());
+        let mut pages = Vec::new();
+        label_pages("§c20 \u{2764} \u{272b}", &mut pages);
+        assert_eq!(pages, [0x27]);
     }
 
     #[test]
@@ -2579,83 +2623,6 @@ mod tests {
         assert_eq!(italic[1].position[0], plain[1].position[0] - 1.0);
         // A colour code ends bold.
         assert_eq!(quads("§la§cb").len(), 3 * 12);
-    }
-
-    #[test]
-    fn two_pass_text_matches_collected_glyph_geometry_byte_for_byte() {
-        fn compare(text: &str, widths: &[u8; 256], matrix: Mat4, y: f32, colour: [f32; 3]) {
-            // Both implementations append to existing output, as world labels do.
-            let prefix = Vertex {
-                position: [1.25, -2.5, 3.75],
-                uv: [0.125, 0.75],
-                layer: 42,
-                color: [0.2, 0.4, 0.6],
-                hurt: 0.3,
-            };
-            let mut actual = vec![prefix];
-            let mut expected = actual.clone();
-            text_line(&mut actual, matrix, text, y, widths, colour);
-            text_line_reference(&mut expected, matrix, text, y, widths, colour);
-            assert_eq!(actual.len(), expected.len(), "text={text:?}");
-            assert_eq!(
-                bytemuck::cast_slice::<Vertex, u8>(&actual),
-                bytemuck::cast_slice::<Vertex, u8>(&expected),
-                "text={text:?}, y={y:?}, colour={colour:?}, matrix={matrix:?}"
-            );
-        }
-
-        let texts = [
-            "",
-            "ABC xyz 019!?",
-            " ",
-            "   A  B   ",
-            "§0a§1b§2c§3d§4e§5f§6g§7h§8i§9j§ak§bl§cm§dn§eo§fp",
-            "A§AB§BC§CD§DE§EF§FG§rH§RI",
-            "§cRed§r base§aGreen§R base",
-            "A§kB§lC§mD§nE§oF§zG§?H", // skipped styles/unknown codes
-            "§cA§zB§rC",              // unknown code must preserve the current color
-            "§",
-            "A§",
-            "§c§",
-            "A§§B",
-            "§r§R§x",
-            "§c§r",
-            "AéÀπ█B中😀C",  // ascii.png extensions and unsupported Unicode
-            "A§中B§😀C§éD", // a code consumes one character, not one byte
-            "A\0B\nC\tD",   // unused/control glyphs are filtered
-            "§c中😀§rA 中 §Bé§",
-        ];
-        let mut mixed = [0u8; 256];
-        for (index, width) in mixed.iter_mut().enumerate() {
-            *width = [0, 1, 2, 4, 6, 9, 255][index % 7];
-        }
-        // Space advances without geometry; widths 0 and 1 also emit no quad.
-        mixed[32] = 4;
-        let widths = [[0; 256], [1; 256], [6; 256], mixed, [255; 256]];
-        let matrices = [
-            Mat4::IDENTITY,
-            Mat4::from_translation(Vec3::new(125.25, -64.5, 7.75)),
-            Mat4::from_rotation_y(1.3) * Mat4::from_scale(Vec3::new(-0.025, -0.025, 0.025)),
-            Mat4::from_translation(Vec3::new(-9.5, 1.125, -13.75))
-                * Mat4::from_rotation_z(-0.7)
-                * Mat4::from_scale(Vec3::new(-2.0, 0.3, -1.5)),
-            Mat4::from_scale(Vec3::new(-0.0, 0.0, -1.0)),
-        ];
-        for text in texts {
-            for widths in &widths {
-                for matrix in matrices {
-                    for y in [0.0, -0.0, 3.25, -12.75] {
-                        for colour in [[1.0; 3], [0.125, 0.7, 0.33], [-0.0, 0.5, 1.0]] {
-                            compare(text, widths, matrix, y, colour);
-                        }
-                    }
-                }
-            }
-        }
-        // Cross 2^24 with 255-pixel advances: sequential f32 addition differs
-        // from integer summation followed by a cast. Spaces keep output small.
-        let long = format!("{}A A", " ".repeat(66_000));
-        compare(&long, &[255; 256], matrices[2], -3.5, [0.25, 0.5, 0.75]);
     }
 
     /// `add` as it was before it transformed each box corner once.

@@ -561,6 +561,37 @@ impl Renderer {
                 ),
             }
         }
+        // Unicode pages the name tags need, resident before the labels draw.
+        let mut pages = Vec::new();
+        if self.names {
+            for (_, entity) in entities {
+                if let Some(name) = &entity.custom_name {
+                    crate::models::label_pages(name, &mut pages);
+                }
+                if let Some(profile) = &entity.profile {
+                    crate::models::label_pages(&profile.name, &mut pages);
+                    if let Some((_, team)) = board.team_of(&profile.name) {
+                        crate::models::label_pages(&team.prefix, &mut pages);
+                        crate::models::label_pages(&team.suffix, &mut pages);
+                    }
+                }
+            }
+            if let Some((_, below)) = board.slot(2) {
+                crate::models::label_pages(&below.display, &mut pages);
+            }
+        }
+        let resident: Vec<(u8, u32)> = match &self.registry {
+            Some(registry) => pages
+                .into_iter()
+                .filter_map(|page| {
+                    let png = registry.gui.page_png(page);
+                    scene
+                        .unicode_layer(&self.queue, page, png)
+                        .map(|layer| (page, layer))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         let planes = scene.planes(&self.world_config);
         let origin = scene.origin();
         scene.refresh_walk();
@@ -611,6 +642,11 @@ impl Renderer {
         if self.names
             && let Some(registry) = &self.registry
         {
+            let font = crate::models::LabelFont {
+                widths: &registry.glyphs,
+                sizes: registry.gui.glyph_sizes(),
+                pages: &resident,
+            };
             crate::models::nametags(
                 &mut through,
                 &mut tested,
@@ -618,7 +654,7 @@ impl Renderer {
                 partial,
                 scene.origin(),
                 self.pose,
-                &registry.glyphs,
+                &font,
                 board,
                 own_name,
                 &in_view,

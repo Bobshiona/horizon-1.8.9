@@ -218,6 +218,8 @@ fn blend_chains(frame: &[u8], next: &[u8], elapsed: u32, ticks: u32, out: &mut V
 /// applies the five frustum planes independently to every candidate section.
 /// Texture layers for patterned banner composites, after the skins'.
 pub const BANNER_LAYERS: u32 = 64;
+/// Entity-array layers for unicode font pages in world labels.
+pub const UNICODE_LAYERS: u32 = 8;
 
 /// `TileEntity.getMaxRenderDistanceSquared`: chests, signs, skulls and
 /// banners draw only within 64 blocks of the camera.
@@ -460,6 +462,8 @@ pub struct Scene {
     /// Banner composites by layer list: slot and the frame it was last used.
     banner_slots: HashMap<Vec<(u8, u8)>, (u32, u64)>,
     banner_frame: u64,
+    /// Unicode font pages in the `UNICODE_LAYERS`: page, slot, frame used.
+    unicode_slots: Vec<(u8, u32, u64)>,
     /// Moving entities, rewritten every frame.
     entities: wgpu::Buffer,
     entity_capacity: u64,
@@ -926,8 +930,8 @@ impl Scene {
         });
         let entity_size = crate::models::LAYER_SIZE;
         let skin_base = registry.entity_textures.len() as u32;
-        let entity_layers =
-            (skin_base + 256 + BANNER_LAYERS).min(device.limits().max_texture_array_layers);
+        let entity_layers = (skin_base + 256 + BANNER_LAYERS + UNICODE_LAYERS)
+            .min(device.limits().max_texture_array_layers);
         let entity_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Owned legacy entity textures"),
             size: wgpu::Extent3d {
@@ -1121,6 +1125,7 @@ impl Scene {
             skin_capacity: entity_layers,
             banner_slots: HashMap::new(),
             banner_frame: 0,
+            unicode_slots: Vec::new(),
             entities,
             entity_capacity,
             entity_count: 0,
@@ -1316,6 +1321,77 @@ impl Scene {
         let rgba = crate::models::banner_composite(image, masks, layers);
         let layer = self.upload_banner(queue, slot, &rgba)?;
         self.banner_slots.insert(layers.to_vec(), (slot, frame));
+        Some(layer)
+    }
+
+    /// The entity layer holding unicode font page `page` at 128 pixels
+    /// (`LAYER_SIZE`), decoding and uploading it on first use; the least
+    /// recently used page gives way. `None` without room or the page.
+    pub fn unicode_layer(
+        &mut self,
+        queue: &wgpu::Queue,
+        page: u8,
+        png: Option<&[u8]>,
+    ) -> Option<u32> {
+        let base = self.banner_base()? + BANNER_LAYERS;
+        if base + UNICODE_LAYERS > self.skin_capacity {
+            return None;
+        }
+        let frame = self.banner_frame;
+        if let Some(entry) = self.unicode_slots.iter_mut().find(|e| e.0 == page) {
+            entry.2 = frame;
+            return Some(base + entry.1);
+        }
+        let image = horizon_assets_189::Assets::decode_png(png?).ok()?;
+        if image.width != 256 || image.height != 256 {
+            return None;
+        }
+        let slot = if (self.unicode_slots.len() as u32) < UNICODE_LAYERS {
+            self.unicode_slots.len() as u32
+        } else {
+            let index = (0..self.unicode_slots.len()).min_by_key(|&i| self.unicode_slots[i].2)?;
+            if self.unicode_slots[index].2 == frame {
+                return None;
+            }
+            self.unicode_slots.swap_remove(index).1
+        };
+        // Each 2x2 keeps its strongest texel, so one-pixel strokes survive.
+        let mut half = vec![0u8; 128 * 128 * 4];
+        for y in 0..128 {
+            for x in 0..128 {
+                let pick = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                    .map(|(dx, dy)| ((y * 2 + dy) * 256 + x * 2 + dx) * 4)
+                    .into_iter()
+                    .max_by_key(|&at| image.rgba[at + 3])
+                    .unwrap_or(0);
+                half[(y * 128 + x) * 4..][..4].copy_from_slice(&image.rgba[pick..pick + 4]);
+            }
+        }
+        let layer = base + slot;
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.entity_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &half,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(128 * 4),
+                rows_per_image: Some(128),
+            },
+            wgpu::Extent3d {
+                width: 128,
+                height: 128,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.unicode_slots.push((page, slot, frame));
         Some(layer)
     }
 
@@ -1707,6 +1783,7 @@ impl Scene {
         }
         self.weather =
             crate::weather::Pass::new(device, queue, registry.weather_images.as_ref(), format);
+        self.unicode_slots.clear();
         true
     }
 
