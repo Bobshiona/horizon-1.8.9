@@ -92,6 +92,15 @@ impl Assets {
             .read_limited(&format!("assets/minecraft/{path}"), limit)?)
     }
 
+    /// The game's own `pack.png` (the Default entry's icon), under any packs.
+    pub fn default_pack_icon(&self) -> Option<Vec<u8>> {
+        self.source
+            .underlay()
+            .unwrap_or(&self.source)
+            .read_limited("pack.png", 4 << 20)
+            .ok()
+    }
+
     pub fn language(&self) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
         let bytes = self
             .source

@@ -256,9 +256,6 @@ impl Screen {
         if format != 1 {
             canvas.rect(x - 1.0, y - 1.0, x + LIST_W - 9.0, y + 33.0, 0xFF77_0000);
         }
-        // No pack.png textures yet: a tile with the pack's initial.
-        canvas.rect(x, y, x + 32.0, y + 32.0, 0xFF3A_3A3A);
-        canvas.rect(x + 1.0, y + 1.0, x + 31.0, y + 31.0, 0xFF5A_5A5A);
         let (mut name, mut description) = match pack {
             Some(pack) => (
                 pack.name.trim_end_matches(".zip").to_owned(),
@@ -269,8 +266,18 @@ impl Screen {
                 "The default look of Minecraft".to_owned(),
             ),
         };
-        let initial = name.chars().take(1).collect::<String>().to_uppercase();
-        canvas.centered(&initial, x + 16.0, y + 12.0, 0xFFFF_FFFF, true);
+        // pack.png, else misc/unknown_pack, else a tile with the initial.
+        let (key, png) = match pack {
+            Some(pack) if pack.icon.is_some() => (icon_key(&pack.name), pack.icon.as_deref()),
+            Some(_) => (2, res.unknown_icon.as_deref()),
+            None => (0, res.default_icon.as_deref()),
+        };
+        if !png.is_some_and(|png| canvas.icon(key, png, [x, y, 32.0, 32.0])) {
+            canvas.rect(x, y, x + 32.0, y + 32.0, 0xFF3A_3A3A);
+            canvas.rect(x + 1.0, y + 1.0, x + 31.0, y + 31.0, 0xFF5A_5A5A);
+            let initial = name.chars().take(1).collect::<String>().to_uppercase();
+            canvas.centered(&initial, x + 16.0, y + 12.0, 0xFFFF_FFFF, true);
+        }
         if let Some((dx, dy)) = hover
             && pack.is_some()
         {
@@ -321,6 +328,14 @@ impl Screen {
             );
         }
     }
+}
+
+/// A pack's icon cache key (0 is the Default entry).
+fn icon_key(name: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut hasher);
+    hasher.finish() | 1
 }
 
 /// `trimStringToWidth` with "..." when cut, as the entry does names.

@@ -45,7 +45,12 @@ const EMPTY_LAYER: u32 = FIXED_LAYERS - 1;
 const PAGE_LAYERS: u32 = 64;
 /// Layers for system-font glyphs (`sysfont`), after the unicode pages.
 const SYSTEM_LAYERS: u32 = 8;
-pub const LAYERS: u32 = FIXED_LAYERS + PAGE_LAYERS + SYSTEM_LAYERS;
+/// Layers for pack icons (`Canvas::icon`), 16 cells of 64 pixels each.
+const ICON_LAYERS: u32 = 4;
+const ICON_BASE: u32 = FIXED_LAYERS + PAGE_LAYERS + SYSTEM_LAYERS;
+const ICON_CELL: u32 = 64;
+const ICON_CELLS: u32 = (ATLAS / ICON_CELL) * (ATLAS / ICON_CELL);
+pub const LAYERS: u32 = FIXED_LAYERS + PAGE_LAYERS + SYSTEM_LAYERS + ICON_LAYERS;
 /// Vertex `layer` flag: coverage-alpha text, exempt from the alpha test.
 pub const SMOOTH: u32 = 0x2000_0000;
 /// Vertex `layer` flag: sample the 128-pixel entity/item array instead.
@@ -113,6 +118,10 @@ pub struct Resources {
     glyph_sizes: Vec<u8>,
     sheets: Vec<(u32, Texture)>,
     pages: Vec<Option<Vec<u8>>>,
+    /// The game's `pack.png`, for the packs screen's Default entry.
+    pub default_icon: Option<Vec<u8>>,
+    /// `misc/unknown_pack`, for packs without one.
+    pub unknown_icon: Option<Vec<u8>>,
 }
 
 impl Resources {
@@ -162,6 +171,8 @@ impl Resources {
             glyph_sizes,
             sheets,
             pages,
+            default_icon: assets.default_pack_icon(),
+            unknown_icon: assets.read("textures/misc/unknown_pack.png", 1 << 20).ok(),
         })
     }
 
@@ -379,6 +390,62 @@ pub struct Pages {
     resident: Vec<Option<u32>>,
     next: u32,
     pub system: std::cell::RefCell<crate::sysfont::SystemFont>,
+    icons: std::cell::RefCell<Icons>,
+}
+
+/// Pack icons resident in the icon layers, least recently drawn replaced.
+#[derive(Default)]
+struct Icons {
+    /// Per cell: key, last frame drawn, and the image's size.
+    cells: Vec<Option<(u64, u64, [u32; 2])>>,
+    frame: u64,
+    /// Decoded icons to upload: layer, corner in it, image.
+    pending: Vec<(u32, [u32; 2], Texture)>,
+}
+
+/// Layer and corner of an icon cell.
+fn icon_cell(index: usize) -> (u32, [u32; 2]) {
+    let index = index as u32;
+    let (layer, cell) = (index / ICON_CELLS, index % ICON_CELLS);
+    let across = ATLAS / ICON_CELL;
+    (
+        ICON_BASE + layer,
+        [cell % across * ICON_CELL, cell / across * ICON_CELL],
+    )
+}
+
+/// An icon at most one cell big: halved while it divides, else nearest
+/// sampled down.
+fn icon_image(png: &[u8]) -> Option<Texture> {
+    let mut image = Assets::decode_png(png).ok()?;
+    if image.width == 0 || image.height == 0 {
+        return None;
+    }
+    while image.width > ICON_CELL || image.height > ICON_CELL {
+        let (w, h) = (image.width / 2, image.height / 2);
+        if image.width % 2 == 0 && image.height % 2 == 0 && w > 0 && h > 0 {
+            image = horizon_assets_189::downscale(image, w, h);
+        } else {
+            let scale = ICON_CELL as f32 / image.width.max(image.height) as f32;
+            let w = ((image.width as f32 * scale) as u32).clamp(1, ICON_CELL);
+            let h = ((image.height as f32 * scale) as u32).clamp(1, ICON_CELL);
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                let sy = (y * image.height / h).min(image.height - 1);
+                for x in 0..w {
+                    let sx = (x * image.width / w).min(image.width - 1);
+                    let at = ((sy * image.width + sx) * 4) as usize;
+                    rgba.extend_from_slice(&image.rgba[at..at + 4]);
+                }
+            }
+            image = Texture {
+                width: w,
+                height: h,
+                rgba,
+            };
+        }
+    }
+    Some(image)
 }
 
 impl Default for Pages {
@@ -391,6 +458,10 @@ impl Default for Pages {
                 SYSTEM_LAYERS,
                 ATLAS,
             )),
+            icons: std::cell::RefCell::new(Icons {
+                cells: vec![None; (ICON_LAYERS * ICON_CELLS) as usize],
+                ..Icons::default()
+            }),
         }
     }
 }
@@ -643,6 +714,54 @@ impl<'a> Canvas<'a> {
             sheet,
             color,
         );
+    }
+
+    /// A PNG (a pack's `pack.png`) drawn into `rect`; `key` names it across
+    /// frames. False when it doesn't decode.
+    pub fn icon(&mut self, key: u64, png: &[u8], rect: [f32; 4]) -> bool {
+        let found = {
+            let mut icons = self.pages.icons.borrow_mut();
+            let frame = self.tick;
+            icons.frame = frame;
+            let resident = icons
+                .cells
+                .iter()
+                .position(|cell| cell.is_some_and(|(k, _, _)| k == key));
+            match resident {
+                Some(index) => {
+                    let cell = icons.cells[index].as_mut().map(|cell| {
+                        cell.1 = frame;
+                        cell.2
+                    });
+                    cell.map(|size| (index, size))
+                }
+                None => icon_image(png).map(|image| {
+                    // A free cell, else the one drawn longest ago.
+                    let index = icons
+                        .cells
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, cell)| cell.map_or(0, |(_, last, _)| last + 1))
+                        .map_or(0, |(index, _)| index);
+                    let size = [image.width, image.height];
+                    icons.cells[index] = Some((key, frame, size));
+                    let (layer, corner) = icon_cell(index);
+                    icons.pending.push((layer, corner, image));
+                    (index, size)
+                }),
+            }
+        };
+        let Some((index, [w, h])) = found else {
+            return false;
+        };
+        let (layer, [u, v]) = icon_cell(index);
+        self.sprite_region(
+            layer,
+            rect,
+            [u as f32, v as f32, w as f32, h as f32],
+            [1.0; 4],
+        );
+        true
     }
 
     /// `GuiScreen.drawBackground` / `GuiSlot`: the dirt tile, one texture
@@ -1267,6 +1386,32 @@ impl Pass {
         );
     }
 
+    /// Upload pack icons decoded this frame.
+    pub fn upload_icons(&mut self, queue: &wgpu::Queue) {
+        let uploads = std::mem::take(&mut self.pages.icons.get_mut().pending);
+        for (layer, [x, y], image) in uploads {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x, y, z: layer },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &image.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(image.width * 4),
+                    rows_per_image: Some(image.height),
+                },
+                wgpu::Extent3d {
+                    width: image.width,
+                    height: image.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+
     /// Upload system-font glyphs rasterised this frame.
     pub fn upload_glyphs(&mut self, queue: &wgpu::Queue) {
         let uploads = std::mem::take(&mut self.pages.system.get_mut().pending);
@@ -1413,12 +1558,43 @@ pub(crate) fn test_resources() -> Resources {
         glyph_sizes: vec![0; 1 << 16],
         sheets: Vec::new(),
         pages: vec![None; 256],
+        default_icon: None,
+        unknown_icon: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&vec![200; (width * height * 4) as usize])
+            .unwrap();
+        drop(writer);
+        out
+    }
+
+    #[test]
+    fn pack_icons_fit_a_cell_and_cells_tile_the_icon_layers() {
+        let size = |w, h| icon_image(&png(w, h)).map(|image| (image.width, image.height));
+        assert_eq!(size(16, 16), Some((16, 16)));
+        assert_eq!(size(128, 128), Some((64, 64)));
+        assert_eq!(size(512, 256), Some((64, 32)));
+        assert_eq!(size(100, 100), Some((50, 50)));
+        assert_eq!(size(129, 129), Some((64, 64)));
+        assert!(icon_image(b"not a png").is_none());
+        assert_eq!(icon_cell(0), (ICON_BASE, [0, 0]));
+        assert_eq!(icon_cell(5), (ICON_BASE, [64, 64]));
+        let last = (ICON_LAYERS * ICON_CELLS) as usize - 1;
+        assert_eq!(icon_cell(last), (ICON_BASE + ICON_LAYERS - 1, [192, 192]));
+        const { assert!(ICON_BASE + ICON_LAYERS <= LAYERS) };
+    }
 
     #[test]
     fn ascii_table_has_vanilla_cells_and_colours() {
