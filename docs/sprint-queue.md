@@ -173,7 +173,8 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
 - [x] Instanced block entities with culling: chests (single, double, lid), ender chests, signs
       (formatted text), skulls, banners, beds. (HANDOFF 90, 91)
 - [ ] Sky (sun, moon, stars, day-night colors), weather (rain, snow), smooth lighting with
-      per-vertex AO.
+      per-vertex AO. Done: the sky (HANDOFF 92). Open: weather; the night lightmap and smooth
+      lighting, which need sky and block light per vertex (a wider terrain vertex).
 
 ### 2.2 Zero-freeze vanilla resource packs
 - [ ] Resource Packs screen (available/selected, reorder, `pack.mcmeta`, `pack.png`, open

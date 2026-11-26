@@ -395,6 +395,13 @@ impl Renderer {
         Ok(())
     }
 
+    /// This frame's sky, after `set_pose`.
+    pub fn set_sky(&mut self, state: crate::sky::State) {
+        if let Some(scene) = &mut self.scene {
+            scene.set_sky(&self.queue, &self.world_config, state);
+        }
+    }
+
     pub fn mesh_view(&self) -> Option<crate::mesh_priority::View> {
         let scene = self.scene.as_ref()?;
         crate::mesh_priority::View::new(scene.origin(), scene.planes(&self.world_config))
@@ -987,10 +994,14 @@ impl Renderer {
                         depth_slice: None,
                         ops: wgpu::Operations {
                             load: {
+                                let [r, g, b] = self.scene.as_ref().map_or(
+                                    [SKY[0] as f32, SKY[1] as f32, SKY[2] as f32],
+                                    Scene::fog_colour,
+                                );
                                 wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: SKY[0],
-                                    g: SKY[1],
-                                    b: SKY[2],
+                                    r: f64::from(r),
+                                    g: f64::from(g),
+                                    b: f64::from(b),
                                     a: 1.0,
                                 })
                             },

@@ -66,10 +66,12 @@ pub enum Texture {
     Particles,
     ExperienceOrb,
     Explosion,
+    Sun,
+    Moon,
 }
 
 /// Owned-jar paths for every layer after the generated white one.
-pub const SOURCES: [&str; 48] = [
+pub const SOURCES: [&str; 50] = [
     "minecraft:entity/steve",
     "minecraft:entity/alex",
     "minecraft:entity/chest/normal",
@@ -118,6 +120,8 @@ pub const SOURCES: [&str; 48] = [
     "minecraft:particle/particles",
     "minecraft:entity/experience_orb",
     "minecraft:entity/explosion",
+    "minecraft:environment/sun",
+    "minecraft:environment/moon_phases",
 ];
 
 impl From<Texture> for u32 {

@@ -40,6 +40,7 @@ mod scoreboard;
 mod screenshot;
 mod settings;
 mod skins;
+mod sky;
 mod status;
 mod style;
 mod sysfont;
@@ -235,6 +236,7 @@ struct Snapshot {
     own_body: Option<horizon_world_189::entities::Entity>,
     difficulty: u8,
     time_of_day: i64,
+    flat: bool,
     reduced_debug: bool,
 }
 
@@ -1472,6 +1474,7 @@ impl ApplicationHandler for App {
                         own_body: s.own_body.clone(),
                         difficulty: s.difficulty,
                         time_of_day: s.time_of_day,
+                        flat: s.flat,
                         reduced_debug: s.reduced_debug,
                     })
                 });
@@ -1633,6 +1636,36 @@ impl ApplicationHandler for App {
                         });
                         renderer.set_fov(fov * self.zoom);
                         renderer.set_pose(camera);
+                        if let Some(snapshot) = &snapshot {
+                            // World.getSkyColor reads the biome under the camera.
+                            let temperature = self
+                                .network
+                                .as_ref()
+                                .and_then(|n| n.world.try_read().ok())
+                                .and_then(|world| {
+                                    let x = camera.position[0].floor() as i32;
+                                    let z = camera.position[2].floor() as i32;
+                                    world
+                                        .column(x.div_euclid(16), z.div_euclid(16))?
+                                        .biome(x.rem_euclid(16) as u8, z.rem_euclid(16) as u8)
+                                })
+                                .map_or(0.8, terrain::temperature);
+                            let (yaw, pitch) = (camera.yaw.to_radians(), camera.pitch.to_radians());
+                            let look = glam::Vec3::new(
+                                -yaw.sin() * pitch.cos(),
+                                -pitch.sin(),
+                                yaw.cos() * pitch.cos(),
+                            );
+                            renderer.set_sky(sky::state(
+                                snapshot.time_of_day,
+                                partial,
+                                temperature,
+                                self.view_distance,
+                                look,
+                                camera.position[1],
+                                snapshot.flat,
+                            ));
+                        }
                         if let Some(network) = &self.network {
                             network.prioritize(renderer.mesh_view());
                         }

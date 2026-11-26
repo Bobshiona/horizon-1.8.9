@@ -2996,3 +2996,36 @@ Regressions: sign formatting kept and capped; 90-pixel fitting with bold; bold, 
 and reset drawing; banner pattern parsing; composite tint and blending.
 Gate: 339 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
+
+## 92. Sky: day-night colours, sunrise and sunset, sun, moon and stars
+
+Previous commit: e4be12d87b. Sprint row 2.1 (sky, weather, lighting), in part.
+
+- The sky draws as `RenderGlobal.renderSky` does, after opaque terrain at the reversed-Z far
+  plane, so only pixels nothing else covers are touched (`sky.rs`, `sky.wgsl`): the 13x13
+  plane of 64-block quads at +16 in the sky colour under linear fog to the render distance,
+  the sunrise/sunset fan, the sun and moon (`environment/sun`, `moon_phases`, added with
+  `GL_SRC_ALPHA, GL_ONE`), the 780 stars `renderStars` makes from `java.util.Random(10842)`, and
+  last the dark plane at the horizon (sky * 0.2 + 0.04, blue * 0.6 + 0.1) that hides the sun and
+  moon once set.
+- Colours follow vanilla: `calculateCelestialAngle`, `getSkyColorByTemp` (Java's HSB
+  conversion) for the biome under the camera, the daylight factor, `getFogColor`,
+  `calcSunriseSunsetColors`, `getStarBrightness` and the moon phase from the day count.
+  `updateFogColor` pulls the fog toward the sky at short render distances and toward the
+  sunrise colour when looking at it, and darkens it below y 32 (not on superflat, whose
+  `WorldType` also puts the horizon at 0; Join Game and Respawn now keep the level type). The
+  fog colour drives the terrain fog and the frame's clear colour, as `clearColor(fog)` does.
+- Not yet: the terrain itself does not darken at night (the lightmap needs separate sky and
+  block light per vertex, which the 12-byte terrain vertex has no room for; see the open row),
+  and weather.
+- Captures on the reference server: noon (sky gradient to the fog), dusk looking west (orange
+  fan, sun at the horizon), dusk looking east (stars appearing, the moon rising), midnight
+  (star field), and the sun overhead.
+- A/B against e4be12d87b, three alternating pairs: frame p50 lobby +1.76%, flyover -0.95%;
+  CPU p99 +2.40% / +2.26%; three more draws a frame by day (the third pair ran during a
+  background spike: +30% and +165%, outside the medians).
+
+Regressions: celestial angle, sky and fog colours, sunrise, star brightness, moon phase and the
+superflat case; the star field's count and radius from Java's random sequence.
+Gate: 341 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.

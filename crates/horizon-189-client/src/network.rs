@@ -183,6 +183,9 @@ pub struct Shared {
     /// while the daylight cycle runs) and `hasReducedDebug`.
     pub difficulty: u8,
     pub time_of_day: i64,
+    /// Join Game / Respawn level type "flat": `WorldType.FLAT` puts the
+    /// horizon at 0 and turns off the low-altitude fog darkening.
+    pub flat: bool,
     pub daylight_cycle: bool,
     pub reduced_debug: bool,
     /// A new render distance for the server (C15), sent on the next tick.
@@ -866,6 +869,7 @@ fn run_actor(
                 let body = packet?;
                 match play::decode(&body)? {
                     play::Packet::Join(join) => {
+                        lock(shared)?.flat = join.level_type.eq_ignore_ascii_case("flat");
                         // handleJoinGame: a new PlayerControllerMP (nothing
                         // sent yet) and a new, empty WorldClient. loadWorld
                         // keeps the existing EntityPlayerSP (inventory,
@@ -1058,6 +1062,7 @@ fn run_actor(
                         vitals.saturation = health.saturation;
                     }
                     play::Packet::Respawn(respawn) => {
+                        lock(shared)?.flat = respawn.level_type.eq_ignore_ascii_case("flat");
                         // bcy.handleRespawn creates WorldClient only when the dimension changes.
                         // Minecraft.respawnPlayer always creates a fresh EntityPlayerSP.
                         let world_changed = dimension != Some(respawn.dimension);

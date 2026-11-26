@@ -378,6 +378,7 @@ pub struct Scene {
     bindings: wgpu::BindGroup,
     terrain_bindings: Option<wgpu::BindGroup>,
     entity_bindings: wgpu::BindGroup,
+    sky: crate::sky::Pass,
     entity_texture: wgpu::Texture,
     pub skin_base: u32,
     skin_capacity: u32,
@@ -948,6 +949,13 @@ impl Scene {
                 },
             ],
         });
+        let sky = crate::sky::Pass::new(
+            device,
+            &layout,
+            &entity_view,
+            &entity_sampler,
+            config.format,
+        );
         let hand_camera = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("First-person camera uniform"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -1080,6 +1088,7 @@ impl Scene {
             bindings,
             terrain_bindings,
             entity_bindings,
+            sky,
             entity_texture,
             skin_base,
             skin_capacity: entity_layers,
@@ -1732,16 +1741,34 @@ impl Scene {
         Self::world_projection(self.fov, config.width as f32 / config.height.max(1) as f32)
     }
 
+    /// The linear fog and clear colour: the sky's, or the fixed daytime one.
+    pub fn fog_colour(&self) -> [f32; 3] {
+        self.sky
+            .fog()
+            .unwrap_or([SKY[0] as f32, SKY[1] as f32, SKY[2] as f32])
+    }
+
+    /// This frame's sky (`RenderGlobal.renderSky`); the fog follows it.
+    pub fn set_sky(
+        &mut self,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+        state: crate::sky::State,
+    ) {
+        let rotation = Mat4::from_mat3(glam::Mat3::from_mat4(self.view));
+        self.sky
+            .update(queue, state, self.projection(config) * rotation);
+        self.write_camera(queue, config);
+    }
+
     fn write_camera(&self, queue: &wgpu::Queue, config: &wgpu::SurfaceConfiguration) {
         let uniforms = Uniforms {
             view_projection: (self.projection(config) * self.view).to_cols_array(),
             eye: [self.eye.x, self.eye.y, self.eye.z, self.fog_end],
-            fog: [
-                SKY[0] as f32,
-                SKY[1] as f32,
-                SKY[2] as f32,
-                self.fog_end * 0.75,
-            ],
+            fog: {
+                let [r, g, b] = self.fog_colour();
+                [r, g, b, self.fog_end * 0.75]
+            },
         };
         queue.write_buffer(&self.camera, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -2006,6 +2033,10 @@ impl Scene {
         target: &wgpu::TextureView,
     ) -> Result<Option<horizon_metal_terrain::Encoded>, Box<dyn Error>> {
         let planes = self.planes(config).map(|plane| plane.to_array());
+        let clear = {
+            let [r, g, b] = self.fog_colour();
+            [f64::from(r), f64::from(g), f64::from(b), 1.0]
+        };
         let Some(native) = self.native.as_mut() else {
             return Ok(None);
         };
@@ -2083,7 +2114,7 @@ impl Scene {
                 target,
                 depth: &self.depth,
                 size: [config.width, config.height],
-                clear: [SKY[0], SKY[1], SKY[2], 1.0],
+                clear,
                 camera: &self.camera,
                 bases: &self.bases,
                 planes: &planes,
@@ -2170,6 +2201,9 @@ impl Scene {
             self.draw_terrain(pass, 0, 0..columns);
             self.draw_terrain(pass, 1, 0..columns);
         }
+        // After opaque terrain: the sky fills only what is still far plane.
+        let sky = self.sky.draw(pass);
+        self.draws.set(self.draws.get() + sky);
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.entity_bindings, &[]);
         for key in &self.entity_frame {

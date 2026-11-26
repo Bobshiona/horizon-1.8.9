@@ -980,6 +980,16 @@ fn climate(id: u8) -> Climate {
     }
 }
 
+/// A biome's base temperature (`BiomeGenBase.temperature`).
+pub fn temperature(id: u8) -> f32 {
+    match climate(id) {
+        Climate::Normal(temperature, _) => temperature,
+        Climate::Swamp => 0.8,
+        Climate::Mesa => 2.0,
+        Climate::Roofed => 0.7,
+    }
+}
+
 fn hex(color: u32) -> [f32; 3] {
     [
         ((color >> 16) & 255) as f32 / 255.0,
