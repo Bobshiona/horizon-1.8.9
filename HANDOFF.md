@@ -3119,3 +3119,47 @@ Gate: 349 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2. (One gate run failed
 only because a mesher log line landed in the middle of a test's "ok" line; the rerun passed
 unchanged.)
+
+## 96. Sound
+
+Previous commit: 8e001cf7d9. Sprint row 2.3, effects (music, the volume sliders and the rest
+of the client-side sounds are open).
+
+- `audio.rs` plays sound effects as `SoundHandler` and `SoundManager` over paulscode do. Events
+  come from `sounds.json` in the launcher's asset index (`assets/indexes/1.8.json` beside the
+  game jar's `versions` folder), then each selected pack's, lowest first: a new event or one
+  marked `replace` starts over, otherwise a pack adds sounds. Each play picks a sound by weight
+  (following `type: event` references), clamps the volume (times the category and master
+  levels) to 0-1 and the pitch to 0.5-2, and fades linearly to silence at 16 blocks (times the
+  volume above 1). Voices are mono, panned by the listener's yaw, at most 28 (the oldest gives
+  way). Files are read from the packs first, then the index; Ogg Vorbis decodes on a loader
+  thread the first time a file plays and stays cached. Streams (music, records) are skipped.
+- Output is the default device through `cpal`; a mixer callback resamples each voice for its
+  pitch. `HORIZON_NO_AUDIO` keeps it silent (the bench and test scripts set it). Settings keep
+  a level per `SoundCategory` (`sound`), all 1 until the sliders land.
+- What plays: every S29 Sound Effect from the server (other players' steps, hits and hurts,
+  bows, pops, mobs, placing), and what the game plays for the local player itself because the
+  server leaves it out:
+  - steps (`Entity.moveEntity`: 0.6 of the distance moved, height only on ladders, a sound
+    each time it passes the next whole number, none while sneaking or flying; snow layers on
+    top step as snow, liquids are silent, and the swim sound in water);
+  - hurt and death on Entity Status 2 and 3;
+  - the dig hit every fourth tick (`onPlayerDamageBlock`, `(volume + 1) / 8` at half pitch);
+  - block breaks, own and other players' (`playAuxSFX` 2001, `(volume + 1) / 2` at 0.8
+    pitch);
+  - the arrow-hit ding (Change Game State 6, `random.successful_hit` at 0.18 and 0.45);
+  - `gui.button.press` for the pause menu's buttons.
+- Block sound types (`SoundType` name, volume and pitch, with glass, ladder, anvil and slime's
+  special break and step names) come from `Block.registerBlocks` and the block classes'
+  constructors in the jar, read off the bytecode for all 198 ids.
+- Checked on the reference server: `/playsound` of a known and an unknown event, a glass block
+  destroyed beside the player (`dig.glass` loads `random/glass3`), instant damage.
+- A/B against 8e001cf7d9 with audio on for both (the new build opens the device and plays the
+  trace's sounds; 14 files loaded in the first run): frame p50 lobby +1.86%, flyover -1.70%;
+  CPU p99 -2.75% / -0.55%. A video was playing throughout, so single pairs swing to +27%.
+
+Regressions: `sounds.json` merging (add, replace, categories, event references), linear
+fade and panning by yaw, the mixer's resampling, end of voice and 28-voice limit, block sound
+types for 13 ids, and steps every five thirds of a block and none while sneaking.
+Gate: 354 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
