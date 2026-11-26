@@ -18,7 +18,11 @@ pub const CRAFTING: u32 = 7;
 pub const FURNACE: u32 = 8;
 /// The title screen's four side panorama faces, in layers 9 to 12.
 pub const PANORAMA: u32 = 9;
-const SHEETS: [(&str, u32); 13] = [
+/// `GuiScreenResourcePacks`' arrows.
+pub const RESOURCE_PACKS: u32 = 13;
+/// `drawBackground`'s dirt tile.
+pub const OPTIONS_BACKGROUND: u32 = 14;
+const SHEETS: [(&str, u32); 15] = [
     ("minecraft:font/ascii", ASCII),
     ("minecraft:gui/icons", ICONS),
     ("minecraft:gui/widgets", WIDGETS),
@@ -32,6 +36,8 @@ const SHEETS: [(&str, u32); 13] = [
     ("minecraft:gui/title/background/panorama_1", PANORAMA + 1),
     ("minecraft:gui/title/background/panorama_2", PANORAMA + 2),
     ("minecraft:gui/title/background/panorama_3", PANORAMA + 3),
+    ("minecraft:gui/resource_packs", RESOURCE_PACKS),
+    ("minecraft:gui/options_background", OPTIONS_BACKGROUND),
 ];
 const FIXED_LAYERS: u32 = 16;
 /// A fixed layer nothing writes: glyphs of absent pages sample transparency.
@@ -114,7 +120,9 @@ impl Resources {
         let mut sheets = Vec::new();
         let mut widths = [6u8; 256];
         for (name, layer) in SHEETS {
-            let texture = assets.texture(name)?;
+            // A pack's HD sheet is averaged to the jar's size: every UV in
+            // the interface is laid out in vanilla pixels.
+            let texture = assets.texture_at_vanilla_size(name)?;
             if texture.width > ATLAS || texture.height > ATLAS {
                 return Err(format!("{name} exceeds the interface atlas").into());
             }
@@ -611,6 +619,59 @@ impl<'a> Canvas<'a> {
             sheet,
             color,
         );
+    }
+
+    /// `drawModalRectWithCustomSizedTexture`: `w`×`h` on screen from a
+    /// `uw`×`vh` region of the sheet.
+    pub fn sprite_region(
+        &mut self,
+        sheet: u32,
+        [x, y, w, h]: [f32; 4],
+        [u, v, uw, vh]: [f32; 4],
+        color: [f32; 4],
+    ) {
+        let s = 1.0 / ATLAS as f32;
+        self.quad(
+            false,
+            [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+            [
+                [u * s, v * s],
+                [(u + uw) * s, v * s],
+                [(u + uw) * s, (v + vh) * s],
+                [u * s, (v + vh) * s],
+            ],
+            sheet,
+            color,
+        );
+    }
+
+    /// `GuiScreen.drawBackground` / `GuiSlot`: the dirt tile, one texture
+    /// per 32 interface pixels from the screen's corner, tinted `shade`.
+    pub fn dirt(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, shade: f32) {
+        let color = [shade, shade, shade, 1.0];
+        let mut y = y0;
+        while y < y1 {
+            let ty = (y / 32.0).floor() * 32.0;
+            let bottom = (ty + 32.0).min(y1);
+            let mut x = x0;
+            while x < x1 {
+                let tx = (x / 32.0).floor() * 32.0;
+                let right = (tx + 32.0).min(x1);
+                self.sprite_region(
+                    OPTIONS_BACKGROUND,
+                    [x, y, right - x, bottom - y],
+                    [
+                        (x - tx) / 2.0,
+                        (y - ty) / 2.0,
+                        (right - x) / 2.0,
+                        (bottom - y) / 2.0,
+                    ],
+                    color,
+                );
+                x = right;
+            }
+            y = bottom;
+        }
     }
 
     /// The crosshair: drawn with `ONE_MINUS_DST_COLOR, ONE_MINUS_SRC_COLOR`.
@@ -1247,6 +1308,7 @@ impl Pass {
                 .as_deref()
                 .map(Assets::decode_png)
                 .and_then(Result::ok)
+                .map(|image| horizon_assets_189::downscale(image, ATLAS, ATLAS))
                 .filter(|image| image.width == ATLAS && image.height == ATLAS);
             match decoded {
                 Some(image) => {

@@ -112,6 +112,80 @@ fn mip_levels() -> impl Iterator<Item = (usize, u32)> {
     })
 }
 
+/// Every terrain sprite with its mip chain, layer for layer.
+fn write_terrain_layers(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    images: &[horizon_assets_189::Texture],
+) {
+    for (layer, image) in images.iter().enumerate() {
+        let mut level_data = image.rgba.clone();
+        for level in 0..MIP_LEVELS {
+            let size = 16u32 >> level;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &level_data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * 4),
+                    rows_per_image: Some(size),
+                },
+                wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+            );
+            if size > 1 {
+                level_data = downsample(&level_data, size as usize);
+            }
+        }
+    }
+}
+
+/// The registry's entity textures into the first layers.
+fn write_entity_layers(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    images: &[horizon_assets_189::Texture],
+) {
+    let size = crate::models::LAYER_SIZE;
+    for (layer, image) in images.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer as u32,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 4),
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
 fn mip_chain(frame: &[u8]) -> Vec<u8> {
     let mut chain = Vec::with_capacity(1364);
     let mut level = frame.to_vec();
@@ -504,38 +578,7 @@ impl Scene {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        for (layer, image) in registry.textures.iter().enumerate() {
-            let mut level_data = image.rgba.clone();
-            for level in 0..MIP_LEVELS {
-                let size = 16u32 >> level;
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: level,
-                        origin: wgpu::Origin3d {
-                            x: 0,
-                            y: 0,
-                            z: layer as u32,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &level_data,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(size * 4),
-                        rows_per_image: Some(size),
-                    },
-                    wgpu::Extent3d {
-                        width: size,
-                        height: size,
-                        depth_or_array_layers: 1,
-                    },
-                );
-                if size > 1 {
-                    level_data = downsample(&level_data, size as usize);
-                }
-            }
-        }
+        write_terrain_layers(queue, &texture, &registry.textures);
         let camera = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Persistent camera uniform"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -899,31 +942,7 @@ impl Scene {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        for (layer, image) in registry.entity_textures.iter().enumerate() {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &entity_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: layer as u32,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &image.rgba,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(entity_size * 4),
-                    rows_per_image: Some(entity_size),
-                },
-                wgpu::Extent3d {
-                    width: entity_size,
-                    height: entity_size,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+        write_entity_layers(queue, &entity_texture, &registry.entity_textures);
         let entity_view = entity_texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -1659,6 +1678,36 @@ impl Scene {
         self.quad_capacity = old.quad_capacity;
         self.origin = old.origin;
         self.fixture = old.fixture.or(self.fixture.take());
+    }
+
+    /// A new resource pack stack with the same sprites: rewrite the terrain
+    /// and entity layers, the animations and the weather textures in place,
+    /// so loaded meshes stay valid. False (nothing changed) when the sprite
+    /// lists differ.
+    pub fn reload_textures(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        registry: &Registry,
+    ) -> bool {
+        let layers = self.terrain_texture.size().depth_or_array_layers as usize;
+        if registry.textures.len() != layers
+            || registry.animations.len() != self.animated.len()
+            || registry.entity_textures.len() as u32 != self.skin_base
+        {
+            return false;
+        }
+        write_terrain_layers(queue, &self.terrain_texture, &registry.textures);
+        write_entity_layers(queue, &self.entity_texture, &registry.entity_textures);
+        for (animated, animation) in self.animated.iter_mut().zip(&registry.animations) {
+            animated.chains = animation.frames.iter().map(|f| mip_chain(f)).collect();
+            animated.animation = animation.clone();
+            animated.shown = None;
+        }
+        self.weather =
+            crate::weather::Pass::new(device, queue, registry.weather_images.as_ref(), format);
+        true
     }
 
     /// Drop all geometry from a finished connection while retaining GPU resources.

@@ -28,6 +28,7 @@ mod options;
 mod outline;
 mod pacing;
 mod packs;
+mod packs_screen;
 mod particles;
 mod pause;
 mod pvp_metrics;
@@ -143,6 +144,8 @@ struct App {
     smoke_menu: bool,
     smoke_hud_editor: bool,
     smoke_settings: bool,
+    smoke_packs: bool,
+    smoke_pack_reload: bool,
     smoke_pause: bool,
     smoke_pitch: Option<f32>,
     bench: bool,
@@ -169,6 +172,8 @@ struct App {
     screenshot_dir: Option<std::path::PathBuf>,
     /// `--resource-pack`: this run's packs instead of the selected ones.
     pack_override: Vec<std::path::PathBuf>,
+    /// A registry building over a newly chosen pack stack.
+    pack_reload: Option<std::sync::mpsc::Receiver<Result<Arc<terrain::Registry>, String>>>,
     screenshots: (
         std::sync::mpsc::Sender<Result<String, String>>,
         std::sync::mpsc::Receiver<Result<String, String>>,
@@ -298,6 +303,11 @@ impl App {
         {
             eprintln!("GRAPHICS fancy={}", video.fancy_graphics);
         }
+        // After a pack reload the meshers still hold the registry they
+        // started with.
+        if let Some(network) = &self.network {
+            network.registry.set_fancy_graphics(video.fancy_graphics);
+        }
         if video.render_distance != self.view_distance {
             self.view_distance = video.render_distance;
             if let Some(network) = &self.network
@@ -330,6 +340,21 @@ impl App {
                 self.save_settings();
             }
             pause::Click::Mods => self.menu.toggle(),
+            pause::Click::Packs => {
+                self.save_settings();
+                self.reload_packs();
+            }
+            pause::Click::OpenFolder => {
+                // GuiScreenResourcePacks: `open` on the folder (made if missing).
+                if let Some(folder) = packs::directory()
+                    && std::fs::create_dir_all(&folder).is_ok()
+                    && let Err(error) = std::process::Command::new("/usr/bin/open")
+                        .arg(&folder)
+                        .spawn()
+                {
+                    eprintln!("PACKS_FOLDER_FAILED {error}");
+                }
+            }
             pause::Click::Leave => {
                 if self.pause.leave_to_launcher {
                     self.back_to_launcher(event_loop);
@@ -338,6 +363,50 @@ impl App {
                 }
             }
             pause::Click::Resume | pause::Click::Nothing => {}
+        }
+    }
+
+    /// Build a registry over the selected packs off the main thread; the
+    /// frame loop swaps it in when it lands.
+    fn reload_packs(&mut self) {
+        let Some(jar) = self.assets.clone() else {
+            return;
+        };
+        let packs = packs::selected(&self.settings.resource_packs);
+        let (send, receive) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("Resource reload".into())
+            .spawn(move || {
+                let result = terrain::Registry::open_with_packs(&jar, &packs)
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string());
+                let _ = send.send(result);
+            });
+        match spawned {
+            Ok(_) => self.pack_reload = Some(receive),
+            Err(error) => eprintln!("PACKS_RELOAD_FAILED {error}"),
+        }
+    }
+
+    /// A finished pack reload: swap the registry into the renderer.
+    fn finish_pack_reload(&mut self) {
+        let Some(result) = self.pack_reload.as_ref().and_then(|r| r.try_recv().ok()) else {
+            return;
+        };
+        self.pack_reload = None;
+        match result {
+            Ok(registry) => {
+                registry.set_fancy_graphics(self.settings.video.fancy_graphics);
+                let swapped = self
+                    .renderer
+                    .as_mut()
+                    .is_some_and(|renderer| renderer.reload_resources(registry));
+                eprintln!(
+                    "PACKS_RELOADED packs={} swapped={swapped}",
+                    self.settings.resource_packs.len()
+                );
+            }
+            Err(error) => eprintln!("PACKS_RELOAD_FAILED {error}"),
         }
     }
 
@@ -1353,6 +1422,15 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { .. } if self.connection.active() => {}
+            WindowEvent::MouseWheel { delta, phase, .. } if self.pause.active() => {
+                let notches = self.notches(delta, phase);
+                if notches != 0
+                    && let Some(layout) = self.renderer.as_ref().map(|r| r.layout)
+                {
+                    let mouse = self.mouse_gui();
+                    self.pause.scroll(layout, mouse, notches);
+                }
+            }
             WindowEvent::MouseWheel { delta, phase, .. } if self.chat.open => {
                 let notches = self.notches(delta, phase);
                 if notches != 0 {
@@ -2252,6 +2330,9 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.pack_reload.is_some() {
+            self.finish_pack_reload();
+        }
         if self.closing {
             // The game is running; finish installing the update, then go.
             if self.updating() {
@@ -2342,6 +2423,18 @@ impl ApplicationHandler for App {
         }
         if positioned && std::mem::take(&mut self.smoke_settings) {
             self.pause.open_settings();
+        }
+        if positioned && std::mem::take(&mut self.smoke_packs) {
+            self.pause.open_packs(&self.settings);
+        }
+        if positioned && std::mem::take(&mut self.smoke_pack_reload) {
+            self.settings.resource_packs = packs::directory()
+                .map(|folder| horizon_assets_189::packs::discover(&folder))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|pack| pack.name)
+                .collect();
+            self.reload_packs();
         }
         if positioned && std::mem::take(&mut self.smoke_menu) {
             self.menu.toggle();
@@ -2604,6 +2697,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_menu: options.smoke_menu,
         smoke_hud_editor: options.smoke_hud_editor,
         smoke_settings: options.smoke_settings,
+        smoke_packs: options.smoke_packs,
+        smoke_pack_reload: options.smoke_pack_reload,
         smoke_pause: options.smoke_pause,
         smoke_pitch: options.smoke_pitch,
         bench: options.bench,
@@ -2628,6 +2723,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             hitboxes: options.smoke_hitboxes,
         },
         pack_override: options.resource_packs.clone(),
+        pack_reload: None,
         screenshot_dir: options
             .smoke_screenshot
             .clone()

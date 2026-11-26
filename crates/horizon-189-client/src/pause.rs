@@ -12,6 +12,7 @@ use crate::{
     glass::Panel,
     hud::button_widget,
     menu::{button, ease, fade, switch},
+    packs_screen,
     settings::{Settings, Video},
     sysfont::Weight,
     ui::WIDGETS,
@@ -24,6 +25,8 @@ enum Page {
     Closed,
     Menu,
     Settings,
+    /// `GuiScreenResourcePacks`.
+    Packs,
 }
 
 /// What a click asked the app to do.
@@ -35,6 +38,10 @@ pub enum Click {
     Leave,
     /// A setting changed: apply and save.
     Changed,
+    /// The pack stack changed on Done: save and reload resources.
+    Packs,
+    /// Open Resource Pack Folder.
+    OpenFolder,
     Nothing,
 }
 
@@ -120,6 +127,8 @@ enum Target {
     Graphics,
     /// Glass or vanilla menus.
     MenuStyle,
+    /// Resource Packs...
+    ResourcePacks,
     /// A vanilla button this client has nothing behind (translation key).
     Inert(&'static str),
     Done,
@@ -169,6 +178,7 @@ fn vanilla_geometry(page: Page, layout: Layout) -> Geometry {
                 Target::Graphics,
                 Target::MenuStyle,
                 Target::Slider(Slider::Scale),
+                Target::ResourcePacks,
             ];
             for (i, target) in rows.into_iter().enumerate() {
                 let i = i as i32;
@@ -238,9 +248,15 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
             }
             let bottom = sheet[3] - PAD - BUTTON_H;
             let mid = (sheet[0] + sheet[2]) / 2.0;
+            // Resource Packs... beside Done: no row of its own, so short
+            // windows still fit.
+            targets.push((
+                Target::ResourcePacks,
+                [mid - 124.0, bottom, mid - 4.0, bottom + BUTTON_H],
+            ));
             targets.push((
                 Target::Done,
-                [mid - 60.0, bottom, mid + 60.0, bottom + BUTTON_H],
+                [mid + 4.0, bottom, mid + 124.0, bottom + BUTTON_H],
             ));
             Geometry { sheet, targets }
         }
@@ -274,6 +290,7 @@ fn inside(rect: [f32; 4], (x, y): (f32, f32)) -> bool {
 #[derive(Default)]
 pub struct Pause {
     page: Page,
+    packs: Option<packs_screen::Screen>,
     /// Open animation, 0 to 1.
     shown: f32,
     drag: Option<Slider>,
@@ -297,18 +314,64 @@ impl Pause {
         self.shown = 0.0;
     }
 
+    /// `GuiScreenResourcePacks` over the packs folder as it is now.
+    pub fn open_packs(&mut self, settings: &Settings) {
+        let packs = crate::packs::directory()
+            .map(|folder| horizon_assets_189::packs::discover(&folder))
+            .unwrap_or_default();
+        self.packs = Some(packs_screen::Screen::open(packs, &settings.resource_packs));
+        self.page = Page::Packs;
+        self.shown = 1.0;
+    }
+
     pub fn close(&mut self) {
         self.page = Page::Closed;
         self.drag = None;
+        self.packs = None;
     }
 
     /// Escape: settings back to the menu, the menu back to the game.
     pub fn back(&mut self) {
         self.drag = None;
         self.page = match self.page {
+            Page::Packs => Page::Settings,
             Page::Settings => Page::Menu,
             _ => Page::Closed,
         };
+        if self.page != Page::Packs {
+            self.packs = None;
+        }
+    }
+
+    /// The wheel: only the packs lists scroll.
+    pub fn scroll(&mut self, layout: Layout, mouse: (f32, f32), notches: i32) {
+        if let Some(screen) = self.packs.as_mut() {
+            screen.scroll(layout, mouse, notches);
+        }
+    }
+
+    fn packs_press(&mut self, layout: Layout, mouse: (f32, f32), settings: &mut Settings) -> Click {
+        let Some(screen) = self.packs.as_mut() else {
+            self.page = Page::Settings;
+            return Click::Nothing;
+        };
+        match screen.press(layout, mouse) {
+            packs_screen::Action::OpenFolder => Click::OpenFolder,
+            packs_screen::Action::Done => {
+                let selected = std::mem::take(&mut screen.selected);
+                self.packs = None;
+                self.page = Page::Settings;
+                // GuiScreenResourcePacks.actionPerformed: reload only when
+                // the stack changed.
+                if selected == settings.resource_packs {
+                    Click::Nothing
+                } else {
+                    settings.resource_packs = selected;
+                    Click::Packs
+                }
+            }
+            packs_screen::Action::Moved | packs_screen::Action::Nothing => Click::Nothing,
+        }
     }
 
     pub fn step(&mut self, dt: f32) {
@@ -316,6 +379,9 @@ impl Pause {
     }
 
     pub fn press(&mut self, layout: Layout, mouse: (f32, f32), settings: &mut Settings) -> Click {
+        if self.page == Page::Packs {
+            return self.packs_press(layout, mouse, settings);
+        }
         let g = geometry(self.page, layout, settings.toggles.vanilla_menu);
         let Some(target) = g
             .targets
@@ -371,6 +437,10 @@ impl Pause {
                 settings.toggles.vanilla_menu = !settings.toggles.vanilla_menu;
                 Click::Changed
             }
+            Target::ResourcePacks => {
+                self.open_packs(settings);
+                Click::Nothing
+            }
             Target::Inert(_) => Click::Nothing,
         }
     }
@@ -410,6 +480,10 @@ impl Pause {
             return;
         }
         canvas.overlay();
+        if let Some(screen) = self.packs.as_ref().filter(|_| self.page == Page::Packs) {
+            screen.draw(canvas, mouse);
+            return;
+        }
         if settings.toggles.vanilla_menu {
             self.draw_vanilla(canvas, settings, mouse);
             return;
@@ -527,6 +601,17 @@ impl Pause {
                     row_label(canvas, g.sheet[0] + PAD, rect, &label, e);
                     switch(canvas, rect[0], rect[1], if on { 1.0 } else { 0.0 }, e);
                 }
+                Target::ResourcePacks => button(
+                    canvas,
+                    rect,
+                    &format!(
+                        "{}...",
+                        translate("options.resourcepack").trim_end_matches('.')
+                    ),
+                    hover,
+                    false,
+                    e,
+                ),
                 Target::Inert(_) => {}
             }
         }
@@ -589,6 +674,7 @@ impl Pause {
                     })
                 ),
                 Target::MenuStyle => "Menu Style: Vanilla".to_owned(),
+                Target::ResourcePacks => translate("options.resourcepack"),
                 Target::Slider(slider) => {
                     // GuiOptionSlider: the disabled texture behind, the knob,
                     // then the text.

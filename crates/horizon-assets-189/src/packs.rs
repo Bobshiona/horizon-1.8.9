@@ -59,7 +59,7 @@ pub fn discover(folder: &Path) -> Vec<Pack> {
             })
         })
         .collect();
-    packs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    packs.sort_by_key(|pack| pack.name.to_lowercase());
     packs
 }
 

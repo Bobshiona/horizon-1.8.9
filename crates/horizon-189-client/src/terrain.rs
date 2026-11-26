@@ -1176,6 +1176,7 @@ fn face_shade(name: &str) -> f32 {
 }
 
 impl Registry {
+    #[cfg(test)]
     pub fn open(jar: &Path) -> Result<Self, Box<dyn Error>> {
         Self::open_with_packs(jar, &[])
     }
@@ -2744,14 +2745,27 @@ mod tests {
             Animation::parse(
                 9,
                 &Texture {
-                    width: 32,
-                    height: 64,
-                    rgba: vec![0; 32 * 64 * 4]
+                    width: 24,
+                    height: 48,
+                    rgba: vec![0; 24 * 48 * 4]
                 },
                 br#"{"animation":{}}"#
             )
             .is_none()
         );
+        // A pack's 32-pixel strip is two frames averaged to 16.
+        let hd = Animation::parse(
+            9,
+            &Texture {
+                width: 32,
+                height: 64,
+                rgba: vec![255; 32 * 64 * 4],
+            },
+            br#"{"animation":{}}"#,
+        )
+        .expect("HD strips animate");
+        assert_eq!(hd.frames.len(), 2);
+        assert_eq!(hd.frames[0].len(), 16 * 16 * 4);
     }
 
     #[test]

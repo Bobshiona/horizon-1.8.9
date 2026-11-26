@@ -710,6 +710,33 @@ impl Renderer {
         )
     }
 
+    /// Swap in a registry built over a new pack stack: textures rewrite in
+    /// place and the interface atlas rebuilds. Meshes keep the old block
+    /// models and colour maps until the next world. False when the new
+    /// stack's sprite lists don't line up with the loaded ones.
+    pub fn reload_resources(&mut self, registry: Arc<Registry>) -> bool {
+        let Some(scene) = &mut self.scene else {
+            return false;
+        };
+        if !scene.reload_textures(
+            &self.device,
+            &self.queue,
+            self.world_config.format,
+            &registry,
+        ) {
+            return false;
+        }
+        self.ui = Self::interface(
+            &self.device,
+            &self.queue,
+            &self.config,
+            Some(&registry),
+            self.scene.as_ref(),
+        );
+        self.registry = Some(registry);
+        true
+    }
+
     pub fn clear_world(&mut self) {
         self.entity_vertices.clear();
         for list in &mut self.label_vertices {

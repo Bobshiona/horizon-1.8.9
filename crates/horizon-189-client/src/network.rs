@@ -283,6 +283,9 @@ pub struct Network {
     pub world: Arc<RwLock<World>>,
     pub errors: Receiver<String>,
     pub shared: Arc<Mutex<Shared>>,
+    /// The registry the meshers use (the window's can be newer after a
+    /// resource pack reload).
+    pub registry: Arc<Registry>,
     stop: Arc<AtomicBool>,
     socket: Arc<Mutex<Option<TcpStream>>>,
     worker: Option<JoinHandle<()>>,
@@ -309,6 +312,7 @@ impl Network {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let state = shared.clone();
         let language = registry.gui.language.clone();
+        let mesh_registry = registry.clone();
         let window_world = world.clone();
         let mesh_stats = Arc::new(MeshStats::default());
         let mesher = {
@@ -335,6 +339,7 @@ impl Network {
             meshes,
             mesh_stats,
             world: window_world,
+            registry: mesh_registry,
             errors,
             shared,
             stop,

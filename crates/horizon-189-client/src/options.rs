@@ -56,6 +56,11 @@ pub struct Options {
     pub smoke_page: usize,
     /// Validation only: open the settings screen once in the world.
     pub smoke_settings: bool,
+    /// Validation only: open the resource packs screen once in the world.
+    pub smoke_packs: bool,
+    /// Validation only: select every pack in the folder and reload once in
+    /// the world.
+    pub smoke_pack_reload: bool,
     /// Validation only: start with the GUI hidden, as after F1.
     pub smoke_hide_gui: bool,
     /// Validation only: start in this F5 perspective (0 to 2).
@@ -328,6 +333,8 @@ impl Options {
                 "--smoke-launcher" => options.smoke_launcher = true,
                 "--smoke-page" => options.smoke_page = value()?.parse::<usize>()?.min(4),
                 "--smoke-settings" => options.smoke_settings = true,
+                "--smoke-packs" => options.smoke_packs = true,
+                "--smoke-pack-reload" => options.smoke_pack_reload = true,
                 "--smoke-hide-gui" => options.smoke_hide_gui = true,
                 "--smoke-debug" => options.smoke_debug = true,
                 "--smoke-lagometer" => {
@@ -424,6 +431,8 @@ impl Options {
             || options.smoke_pitch.is_some()
             || options.smoke_launcher
             || options.smoke_settings
+            || options.smoke_packs
+            || options.smoke_pack_reload
             || options.smoke_hide_gui
             || options.smoke_perspective != 0
             || options.smoke_debug
