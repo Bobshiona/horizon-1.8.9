@@ -53,6 +53,7 @@ mod updater;
 mod upscale;
 mod view;
 mod watchdog;
+mod weather;
 mod wheel;
 
 use horizon_client_platform::is_quit_shortcut_down;
@@ -237,6 +238,7 @@ struct Snapshot {
     difficulty: u8,
     time_of_day: i64,
     flat: bool,
+    weather: sky::Weather,
     reduced_debug: bool,
 }
 
@@ -1475,6 +1477,7 @@ impl ApplicationHandler for App {
                         difficulty: s.difficulty,
                         time_of_day: s.time_of_day,
                         flat: s.flat,
+                        weather: s.weather,
                         reduced_debug: s.reduced_debug,
                     })
                 });
@@ -1664,7 +1667,32 @@ impl ApplicationHandler for App {
                                 look,
                                 camera.position[1],
                                 snapshot.flat,
+                                snapshot.weather,
                             ));
+                            let rain = self
+                                .network
+                                .as_ref()
+                                .filter(|_| snapshot.weather.rain > 0.0)
+                                .and_then(|n| n.world.try_read().ok())
+                                .map(|world| {
+                                    let feet = [
+                                        pose.position[0],
+                                        pose.position[1] - f64::from(EYE_HEIGHT),
+                                        pose.position[2],
+                                    ];
+                                    weather::vertices(
+                                        &world,
+                                        feet,
+                                        camera.position,
+                                        models::millis() / 50,
+                                        partial,
+                                        snapshot.weather.rain,
+                                        self.settings.video.fancy_graphics,
+                                        |at| terrain::light_at(&world, at),
+                                    )
+                                })
+                                .unwrap_or_default();
+                            renderer.set_weather(&rain);
                         }
                         if let Some(network) = &self.network {
                             network.prioritize(renderer.mesh_view());

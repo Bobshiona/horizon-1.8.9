@@ -33,6 +33,15 @@ pub struct State {
     pub lower: f32,
     /// Linear fog end for the sky: the render distance in blocks.
     pub far: f32,
+    /// `1 - rain`: the sun and moon's alpha.
+    pub clear_sky: f32,
+}
+
+/// Rain and thunder strength, 0 to 1 (Change Game State 1, 2, 7 and 8).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Weather {
+    pub rain: f32,
+    pub thunder: f32,
 }
 
 /// `WorldProvider.calculateCelestialAngle`.
@@ -110,23 +119,28 @@ pub fn state(
     look: Vec3,
     eye_y: f64,
     flat: bool,
+    weather: Weather,
 ) -> State {
     let celestial = celestial_angle(time_of_day, partial);
     let light = daylight(celestial);
-    let sky = sky_by_temperature(temperature).map(|c| c * light);
+    let mut sky = sky_by_temperature(temperature).map(|c| c * light);
+    // World.getSkyColor: rain and thunder pull the sky toward grey.
+    for (strength, grey) in [(weather.rain, 0.6), (weather.thunder, 0.2)] {
+        if strength > 0.0 {
+            let luma = (sky[0] * 0.3 + sky[1] * 0.59 + sky[2] * 0.11) * grey;
+            let keep = 1.0 - strength * 0.75;
+            sky = sky.map(|c| c * keep + luma * (1.0 - keep));
+        }
+    }
     // WorldProvider.getFogColor.
     let mut fog = [
         0.752_941_2 * (light * 0.94 + 0.06),
         0.847_058_83 * (light * 0.94 + 0.06),
         light * 0.91 + 0.09,
     ];
-    // EntityRenderer.updateFogColor: toward the sky colour at short render
-    // distances, then toward the sunrise colour when looking at it.
-    let reach = 0.25 + 0.75 * f32::from(render_distance) / 32.0;
-    let toward_sky = 1.0 - reach.powf(0.25);
-    for i in 0..3 {
-        fog[i] += (sky[i] - fog[i]) * toward_sky;
-    }
+    // EntityRenderer.updateFogColor: toward the sunrise colour when looking
+    // at it, then toward the sky colour at short render distances, then
+    // darker in rain and thunder.
     let sunrise = sunrise(celestial);
     if render_distance >= 4
         && let Some(colour) = sunrise
@@ -141,6 +155,18 @@ pub fn state(
             fog[i] += (colour[i] - fog[i]) * facing;
         }
     }
+    let reach = 0.25 + 0.75 * f32::from(render_distance) / 32.0;
+    let toward_sky = 1.0 - reach.powf(0.25);
+    for i in 0..3 {
+        fog[i] += (sky[i] - fog[i]) * toward_sky;
+    }
+    if weather.rain > 0.0 {
+        let (red_green, blue) = (1.0 - weather.rain * 0.5, 1.0 - weather.rain * 0.4);
+        fog = [fog[0] * red_green, fog[1] * red_green, fog[2] * blue];
+    }
+    if weather.thunder > 0.0 {
+        fog = fog.map(|c| c * (1.0 - weather.thunder * 0.5));
+    }
     // Below y 32 the fog darkens toward the void (`getVoidFogYFactor`; 1 on
     // superflat, so never there).
     let void = eye_y * if flat { 1.0 } else { 0.031_25 };
@@ -154,7 +180,8 @@ pub fn state(
         sky,
         fog,
         sunrise,
-        stars: star_brightness(celestial),
+        stars: star_brightness(celestial) * (1.0 - weather.rain),
+        clear_sky: 1.0 - weather.rain,
         // `WorldType.getHorizon`: 63, or 0 on superflat.
         lower: ((if flat { 0.0 } else { 63.0 }) - eye_y) as f32,
         far: f32::from(render_distance) * 16.0,
@@ -328,6 +355,7 @@ pub fn dynamic(state: &State, sun: u32, moon: u32) -> (Vec<SkyVertex>, Vec<SkyVe
     let matrix = celestial_rotation(state.celestial);
     let at = |p: [f32; 3]| matrix.transform_point3(Vec3::from(p)).to_array();
     let s = 30.0;
+    let colour = [1.0, 1.0, 1.0, state.clear_sky];
     // The sun is 32 pixels of the 128-pixel layer, the moon sheet 128x64.
     let cell = 32.0 / crate::models::LAYER_SIZE as f32;
     quad(
@@ -341,7 +369,7 @@ pub fn dynamic(state: &State, sun: u32, moon: u32) -> (Vec<SkyVertex>, Vec<SkyVe
         .map(at),
         [[0.0, 0.0], [cell, 0.0], [cell, cell], [0.0, cell]],
         sun,
-        [1.0; 4],
+        colour,
         3,
     );
     let m = 20.0;
@@ -361,7 +389,7 @@ pub fn dynamic(state: &State, sun: u32, moon: u32) -> (Vec<SkyVertex>, Vec<SkyVe
         .map(at),
         [[u1, v1], [u0, v1], [u0, v0], [u1, v0]],
         moon,
-        [1.0; 4],
+        colour,
         3,
     );
     (fan, lights)
@@ -389,7 +417,7 @@ mod tests {
         assert!((celestial_angle(18000, 0.0) - 0.5).abs() < 1e-6);
         assert!((celestial_angle(0, 0.0) - 0.7845).abs() < 1e-3);
         // Plains (0.8) at noon: Color.getHSBColor(0.6089, 0.5267, 1).
-        let noon = state(6000, 0.0, 0.8, 12, Vec3::Z, 70.0, false);
+        let noon = state(6000, 0.0, 0.8, 12, Vec3::Z, 70.0, false, Weather::default());
         assert_eq!(noon.sky, sky_by_temperature(0.8));
         assert_eq!(
             sky_by_temperature(0.8).map(|c| (c * 255.0).round() as u32),
@@ -397,25 +425,77 @@ mod tests {
         );
         assert!(noon.sunrise.is_none());
         assert_eq!(noon.stars, 0.0);
-        let midnight = state(18000, 0.0, 0.8, 12, Vec3::Z, 70.0, false);
+        let midnight = state(
+            18000,
+            0.0,
+            0.8,
+            12,
+            Vec3::Z,
+            70.0,
+            false,
+            Weather::default(),
+        );
         assert_eq!(midnight.sky, [0.0; 3]);
         assert!((midnight.stars - 0.5).abs() < 1e-6);
         assert!(midnight.fog[2] < 0.1);
         // Dawn: the sunrise colours, and fog toward them when looking east.
         let dawn = celestial_angle(23500, 0.0);
         assert!(sunrise(dawn).is_some());
-        let east = state(23500, 0.0, 0.8, 12, Vec3::X, 70.0, false);
-        let west = state(23500, 0.0, 0.8, 12, -Vec3::X, 70.0, false);
+        let east = state(
+            23500,
+            0.0,
+            0.8,
+            12,
+            Vec3::X,
+            70.0,
+            false,
+            Weather::default(),
+        );
+        let west = state(
+            23500,
+            0.0,
+            0.8,
+            12,
+            -Vec3::X,
+            70.0,
+            false,
+            Weather::default(),
+        );
         assert!(east.fog[0] > west.fog[0]);
+        // Rain greys the sky, darkens the fog and hides the sun and stars.
+        let rain = Weather {
+            rain: 1.0,
+            thunder: 0.0,
+        };
+        let wet = state(6000, 0.0, 0.8, 12, Vec3::Z, 70.0, false, rain);
+        assert!(wet.sky[2] < noon.sky[2] && wet.fog[0] < noon.fog[0]);
+        assert_eq!(wet.clear_sky, 0.0);
+        assert_eq!(
+            state(18000, 0.0, 0.8, 12, Vec3::Z, 70.0, false, rain).stars,
+            0.0
+        );
         // Moon phases advance a day at a time.
         assert_eq!(
-            state(24000 * 9 + 6000, 0.0, 0.8, 12, Vec3::Z, 70.0, false).moon_phase,
+            state(
+                24000 * 9 + 6000,
+                0.0,
+                0.8,
+                12,
+                Vec3::Z,
+                70.0,
+                false,
+                Weather::default()
+            )
+            .moon_phase,
             1
         );
         // Low down the fog darkens.
-        assert!(state(6000, 0.0, 0.8, 12, Vec3::Z, 16.0, false).fog[2] < noon.fog[2]);
+        assert!(
+            state(6000, 0.0, 0.8, 12, Vec3::Z, 16.0, false, Weather::default()).fog[2]
+                < noon.fog[2]
+        );
         assert_eq!(
-            state(6000, 0.0, 0.8, 12, Vec3::Z, 5.6, true).fog,
+            state(6000, 0.0, 0.8, 12, Vec3::Z, 5.6, true, Weather::default()).fog,
             noon.fog,
             "superflat"
         );

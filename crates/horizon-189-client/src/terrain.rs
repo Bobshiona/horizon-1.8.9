@@ -410,6 +410,8 @@ pub struct Registry {
     /// `banner_base` and the pattern masks in `BANNER_PATTERNS` order, 64x64
     /// RGBA each, for patterned banner composites.
     pub banner_images: Option<(Vec<u8>, Vec<Vec<u8>>)>,
+    /// `environment/rain` and `environment/snow`, 64x256 RGBA each.
+    pub weather_images: Option<[Vec<u8>; 2]>,
     pub glyphs: [u8; 256],
     /// Interface sheets, fonts and language.
     pub gui: crate::ui::Resources,
@@ -930,6 +932,16 @@ pub fn open_chests(out: &mut Vec<Vertex>, world: &World, partial: f32, origin: [
     }
 }
 
+/// `brightness` for other modules: the light level's daytime lightmap value.
+pub fn brightness_of(level: u8) -> f32 {
+    brightness(level)
+}
+
+/// The light level a block entity or weather column at `at` is lit by.
+pub fn light_at(world: &World, at: [i32; 3]) -> u8 {
+    light_level(world, at)
+}
+
 fn brightness(level: u8) -> f32 {
     let f = 1.0 - f32::from(level.min(15)) / 15.0;
     let base = (1.0 - f) / (f * 3.0 + 1.0);
@@ -1310,6 +1322,16 @@ impl Registry {
         if banner_images.is_none() {
             eprintln!("LEGACY_BANNER_PATTERNS_MISSING");
         }
+        let weather_images = (|| {
+            let load = |name: &str| {
+                let image = assets.texture(name).ok()?;
+                (image.width == 64 && image.height == 256).then_some(image.rgba)
+            };
+            Some([
+                load("minecraft:environment/rain")?,
+                load("minecraft:environment/snow")?,
+            ])
+        })();
         let mut glyphs = [6u8; 256];
         for source in crate::models::SOURCES {
             let mut canvas = vec![0u8; size * size * 4];
@@ -1490,6 +1512,7 @@ impl Registry {
             inexact: Vec::new(),
             entity_textures,
             banner_images,
+            weather_images,
             glyphs,
             gui,
             item_meshes,

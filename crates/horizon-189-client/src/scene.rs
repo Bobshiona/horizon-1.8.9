@@ -379,6 +379,7 @@ pub struct Scene {
     terrain_bindings: Option<wgpu::BindGroup>,
     entity_bindings: wgpu::BindGroup,
     sky: crate::sky::Pass,
+    weather: Option<crate::weather::Pass>,
     entity_texture: wgpu::Texture,
     pub skin_base: u32,
     skin_capacity: u32,
@@ -956,6 +957,12 @@ impl Scene {
             &entity_sampler,
             config.format,
         );
+        let weather = crate::weather::Pass::new(
+            device,
+            queue,
+            registry.weather_images.as_ref(),
+            config.format,
+        );
         let hand_camera = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("First-person camera uniform"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -1089,6 +1096,7 @@ impl Scene {
             terrain_bindings,
             entity_bindings,
             sky,
+            weather,
             entity_texture,
             skin_base,
             skin_capacity: entity_layers,
@@ -1761,6 +1769,21 @@ impl Scene {
         self.write_camera(queue, config);
     }
 
+    /// This frame's rain and snow, relative to the camera.
+    pub fn set_weather(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+        vertices: &[crate::weather::WeatherVertex],
+    ) {
+        let rotation = Mat4::from_mat3(glam::Mat3::from_mat4(self.view));
+        let matrix = self.projection(config) * rotation;
+        if let Some(weather) = &mut self.weather {
+            weather.update(device, queue, vertices, matrix);
+        }
+    }
+
     fn write_camera(&self, queue: &wgpu::Queue, config: &wgpu::SurfaceConfiguration) {
         let uniforms = Uniforms {
             view_projection: (self.projection(config) * self.view).to_cols_array(),
@@ -2222,6 +2245,10 @@ impl Scene {
         if !self.native_active && columns > 0 {
             pass.set_vertex_buffer(1, self.bases.slice(..));
             self.draw_terrain(pass, 2, (0..columns).rev());
+        }
+        // renderRainSnow comes after translucent terrain.
+        if let Some(weather) = &self.weather {
+            self.draws.set(self.draws.get() + weather.draw(pass));
         }
     }
 }

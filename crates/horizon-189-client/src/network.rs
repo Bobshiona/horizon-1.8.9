@@ -186,6 +186,8 @@ pub struct Shared {
     /// Join Game / Respawn level type "flat": `WorldType.FLAT` puts the
     /// horizon at 0 and turns off the low-altitude fog darkening.
     pub flat: bool,
+    /// `WorldClient` rain and thunder strength (Change Game State).
+    pub weather: crate::sky::Weather,
     pub daylight_cycle: bool,
     pub reduced_debug: bool,
     /// A new render distance for the server (C15), sent on the next tick.
@@ -869,7 +871,11 @@ fn run_actor(
                 let body = packet?;
                 match play::decode(&body)? {
                     play::Packet::Join(join) => {
-                        lock(shared)?.flat = join.level_type.eq_ignore_ascii_case("flat");
+                        {
+                            let mut state = lock(shared)?;
+                            state.flat = join.level_type.eq_ignore_ascii_case("flat");
+                            state.weather = Default::default();
+                        }
                         // handleJoinGame: a new PlayerControllerMP (nothing
                         // sent yet) and a new, empty WorldClient. loadWorld
                         // keeps the existing EntityPlayerSP (inventory,
@@ -1067,6 +1073,9 @@ fn run_actor(
                         // Minecraft.respawnPlayer always creates a fresh EntityPlayerSP.
                         let world_changed = dimension != Some(respawn.dimension);
                         dimension = Some(respawn.dimension);
+                        if world_changed {
+                            lock(shared)?.weather = Default::default();
+                        }
                         inventory = crate::inventory::Inventory::default();
                         controller.reset_player();
                         vitals = crate::gameplay::Vitals::default();
@@ -1210,9 +1219,24 @@ fn run_actor(
                         capabilities = abilities;
                     }
                     play::Packet::Other { id: 0x2b, fields } => {
-                        if fields.len() == 5 && fields[0] == 3 {
-                            let id = f32::from_be_bytes(fields[1..5].try_into().unwrap()) as i32;
-                            game_mode = apply_game_mode(&mut player, &mut capabilities, id);
+                        if fields.len() == 5 {
+                            let value = f32::from_be_bytes(fields[1..5].try_into().unwrap());
+                            // bcy.a(gm): 1 and 2 set the rain to 0 and 1, 7
+                            // and 8 set rain and thunder strength.
+                            match fields[0] {
+                                1 => lock(shared)?.weather.rain = 0.0,
+                                2 => lock(shared)?.weather.rain = 1.0,
+                                3 => {
+                                    game_mode = apply_game_mode(
+                                        &mut player,
+                                        &mut capabilities,
+                                        value as i32,
+                                    );
+                                }
+                                7 => lock(shared)?.weather.rain = value.clamp(0.0, 1.0),
+                                8 => lock(shared)?.weather.thunder = value.clamp(0.0, 1.0),
+                                _ => {}
+                            }
                         }
                     }
                     play::Packet::Other { id: 0x09, fields } => {

@@ -395,6 +395,13 @@ impl Renderer {
         Ok(())
     }
 
+    /// This frame's rain and snow, after `set_pose`.
+    pub fn set_weather(&mut self, vertices: &[crate::weather::WeatherVertex]) {
+        if let Some(scene) = &mut self.scene {
+            scene.set_weather(&self.device, &self.queue, &self.world_config, vertices);
+        }
+    }
+
     /// This frame's sky, after `set_pose`.
     pub fn set_sky(&mut self, state: crate::sky::State) {
         if let Some(scene) = &mut self.scene {
