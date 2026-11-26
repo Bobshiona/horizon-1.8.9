@@ -770,6 +770,115 @@ fn position_random(x: i32, y: i32, z: i32) -> i64 {
 /// mods set it, so every level renders near full light.
 pub static FULLBRIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Player heads with an owner near the camera, drawn each frame with the
+/// owner's skin once it loads (`TileEntitySkullRenderer` asks the
+/// `SkinManager`; until then the default skin).
+pub fn heads(world: &World, camera: [f64; 3], origin: [i64; 3]) -> Vec<crate::models::Head> {
+    let mut heads = Vec::new();
+    for (at, entity) in world.block_entities() {
+        let horizon_world_189::block_entities::BlockEntity::Skull {
+            kind: 3,
+            rotation,
+            owner: Some(owner),
+        } = entity
+        else {
+            continue;
+        };
+        let distance: f64 = (0..3)
+            .map(|axis| (f64::from(at[axis]) + 0.5 - camera[axis]).powi(2))
+            .sum();
+        // TileEntity.getMaxRenderDistanceSquared.
+        if distance >= 64.0 * 64.0 {
+            continue;
+        }
+        let Some(state) = world.block(at[0], at[1], at[2]) else {
+            continue;
+        };
+        if state.block_id() != 144 {
+            continue;
+        }
+        heads.push(crate::models::Head {
+            at: glam::Vec3::new(
+                (i64::from(at[0]) - origin[0]) as f32,
+                (i64::from(at[1]) - origin[1]) as f32,
+                (i64::from(at[2]) - origin[2]) as f32,
+            ),
+            facing: state.metadata() & 7,
+            rotation: *rotation,
+            uuid: owner.uuid,
+            profile: owner.profile.clone(),
+            light: brightness(light_level(world, at)),
+        });
+    }
+    heads
+}
+
+/// `TileEntityChestRenderer`'s model choice: the half of a double chest with
+/// a partner on its -X or -Z side draws nothing; the other draws the large
+/// model toward +X (`Some(true)`) or +Z (`Some(false)`).
+pub fn chest_shape(
+    world: &World,
+    [x, y, z]: [i32; 3],
+    id: u16,
+) -> Option<(crate::models::ChestKind, Option<bool>)> {
+    use crate::models::ChestKind;
+    if id == 130 {
+        return Some((ChestKind::Ender, None));
+    }
+    let same = |dx: i32, dz: i32| {
+        world
+            .block(x.wrapping_add(dx), y, z.wrapping_add(dz))
+            .is_some_and(|other| other.block_id() == id)
+    };
+    if same(-1, 0) || same(0, -1) {
+        return None;
+    }
+    let double = if same(1, 0) {
+        Some(true)
+    } else if same(0, 1) {
+        Some(false)
+    } else {
+        None
+    };
+    let kind = if id == 54 {
+        ChestKind::Normal
+    } else {
+        ChestKind::Trapped
+    };
+    Some((kind, double))
+}
+
+/// Chests with open or moving lids, drawn with the moving entities at this
+/// frame's partial tick (`TileEntityChestRenderer`: the lid turns by
+/// `1 - (1 - f)^3` of a quarter turn), relative to `origin`.
+pub fn open_chests(out: &mut Vec<Vertex>, world: &World, partial: f32, origin: [i64; 3]) {
+    for (at, lid) in world.open_lids() {
+        let Some(state) = world.block(at[0], at[1], at[2]) else {
+            continue;
+        };
+        let id = state.block_id();
+        let Some((kind, double)) = chest_shape(world, at, id) else {
+            continue;
+        };
+        let offset = glam::Vec3::new(
+            (i64::from(at[0]) - origin[0]) as f32,
+            (i64::from(at[1]) - origin[1]) as f32,
+            (i64::from(at[2]) - origin[2]) as f32,
+        );
+        let open = lid.previous + (lid.angle - lid.previous) * partial;
+        let light = brightness(light_level(world, at));
+        crate::models::chest(
+            out,
+            offset,
+            state.metadata(),
+            kind,
+            double,
+            light,
+            1.0 - (1.0 - open).powi(3),
+        );
+    }
+}
+
 fn brightness(level: u8) -> f32 {
     let f = 1.0 - f32::from(level.min(15)) / 15.0;
     let base = (1.0 - f) / (f * 3.0 + 1.0);
@@ -1810,7 +1919,7 @@ impl Registry {
         offset: [f32; 3],
         out: &mut Vec<Vertex>,
     ) -> bool {
-        use crate::models::{self, ChestKind};
+        use crate::models;
         use horizon_world_189::block_entities::BlockEntity;
         let id = state.block_id();
         let meta = state.metadata();
@@ -1819,31 +1928,15 @@ impl Registry {
         }
         let at = glam::Vec3::from(offset);
         let light = brightness(light_level(world, [x, y, z]));
-        let same = |dx: i32, dz: i32| {
-            world
-                .block(x.wrapping_add(dx), y, z.wrapping_add(dz))
-                .is_some_and(|other| other.block_id() == id)
-        };
         match id {
-            54 | 146 => {
-                // The negative-side half of a double chest draws nothing.
-                if !(same(-1, 0) || same(0, -1)) {
-                    let double = if same(1, 0) {
-                        Some(true)
-                    } else if same(0, 1) {
-                        Some(false)
-                    } else {
-                        None
-                    };
-                    let kind = if id == 54 {
-                        ChestKind::Normal
-                    } else {
-                        ChestKind::Trapped
-                    };
-                    models::chest(out, at, meta, kind, double, light);
+            54 | 130 | 146 => {
+                // Open lids draw each frame instead (`open_chests`).
+                if world.lid([x, y, z]).is_none()
+                    && let Some((kind, double)) = chest_shape(world, [x, y, z], id)
+                {
+                    models::chest(out, at, meta, kind, double, light, 0.0);
                 }
             }
-            130 => models::chest(out, at, meta, ChestKind::Ender, None, light),
             63 | 68 => {
                 let lines = match world.block_entity([x, y, z]) {
                     Some(BlockEntity::Sign(lines)) => lines.clone(),
@@ -1851,13 +1944,18 @@ impl Registry {
                 };
                 models::sign(out, at, id == 63, meta, &lines, &self.glyphs, light);
             }
-            144 => {
-                let (kind, rotation) = match world.block_entity([x, y, z]) {
-                    Some(&BlockEntity::Skull { kind, rotation }) => (kind, rotation),
-                    _ => (0, 0),
-                };
-                models::skull(out, at, meta & 7, kind, rotation, light);
-            }
+            144 => match world.block_entity([x, y, z]) {
+                // Owned player heads draw each frame with their skin (`heads`).
+                Some(BlockEntity::Skull {
+                    kind: 3,
+                    owner: Some(_),
+                    ..
+                }) => {}
+                Some(&BlockEntity::Skull { kind, rotation, .. }) => {
+                    models::skull(out, at, meta & 7, kind, rotation, light);
+                }
+                _ => models::skull(out, at, meta & 7, 0, 0, light),
+            },
             _ => {
                 let base = match world.block_entity([x, y, z]) {
                     Some(&BlockEntity::Banner { base }) => base,

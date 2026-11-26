@@ -315,3 +315,43 @@ fn ground_up_empty_mask_unloads_even_with_biome_bytes() {
         ColumnUpdate::Unload { x: 4, z: -5 }
     ));
 }
+
+// TileEntityChest.update (aky.c): a tenth a tick toward open while anyone
+// looks inside, back toward shut after; block event 1 sets the count.
+#[test]
+fn chest_lids_open_a_tenth_a_tick_and_shut_again() {
+    let mut world = World::default();
+    let mut data = payload(1, true, true);
+    // State 54 << 4 | facing 2 at local (2, 0, 3): y-z-x order.
+    let index = (3 * 16 + 2) * 2;
+    data[index..index + 2].copy_from_slice(&(54u16 << 4 | 2).to_le_bytes());
+    world.apply(decode_chunk(&chunk(0, 0, 1, true, &data), true).unwrap());
+    let at = [2, 0, 3];
+    world.chest_viewers([5, 0, 5], 1);
+    assert!(
+        world.tick_lids().is_empty(),
+        "events on other blocks are ignored"
+    );
+    world.chest_viewers(at, 1);
+    assert_eq!(world.lid(at), None);
+    assert_eq!(world.tick_lids(), vec![at], "starts drawing open");
+    for _ in 0..9 {
+        assert!(world.tick_lids().is_empty());
+    }
+    let lid = world.lid(at).unwrap();
+    assert!((lid.angle - 1.0).abs() < 1e-6 && lid.previous < 1.0);
+    world.tick_lids();
+    assert_eq!(world.lid(at).unwrap().previous, 1.0);
+    world.chest_viewers(at, 0);
+    for _ in 0..10 {
+        assert!(world.tick_lids().is_empty());
+    }
+    assert_eq!(world.lid(at).unwrap().angle, 0.0);
+    assert_eq!(world.tick_lids(), vec![at], "shut: terrain again");
+    assert_eq!(world.lid(at), None);
+    world.chest_viewers(at, 2);
+    world.tick_lids();
+    world.apply(ColumnUpdate::Unload { x: 0, z: 0 });
+    assert_eq!(world.lid(at), None);
+    assert!(world.tick_lids().is_empty());
+}

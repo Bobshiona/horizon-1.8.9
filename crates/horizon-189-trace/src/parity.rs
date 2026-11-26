@@ -68,12 +68,28 @@ pub fn check(records: &[Record], windows: &[Window]) -> Vec<String> {
             ));
         }
     }
-    // One movement packet a tick: 18-22 in every whole second.
-    let moves: Vec<&Record> = sent
-        .iter()
-        .filter(|(_, id)| is_move(*id))
-        .map(|(r, _)| *r)
-        .collect();
+    // One movement packet a tick: 18-22 in every whole second. Each
+    // teleport (S08) also gets one C06 back from `handlePlayerPosLook`,
+    // outside the tick; those answers are not ticks.
+    let mut unanswered = 0usize;
+    let mut moves: Vec<&Record> = Vec::new();
+    for record in records {
+        let id = read_id(&record.body);
+        if record.direction == Direction::ToClient {
+            if id == 0x08 {
+                unanswered += 1;
+            }
+            continue;
+        }
+        if !is_move(id) {
+            continue;
+        }
+        if id == 0x06 && unanswered > 0 {
+            unanswered -= 1;
+            continue;
+        }
+        moves.push(record);
+    }
     if let (Some(first), Some(last)) = (moves.first(), moves.last()) {
         let mut start = first.ms;
         while start + 1000 <= last.ms {
@@ -201,6 +217,28 @@ mod tests {
             .nth(tick)
             .unwrap()
             .ms
+    }
+
+    #[test]
+    fn teleport_answers_are_not_ticks() {
+        let mut s = vanilla();
+        for k in 0..6u32 {
+            s.push(Record {
+                direction: Direction::ToClient,
+                ms: 1000 + k * 100,
+                body: vec![0x08, 0],
+            });
+            s.push(packet(1000 + k * 100 + 3, vec![0x06, 0]));
+        }
+        s.sort_by_key(|r| r.ms);
+        assert_eq!(check(&s, &[]), Vec::<String>::new());
+        // The same C06s without the teleports are extra ticks.
+        s.retain(|r| r.direction == Direction::ToServer);
+        assert!(
+            check(&s, &[])
+                .iter()
+                .any(|p| p.contains("movement packets"))
+        );
     }
 
     #[test]

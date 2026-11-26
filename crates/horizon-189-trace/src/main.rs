@@ -395,6 +395,20 @@ fn serve(serve: Serve) -> io::Result<()> {
                     if let Some((position, yaw)) = teleport(body) {
                         (centre, facing) = (position, yaw);
                     }
+                    // Teleports go in the client log too: the parity check
+                    // pairs each with the C06 the client answers it with.
+                    if body.first() == Some(&0x08)
+                        && let Some(log) = &log
+                    {
+                        log_record(
+                            log,
+                            &Record {
+                                direction: Direction::ToClient,
+                                ms: millis(started),
+                                body: body.clone(),
+                            },
+                        );
+                    }
                     writer.send(body)?;
                 }
                 Event::CrowdSpawn => {

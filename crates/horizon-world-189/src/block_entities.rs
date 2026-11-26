@@ -1,20 +1,75 @@
 //! Block entity data the 1.8.9 server sends after chunks: sign text (0x33)
 //! and skull/banner NBT (0x35). Chests need none; their block is enough.
 use horizon_protocol_47::nbt::Tag;
+use horizon_protocol_47::player_list::{Profile, Property};
+use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BlockEntity {
     Sign([String; 4]),
-    /// `SkullType` (0 skeleton, 1 wither, 2 zombie, 3 player, 4 creeper) and
-    /// floor `Rot` in sixteenths of a turn.
+    /// `SkullType` (0 skeleton, 1 wither, 2 zombie, 3 player, 4 creeper),
+    /// floor `Rot` in sixteenths of a turn, and a player head's `Owner`.
     Skull {
         kind: u8,
         rotation: u8,
+        owner: Option<Owner>,
     },
     /// `Base` dye colour (0 black … 15 white, dye order).
     Banner {
         base: u8,
     },
+}
+
+/// A player head's owner (`NBTUtil.readGameProfileFromNBT`): the profile
+/// id, or a stand-in from the skin when the server sends none, and the
+/// signed `textures` property the skin comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Owner {
+    pub uuid: u128,
+    pub profile: Arc<Profile>,
+}
+
+impl Owner {
+    pub fn from_nbt(tag: &Tag) -> Option<Self> {
+        let name = tag
+            .get("Name")
+            .and_then(Tag::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let textures = tag
+            .get("Properties")
+            .and_then(|properties| properties.get("textures"))
+            .and_then(|list| list.as_list().first())?;
+        let value = textures.get("Value").and_then(Tag::as_str)?.to_owned();
+        let signature = textures
+            .get("Signature")
+            .and_then(Tag::as_str)
+            .map(str::to_owned);
+        let uuid = tag
+            .get("Id")
+            .and_then(Tag::as_str)
+            .and_then(|id| u128::from_str_radix(&id.replace('-', ""), 16).ok())
+            .unwrap_or_else(|| {
+                // FNV-1a of the skin, so equal heads share one download.
+                value
+                    .bytes()
+                    .fold(0x6c62_272e_07bb_0142_62b8_2175_6295_c58d, |hash, byte| {
+                        (hash ^ u128::from(byte))
+                            .wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b)
+                    })
+            });
+        Some(Self {
+            uuid,
+            profile: Arc::new(Profile {
+                name,
+                properties: vec![Property {
+                    name: "textures".into(),
+                    value,
+                    signature,
+                }],
+            }),
+        })
+    }
 }
 
 impl BlockEntity {
@@ -28,6 +83,7 @@ impl BlockEntity {
                     .unwrap_or(0)
                     .clamp(0, 4) as u8,
                 rotation: (tag.get("Rot").and_then(Tag::as_int).unwrap_or(0) & 15) as u8,
+                owner: tag.get("Owner").and_then(Owner::from_nbt),
             }),
             6 => Some(BlockEntity::Banner {
                 base: (tag.get("Base").and_then(Tag::as_int).unwrap_or(0) & 15) as u8,
@@ -123,9 +179,49 @@ mod tests {
             BlockEntity::from_nbt(4, &skull),
             Some(BlockEntity::Skull {
                 kind: 3,
-                rotation: 9
+                rotation: 9,
+                owner: None,
             })
         );
+        let textures = |id: Option<&str>| {
+            let mut owner = vec![
+                ("Name".into(), Tag::String("Bob".into())),
+                (
+                    "Properties".into(),
+                    Tag::Compound(vec![(
+                        "textures".into(),
+                        Tag::List(vec![Tag::Compound(vec![(
+                            "Value".into(),
+                            Tag::String("e30=".into()),
+                        )])]),
+                    )]),
+                ),
+            ];
+            if let Some(id) = id {
+                owner.push(("Id".into(), Tag::String(id.into())));
+            }
+            Tag::Compound(vec![
+                ("SkullType".into(), Tag::Byte(3)),
+                ("Owner".into(), Tag::Compound(owner)),
+            ])
+        };
+        let Some(BlockEntity::Skull {
+            owner: Some(owner), ..
+        }) = BlockEntity::from_nbt(4, &textures(Some("00000000-0000-0000-0000-00000000002a")))
+        else {
+            panic!("player head with an owner");
+        };
+        assert_eq!(owner.uuid, 42);
+        assert_eq!(owner.profile.name, "Bob");
+        assert_eq!(owner.profile.properties[0].value, "e30=");
+        let stand_in = |tag: &Tag| match BlockEntity::from_nbt(4, tag) {
+            Some(BlockEntity::Skull {
+                owner: Some(owner), ..
+            }) => owner.uuid,
+            _ => panic!("owner"),
+        };
+        assert_eq!(stand_in(&textures(None)), stand_in(&textures(None)));
+        assert_ne!(stand_in(&textures(None)), 42);
         assert_eq!(BlockEntity::from_nbt(1, &skull), None);
     }
 }

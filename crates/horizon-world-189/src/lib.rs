@@ -186,7 +186,44 @@ impl ChunkColumn {
 pub struct World {
     columns: HashMap<(i32, i32), ChunkColumn, Keys>,
     block_entities: HashMap<[i32; 3], block_entities::BlockEntity, Keys>,
+    /// Chest and ender chest lids that are open or moving.
+    lids: HashMap<[i32; 3], Lid, Keys>,
     no_sky: bool,
+}
+
+/// A chest lid as `TileEntityChest` keeps it: players looking inside (block
+/// event 1) and the lid angle, 0 shut to 1 open, this tick and the last.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Lid {
+    pub viewers: u8,
+    pub angle: f32,
+    pub previous: f32,
+}
+
+impl Lid {
+    /// `TileEntityChest.update` (aky.c) and `TileEntityEnderChest.update`:
+    /// the lid moves a tenth a tick toward open while anyone looks inside.
+    pub fn tick(&mut self) {
+        self.previous = self.angle;
+        if (self.viewers == 0 && self.angle > 0.0) || (self.viewers > 0 && self.angle < 1.0) {
+            if self.viewers > 0 {
+                self.angle += 0.1;
+            } else {
+                self.angle -= 0.1;
+            }
+            self.angle = self.angle.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Whether the chest draws open this frame rather than as terrain.
+    pub fn open(&self) -> bool {
+        self.angle > 0.0 || self.previous > 0.0
+    }
+}
+
+/// Chest, trapped chest and ender chest: the blocks whose lids open.
+pub fn has_lid(block: u16) -> bool {
+    matches!(block, 54 | 130 | 146)
 }
 
 impl World {
@@ -227,8 +264,68 @@ impl World {
         self.block_entities.get(&at)
     }
 
+    pub fn block_entities(
+        &self,
+    ) -> impl Iterator<Item = ([i32; 3], &block_entities::BlockEntity)> + '_ {
+        self.block_entities.iter().map(|(&at, entity)| (at, entity))
+    }
+
+    /// Block event 1 on a chest (`receiveClientEvent`): how many players
+    /// look inside. Events for other blocks, or unloaded ones, are ignored.
+    pub fn chest_viewers(&mut self, at: [i32; 3], viewers: u8) {
+        if self
+            .block(at[0], at[1], at[2])
+            .is_some_and(|state| has_lid(state.block_id()))
+        {
+            self.lids.entry(at).or_default().viewers = viewers;
+        }
+    }
+
+    /// One client tick of every lid. Returns the chests that start or stop
+    /// drawing open, whose columns need meshing again.
+    pub fn tick_lids(&mut self) -> Vec<[i32; 3]> {
+        let mut changed = Vec::new();
+        let positions: Vec<[i32; 3]> = self.lids.keys().copied().collect();
+        for at in positions {
+            let chest = self
+                .block(at[0], at[1], at[2])
+                .is_some_and(|state| has_lid(state.block_id()));
+            let Some(lid) = self.lids.get_mut(&at) else {
+                continue;
+            };
+            let was = lid.open();
+            if chest {
+                lid.tick();
+            } else {
+                *lid = Lid::default();
+            }
+            if was != lid.open() {
+                changed.push(at);
+            }
+            if *lid == Lid::default() {
+                self.lids.remove(&at);
+            }
+        }
+        changed
+    }
+
+    /// The lid of a chest drawing open, if it is.
+    pub fn lid(&self, at: [i32; 3]) -> Option<Lid> {
+        self.lids.get(&at).copied().filter(Lid::open)
+    }
+
+    /// Every chest drawing open.
+    pub fn open_lids(&self) -> impl Iterator<Item = ([i32; 3], Lid)> + '_ {
+        self.lids
+            .iter()
+            .filter(|(_, lid)| lid.open())
+            .map(|(&at, &lid)| (at, lid))
+    }
+
     fn drop_block_entities(&mut self, x: i32, z: i32) {
         self.block_entities
+            .retain(|at, _| (at[0].div_euclid(16), at[2].div_euclid(16)) != (x, z));
+        self.lids
             .retain(|at, _| (at[0].div_euclid(16), at[2].div_euclid(16)) != (x, z));
     }
 

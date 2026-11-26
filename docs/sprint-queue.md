@@ -171,7 +171,8 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
       regions scale with it. (HANDOFF 89)
 - [ ] Optional 48-64 render distance.
 - [ ] Instanced block entities with culling: chests (single, double, lid), ender chests, signs
-      (formatted text), skulls, banners, beds.
+      (formatted text), skulls, banners, beds. Done: lids, owned player heads, 64-block limit
+      (HANDOFF 90). Open: sign colours and styles, banner patterns.
 - [ ] Sky (sun, moon, stars, day-night colors), weather (rain, snow), smooth lighting with
       per-vertex AO.
 

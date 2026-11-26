@@ -1256,6 +1256,13 @@ fn run_actor(
                             dirty(around(at[0].div_euclid(16), at[2].div_euclid(16)).to_vec());
                         }
                     }
+                    play::Packet::Other { id: 0x24, fields } => {
+                        // TileEntityChest/EnderChest.receiveClientEvent(1, viewers).
+                        let (at, event, viewers, _) = entity_packets::decode_block_action(fields)?;
+                        if event == 1 {
+                            write(world)?.chest_viewers(at, viewers);
+                        }
+                    }
                     play::Packet::Other { id: 0x35, fields } => {
                         let (at, action, nbt) = entity_packets::decode_block_entity(fields)?;
                         let entity = nbt
@@ -1533,6 +1540,22 @@ fn run_actor(
         let late = now.duration_since(next_tick).as_nanos();
         let due = late / tick.as_nanos() + 1;
         // Vanilla's timer executes at most ten accumulated client ticks.
+        // World.updateEntities ticks chest lids even without a player.
+        {
+            let mut lids = Vec::new();
+            let mut world = write(world)?;
+            for _ in 0..due.min(10) {
+                lids.extend(world.tick_lids());
+            }
+            drop(world);
+            if !lids.is_empty() {
+                dirty(
+                    lids.iter()
+                        .map(|at| (at[0].div_euclid(16), at[2].div_euclid(16)))
+                        .collect(),
+                );
+            }
+        }
         let mut world_view = read(world)?;
         for _ in 0..due.min(10) {
             // Minecraft.runTick: updateController, then the open screen's

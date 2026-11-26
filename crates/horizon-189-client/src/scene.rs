@@ -86,6 +86,8 @@ struct GpuColumn {
     terrain_bounds: Option<[f32; 6]>,
     passes: [Option<GpuPass>; 3],
     entity: Option<GpuMesh>,
+    /// Extent of the block-entity geometry, relative to the mesh origin.
+    entity_bounds: Option<[f32; 6]>,
     visibility: [u64; 16],
     /// `ColumnMesh::animated`.
     animated: u32,
@@ -140,6 +142,32 @@ fn blend_chains(frame: &[u8], next: &[u8], elapsed: u32, ticks: u32, out: &mut V
 /// Exact conservative union, cached on mesh replacement. Empty sections do not
 /// inject zero bounds. This is only a column broad phase; native compute still
 /// applies the five frustum planes independently to every candidate section.
+/// `TileEntity.getMaxRenderDistanceSquared`: chests, signs, skulls and
+/// banners draw only within 64 blocks of the camera.
+const BLOCK_ENTITY_DISTANCE: f32 = 64.0;
+
+/// The box around some vertices.
+fn vertex_bounds(vertices: &[crate::terrain::Vertex]) -> Option<[f32; 6]> {
+    let mut bounds = None::<[f32; 6]>;
+    for vertex in vertices {
+        let p = vertex.position;
+        let union = bounds.get_or_insert([p[0], p[1], p[2], p[0], p[1], p[2]]);
+        for axis in 0..3 {
+            union[axis] = union[axis].min(p[axis]);
+            union[axis + 3] = union[axis + 3].max(p[axis]);
+        }
+    }
+    bounds
+}
+
+/// Whether any of `bounds` lies within `distance` of `eye`. Conservative:
+/// a block entity inside it may be a little farther than vanilla's limit.
+fn near(bounds: [f32; 6], eye: Vec3, distance: f32) -> bool {
+    let low = Vec3::new(bounds[0], bounds[1], bounds[2]);
+    let high = Vec3::new(bounds[3], bounds[4], bounds[5]);
+    (eye.clamp(low, high) - eye).length_squared() <= distance * distance
+}
+
 fn terrain_envelope(passes: [&TerrainPass; 3]) -> Option<[f32; 6]> {
     let mut envelope = None::<[f32; 6]>;
     for pass in passes {
@@ -1182,6 +1210,7 @@ impl Scene {
                     ]),
                     visibility: mesh.visibility,
                     animated: mesh.animated,
+                    entity_bounds: vertex_bounds(&mesh.entity),
                     passes: [
                         self.pass_buffer(device, queue, &mesh.solid)?,
                         self.pass_buffer(device, queue, &mesh.cutout)?,
@@ -1848,7 +1877,11 @@ impl Scene {
         visible.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         self.entity_frame
             .extend(visible.iter().filter_map(|&(_, key, _, base)| {
-                (self.columns.get(&key)?.entity.is_some()
+                let column = self.columns.get(&key)?;
+                (column.entity.is_some()
+                    && column
+                        .entity_bounds
+                        .is_some_and(|bounds| near(bounds, self.eye, BLOCK_ENTITY_DISTANCE))
                     && Self::visible(&planes, base, base + Vec3::new(16.0, 256.0, 16.0)))
                 .then_some(key)
             }));
@@ -2072,6 +2105,35 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_entities_draw_within_sixty_four_blocks() {
+        let vertex = |p: [f32; 3]| crate::terrain::Vertex {
+            position: p,
+            uv: [0.0; 2],
+            layer: 0,
+            color: [1.0; 3],
+            hurt: 0.0,
+        };
+        let bounds = vertex_bounds(&[vertex([70.0, 4.0, 3.0]), vertex([71.0, 5.0, 2.0])]).unwrap();
+        assert_eq!(bounds, [70.0, 4.0, 2.0, 71.0, 5.0, 3.0]);
+        assert!(near(
+            bounds,
+            Vec3::new(6.0, 4.5, 2.5),
+            BLOCK_ENTITY_DISTANCE
+        ));
+        assert!(!near(
+            bounds,
+            Vec3::new(5.9, 4.5, 2.5),
+            BLOCK_ENTITY_DISTANCE
+        ));
+        assert!(near(
+            bounds,
+            Vec3::new(70.5, 4.5, 2.5),
+            BLOCK_ENTITY_DISTANCE
+        ));
+        assert_eq!(vertex_bounds(&[]), None);
+    }
 
     #[test]
     fn mip_downsampling_ignores_transparent_texels_and_keeps_srgb() {

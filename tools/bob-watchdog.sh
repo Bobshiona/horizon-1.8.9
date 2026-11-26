@@ -19,7 +19,7 @@ TRACE=${TRACE:-$TARGET/horizon-189-trace}
 PORT=${PORT:-25572}
 OUT=$DIR/watchdog
 "$TRACE" serve --listen 127.0.0.1:$PORT --trace $DIR/session.bin --until 14000 \
-  --crowd 24 --crowd-at 1000 --seed 2 --sparring --log $OUT.client.bin > $OUT.serve.log 2>&1 &
+  --crowd 24 --crowd-at 2600 --seed 2 --sparring --log $OUT.client.bin > $OUT.serve.log 2>&1 &
 SERVE=$!
 sleep 0.5
 "$BIN" --offline --username NativeBench --server 127.0.0.1 --port $PORT --watchdog > $OUT.log 2>&1

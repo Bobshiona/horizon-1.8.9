@@ -432,6 +432,7 @@ impl Renderer {
         angler: Option<&crate::models::Angler>,
         cracks: &[([i32; 3], horizon_world_189::BlockState, u8)],
         extra: &[crate::terrain::Vertex],
+        heads: &[crate::models::Head],
         outline: Option<([f64; 3], [f64; 3], crate::outline::Style)>,
     ) -> Result<(), Box<dyn Error>> {
         let Some(scene) = &mut self.scene else {
@@ -440,8 +441,13 @@ impl Renderer {
         let own_uuid = own.map(|(uuid, _)| *uuid);
         // The loader's active set is exactly the entities' UUIDs and our own:
         // one hash probe per skin instead of a scan of every entity.
-        self.skin_loader
-            .retain(entities.iter().map(|(_, e)| e.uuid).chain(own_uuid));
+        self.skin_loader.retain(
+            entities
+                .iter()
+                .map(|(_, e)| e.uuid)
+                .chain(own_uuid)
+                .chain(heads.iter().map(|head| head.uuid)),
+        );
         self.skins
             .retain(|uuid, _| self.skin_loader.is_active(*uuid));
         self.skin_images
@@ -453,6 +459,10 @@ impl Renderer {
         }
         if let Some((uuid, profile)) = own {
             self.skin_loader.request(*uuid, profile);
+        }
+        // Heads after players, so players keep their skins when layers run out.
+        for head in heads {
+            self.skin_loader.request(head.uuid, &head.profile);
         }
         while let Ok(result) = self.skin_loader.results.try_recv() {
             match result {
@@ -552,6 +562,13 @@ impl Renderer {
             &in_view,
         );
         vertices.extend_from_slice(extra);
+        for head in heads {
+            let skin = self
+                .skins
+                .get(&head.uuid)
+                .map_or(crate::models::Texture::Steve as u32, |binding| binding.skin);
+            crate::models::player_head(&mut vertices, head, skin);
+        }
         through.clear();
         tested.clear();
         lines.clear();

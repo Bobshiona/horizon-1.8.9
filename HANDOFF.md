@@ -2920,3 +2920,50 @@ mask-0 packets unload with or without biome bytes; the player updates over missi
 stops at the world border; the Distance slider reaches 32; `--render-distance 32` parses.
 Gate: 334 scoped tests, 12 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=235 windows=2.
+
+## 90. Chest lids, player-head skins, the 64-block block-entity limit, a new benchmark session
+
+Previous commit: 3d778a99f0. Sprint row 2.1 (block entities), in part.
+
+- **Chest lids.** Block Action 0x24 (`S24PacketBlockAction`, event 1) sets how many players
+  look inside a chest, trapped chest or ender chest (`receiveClientEvent`). Each client tick
+  the lid moves a tenth toward open while anyone looks, back after (`TileEntityChest.update`,
+  `aky.c`). A chest whose lid is open or moving leaves the baked column mesh and draws with the
+  moving entities at the frame's partial tick, lid and knob turned by `1 - (1 - f)^3` of a
+  quarter turn (`TileEntityChestRenderer`); once shut it returns to the baked mesh. Only the
+  chest's own column is meshed again, twice per open-and-close. Captures: a double chest
+  opened by a second (bot) player shows the lid up on its back hinge; after closing it is
+  baked again. Sounds wait for the sound engine (2.3).
+- **Player heads with skins.** A skull's `Owner` (`NBTUtil.readGameProfileFromNBT`: `Id`,
+  `Name`, the signed `textures` property) is kept. Owned heads within 64 blocks draw each frame
+  with the owner's skin through the same loader and texture layers as players (players are
+  requested first, so heads never take a player's layer); until the skin arrives, Steve.
+  Heads without an `Id` share one download per skin. Verified with a placed head: Steve while
+  loading, `SKIN_LOAD_FAILED` for the test's fake texture, creeper heads still baked.
+- **64-block limit.** `TileEntity.getMaxRenderDistanceSquared` (4096): baked block entities
+  (chests, signs, skulls, banners) draw only for columns whose block-entity geometry lies
+  within 64 blocks of the camera. Conservative per column, so nothing vanilla shows is hidden.
+  With render distance 32 this skips most block-entity draw calls.
+- Still open in this row: sign text colours and styles, banner patterns. Beds are block models
+  in 1.8.9 and already draw with the terrain.
+- **New benchmark session.** The old `$BOB_TRACE_DIR/session.bin` and the trace server's
+  server jar and EULA file disappeared from `/tmp` at midnight on 2026-11-26 (something
+  removed about 440 MB of older files there). The server jar was restored from the reference
+  server (same SHA-1) and the session re-recorded with `tools/bob-trace-record.sh` and
+  3d778a99f0. Numbers before this section came from the old recording and are not comparable.
+  In the new one the server sends the first chunks a second after the spawn teleport, and the
+  client, now ticking over unsent terrain (section 89), sinks and is put back five times.
+- **Watchdog.** Each teleport (S08) gets one C06 back from `handlePlayerPosLook`, outside the
+  tick. The parity check counted those as ticks (25 a second at spawn); the replay server now
+  logs the teleports it sends and the check pairs each with its answer. The sparring crowd now
+  arrives at 2.6 s instead of 1 s, after the session's spawn teleport (at 1 s it stood around
+  the origin, out of reach).
+- A/B against 3d778a99f0 on the new session, three alternating pairs: frame p50 lobby -0.07%,
+  flyover +0.16%; CPU p99 +1.46% / -0.17%; draws per frame lobby 10.3 -> 9.7, flyover
+  7.4 -> 6.7 (the 64-block limit).
+
+Regressions: block action decoding; lids open, shut, ignore other blocks and drop with their
+column; owned heads parse with and without an `Id`; the 64-block block-entity bounds.
+Teleport answers are not ticks (trace tool).
+Gate: 337 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.

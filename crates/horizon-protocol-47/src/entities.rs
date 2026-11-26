@@ -331,10 +331,36 @@ pub fn decode_block_entity(fields: &[u8]) -> io::Result<([i32; 3], u8, Option<Ta
     Ok((at, action, nbt))
 }
 
+/// Clientbound 0x24 Block Action: position, the two event bytes and the
+/// block id (`S24PacketBlockAction`). Chests send event 1 with the number
+/// of players looking inside.
+pub fn decode_block_action(fields: &[u8]) -> io::Result<([i32; 3], u8, u8, i32)> {
+    let mut input = Cursor::new(fields);
+    let at = position(i64::from_be_bytes(bytes(&mut input)?));
+    let [event, parameter] = bytes::<2>(&mut input)?;
+    let block = read_varint(&mut input)?;
+    finish(&input)?;
+    Ok((at, event, parameter, block))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::write_varint;
+
+    #[test]
+    fn block_action_decodes_position_event_and_block() {
+        let packed: i64 = (-5i64 << 38) | ((64i64 & 0xfff) << 26) | (12i64 & 0x3ff_ffff);
+        let mut fields = packed.to_be_bytes().to_vec();
+        fields.extend_from_slice(&[1, 2]);
+        write_varint(&mut fields, 54);
+        assert_eq!(
+            decode_block_action(&fields).unwrap(),
+            ([-5, 64, 12], 1, 2, 54)
+        );
+        fields.push(0);
+        assert!(decode_block_action(&fields).is_err());
+    }
 
     #[test]
     fn spawn_move_teleport_destroy_and_metadata_decode() {

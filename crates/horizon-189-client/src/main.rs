@@ -1591,6 +1591,7 @@ impl ApplicationHandler for App {
                             None,
                             &[],
                             &[],
+                            &[],
                             None,
                         ) {
                             self.fail(event_loop, error);
@@ -1639,6 +1640,7 @@ impl ApplicationHandler for App {
                             .as_ref()
                             .map_or((&empty, ""), |s| (&*s.scoreboard, s.username.as_str()));
                         let mut extra = Vec::new();
+                        let mut heads = Vec::new();
                         if let Some(scene_origin) = renderer.origin() {
                             self.particles.draw(
                                 &mut extra,
@@ -1647,6 +1649,12 @@ impl ApplicationHandler for App {
                                 pose.yaw,
                                 pose.pitch,
                             );
+                            if let Some(world) =
+                                self.network.as_ref().and_then(|n| n.world.try_read().ok())
+                            {
+                                terrain::open_chests(&mut extra, &world, partial, scene_origin);
+                                heads = terrain::heads(&world, pose.position, scene_origin);
+                            }
                         }
                         let own = snapshot.as_ref().and_then(|s| s.own.as_ref());
                         let world_gui = self.view.world_gui();
@@ -1753,6 +1761,7 @@ impl ApplicationHandler for App {
                             angler.as_ref(),
                             snapshot.as_ref().map_or(&[][..], |s| &s.cracks),
                             &extra,
+                            &heads,
                             outline,
                         ) {
                             self.fail(event_loop, error);

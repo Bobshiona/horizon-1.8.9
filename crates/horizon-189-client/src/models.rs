@@ -1629,8 +1629,9 @@ pub enum ChestKind {
     Ender,
 }
 
-/// `TileEntityChestRenderer` for a closed chest. `double` is the side the
-/// partner lies on (+X or +Z), if this half draws the large model.
+/// `TileEntityChestRenderer`. `double` is the side the partner lies on (+X
+/// or +Z), if this half draws the large model; `lid` is the eased opening,
+/// 0 shut to 1 a quarter turn open (`ModelChest` turns lid and knob).
 pub fn chest(
     out: &mut Vec<Vertex>,
     at: Vec3,
@@ -1638,7 +1639,9 @@ pub fn chest(
     kind: ChestKind,
     double: Option<bool>,
     light: f32,
+    lid: f32,
 ) {
+    let turn = [-(lid * std::f32::consts::FRAC_PI_2), 0.0, 0.0];
     let rotation: f32 = match facing {
         2 => 180.0,
         4 => 90.0,
@@ -1667,14 +1670,14 @@ pub fn chest(
     let knob_x = if width == 30 { 16.0 } else { 8.0 };
     add(
         out,
-        part(matrix, [1.0, 7.0, 15.0], [0.0; 3]),
+        part(matrix, [1.0, 7.0, 15.0], turn),
         cuboid(0.0, 0.0, [0.0, -5.0, -14.0], [width, 5, 14]),
         texture,
         tint,
     );
     add(
         out,
-        part(matrix, [knob_x, 7.0, 15.0], [0.0; 3]),
+        part(matrix, [knob_x, 7.0, 15.0], turn),
         cuboid(0.0, 0.0, [-1.0, -2.0, -15.0], [2, 4, 1]),
         texture,
         tint,
@@ -2074,21 +2077,57 @@ pub fn sign(
     }
 }
 
+/// An owned player head to draw this frame (`terrain::heads`).
+#[derive(Clone)]
+pub struct Head {
+    pub at: Vec3,
+    pub facing: u8,
+    pub rotation: u8,
+    pub uuid: u128,
+    pub profile: std::sync::Arc<horizon_protocol_47::player_list::Profile>,
+    pub light: f32,
+}
+
+/// A player head in the skin at texture layer `skin`, with its hat layer.
+pub fn player_head(out: &mut Vec<Vertex>, head: &Head, skin: u32) {
+    skull_model(
+        out,
+        head.at,
+        head.facing,
+        head.rotation,
+        skin,
+        true,
+        head.light,
+    );
+}
+
 /// `TileEntitySkullRenderer` with `ModelSkeletonHead` (or the player head).
 pub fn skull(out: &mut Vec<Vertex>, at: Vec3, facing: u8, kind: u8, rotation: u8, light: f32) {
-    let (offset, yaw) = match facing {
-        2 => (Vec3::new(0.5, 0.25, 0.74), 0.0),
-        3 => (Vec3::new(0.5, 0.25, 0.26), 180.0),
-        4 => (Vec3::new(0.74, 0.25, 0.5), 270.0),
-        5 => (Vec3::new(0.26, 0.25, 0.5), 90.0),
-        _ => (Vec3::new(0.5, 0.0, 0.5), f32::from(rotation) * 360.0 / 16.0),
-    };
     let texture = match kind {
         1 => Texture::WitherSkeleton,
         2 => Texture::Zombie,
         3 => Texture::Steve,
         4 => Texture::Creeper,
         _ => Texture::Skeleton,
+    };
+    skull_model(out, at, facing, rotation, texture as u32, kind == 3, light);
+}
+
+fn skull_model(
+    out: &mut Vec<Vertex>,
+    at: Vec3,
+    facing: u8,
+    rotation: u8,
+    texture: u32,
+    hat: bool,
+    light: f32,
+) {
+    let (offset, yaw) = match facing {
+        2 => (Vec3::new(0.5, 0.25, 0.74), 0.0),
+        3 => (Vec3::new(0.5, 0.25, 0.26), 180.0),
+        4 => (Vec3::new(0.74, 0.25, 0.5), 270.0),
+        5 => (Vec3::new(0.26, 0.25, 0.5), 90.0),
+        _ => (Vec3::new(0.5, 0.0, 0.5), f32::from(rotation) * 360.0 / 16.0),
     };
     let matrix = Mat4::from_translation(at + offset) * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0));
     let head = part(matrix, [0.0; 3], [0.0, yaw.to_radians(), 0.0]);
@@ -2099,7 +2138,7 @@ pub fn skull(out: &mut Vec<Vertex>, at: Vec3, facing: u8, kind: u8, rotation: u8
         texture,
         [light; 3],
     );
-    if kind == 3 {
+    if hat {
         add(
             out,
             head,
