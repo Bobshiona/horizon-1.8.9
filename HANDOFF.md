@@ -3270,5 +3270,5 @@ Previous commit: 5157b41aae. Sprint row 3.1.
 
 Regressions: the page's geometry, toggling the hat off and on with the settings round trip,
 Done back to Options, the glass row inside the sheet; C15's skin byte.
-Gate: 358 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+Gate: 357 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
