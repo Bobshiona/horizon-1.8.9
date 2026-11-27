@@ -195,7 +195,7 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
       96), the sliders (HANDOFF 97), falls, eating and drinking (HANDOFF 98). Open: music.
 
 ### 2.4 Remaining handoff and Hypixel parity fixes
-- [ ] Crafting grid consumes ingredients on screen when taking the result.
+- [x] Crafting grid consumes ingredients on screen when taking the result. (HANDOFF 27)
 - [x] Heart symbols and bold formatting on Hypixel nametags and holograms. (HANDOFF 99)
 - [x] Tab-list health objectives as hearts. (HANDOFF 100; the change blink is open)
 - [ ] Full chunk, entity and skin-cache cleanup on every lobby or server transfer.
@@ -208,11 +208,12 @@ pixel-identical. Visible Vsync model measurements are inconclusive; no input lat
 - [ ] FOV slider (30-110, Quake Pro) and dynamic FOV with its toggle.
 - [ ] Complete Video Settings, vanilla and native performance controls.
 - [ ] Controls: remapping, sensitivity, invert mouse, reset one or all.
-- [ ] Skin Customization (seven toggles through C15).
-- [ ] Music & Sounds (nine sliders wired to the sound engine).
+- [x] Skin Customization (seven toggles through C15). (HANDOFF 101)
+- [x] Music & Sounds (nine sliders wired to the sound engine). (HANDOFF 97)
 - [ ] Multiplayer Settings (chat visibility, colors, links, opacity, scale, sizes, reduced
       debug info).
-- [ ] Language (async hot reload, C15) and the Resource Packs screen.
+- [ ] Language (async hot reload, C15) and the Resource Packs screen. The packs screen is
+      done (HANDOFF 94, 95).
 
 ### 3.2 Function keys and F3 chords
 - [ ] F1, F2 (screenshot, optional clipboard copy, corner thumbnail toast), F3 with Metal

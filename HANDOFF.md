@@ -3247,3 +3247,28 @@ Previous commit: 778cc8bdc7. Sprint row 2.4.
 Gate: 356 scoped tests, 13 trace-tool tests, 7 Python gate tests,
 VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2. (One gate run failed only
 because a log line landed between a test's name and its "ok"; the unchanged rerun passed.)
+
+## 101. Skin Customization
+
+Previous commit: 5157b41aae. Sprint row 3.1.
+
+- `GuiCustomizeSkin`: Options has Skin Customization... (in the GuiOptions grid; the glass
+  menu's bottom row is now Packs, Sounds, Skin and Done). The page lists the seven
+  `EnumPlayerModelParts` (cape, jacket, sleeves, trouser legs, hat) as "Hat: ON" buttons two by
+  two from height/6, Done below them and the title at 20; the glass look lists switches.
+- The parts save (`skin_parts`) and go to the server in C15 on join and whenever one changes,
+  which is how other players see them. C15 now always carries the current view distance and
+  parts together (`client_settings(view_distance, skin_parts)`). The own body in third person
+  and the inventory model draw the chosen parts.
+- Sprint row 2.4's crafting grid was already done in section 27 (`SlotCrafting` uses the grid
+  when the result is taken); the queue now says so. On transfers, a Respawn into another
+  dimension already clears the world, entities, weather and queued sounds, and keeps the
+  scoreboard as `handleRespawn` does (it hands the old one to the new `WorldClient`).
+- Captures: the vanilla page, the glass page and Options' new bottom row.
+- A/B against 5157b41aae: frame p50 lobby -1.13%, flyover +3.10%; CPU p99 +0.47% / +1.57%
+  (first pair during a background spike, +8% to +50%).
+
+Regressions: the page's geometry, toggling the hat off and on with the settings round trip,
+Done back to Options, the glass row inside the sheet; C15's skin byte.
+Gate: 358 scoped tests, 13 trace-tool tests, 7 Python gate tests,
+VANILLA_189_REFERENCE_GATE_PASS, WATCHDOG_PASS packets=238 windows=2.
