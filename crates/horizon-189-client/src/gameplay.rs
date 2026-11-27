@@ -1806,6 +1806,7 @@ mod tests {
                 autopilot: false,
                 autopilot_fly: false,
                 view_distance: 2,
+                skin_parts: 0x7f,
             },
             registry,
         )

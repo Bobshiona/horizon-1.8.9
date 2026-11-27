@@ -40,6 +40,8 @@ pub struct Config {
     pub autopilot_fly: bool,
     /// Requested view distance in chunks (2..=32; vanilla clamps to 16).
     pub view_distance: u8,
+    /// Skin Customization's parts, as C15 sends them.
+    pub skin_parts: u8,
 }
 
 /// One rebuilt column for the renderer; `None` removes it.
@@ -217,6 +219,8 @@ pub struct Shared {
     pub reduced_debug: bool,
     /// A new render distance for the server (C15), sent on the next tick.
     pub view_distance: Option<u8>,
+    /// New skin parts for the server (C15), sent on the next tick.
+    pub skin_parts: Option<u8>,
     /// Keep Chunks: the client's render distance, within which columns the
     /// server unloads stay drawn (the client-side chunk cache); `None` is off.
     pub chunk_cache: Option<u8>,
@@ -883,6 +887,7 @@ fn run_actor(
     let mut entities = Entities::default();
     let mut inventory = crate::inventory::Inventory::default();
     let mut controller = crate::gameplay::Controller::default();
+    let (mut view_distance, mut skin_parts) = (config.view_distance, config.skin_parts);
     let mut sound_seed = 0x9e37_79b9_7f4a_7c15u64;
     let mut game_mode = 0;
     let mut vitals = crate::gameplay::Vitals::default();
@@ -982,7 +987,7 @@ fn run_actor(
                         dimension = Some(i32::from(join.dimension));
                         sky_light = Some(join.dimension == 0);
                         write(world)?.set_sky(join.dimension == 0);
-                        writer.send(&play::client_settings(config.view_distance))?;
+                        writer.send(&play::client_settings(view_distance, skin_parts))?;
                         writer.send(&play::brand()?)?;
                     }
                     play::Packet::KeepAlive(id) => writer.send(&play::keep_alive(id))?,
@@ -1845,8 +1850,13 @@ fn run_actor(
                 if updated {
                     state.moves_sent += 1;
                 }
-                if let Some(chunks) = state.view_distance.take() {
-                    writer.send(&play::client_settings(chunks))?;
+                // GameSettings.sendSettingsToServer after either changes.
+                let chunks = state.view_distance.take();
+                let parts = state.skin_parts.take();
+                if chunks.is_some() || parts.is_some() {
+                    view_distance = chunks.unwrap_or(view_distance);
+                    skin_parts = parts.unwrap_or(skin_parts);
+                    writer.send(&play::client_settings(view_distance, skin_parts))?;
                 }
                 state.previous = state.current;
                 if state.daylight_cycle {

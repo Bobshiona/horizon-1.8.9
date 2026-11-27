@@ -146,6 +146,7 @@ struct App {
     smoke_hud_editor: bool,
     smoke_settings: bool,
     smoke_sounds: bool,
+    smoke_skin: bool,
     smoke_packs: bool,
     smoke_pack_reload: bool,
     smoke_pause: bool,
@@ -290,6 +291,8 @@ impl App {
         if let (Some(config), Some(registry)) = (config, registry) {
             self.connection.connecting();
             eprintln!("NETWORK_RECONNECTING");
+            let mut config = config;
+            config.skin_parts = self.settings.skin_parts;
             match network::Network::start(config, registry) {
                 Ok(network) => self.network = Some(network),
                 Err(error) => self.disconnected(event_loop, error.to_string()),
@@ -348,6 +351,14 @@ impl App {
                 self.save_settings();
             }
             pause::Click::Mods => self.menu.toggle(),
+            pause::Click::SkinParts => {
+                self.save_settings();
+                if let Some(network) = &self.network
+                    && let Ok(mut shared) = network.shared.lock()
+                {
+                    shared.skin_parts = Some(self.settings.skin_parts);
+                }
+            }
             pause::Click::Packs => {
                 self.save_settings();
                 self.reload_packs();
@@ -1339,7 +1350,8 @@ impl ApplicationHandler for App {
                     registry.set_fancy_graphics(self.settings.video.fancy_graphics);
                 }
                 renderer.set_render_scale(self.settings.video.render_scale);
-                if let Some(config) = self.server.clone() {
+                if let Some(mut config) = self.server.clone() {
+                    config.skin_parts = self.settings.skin_parts;
                     let Some(registry) = renderer.registry.clone() else {
                         self.fail(event_loop, "Connected viewport requires owned assets");
                         return;
@@ -1866,7 +1878,7 @@ impl ApplicationHandler for App {
                         renderer.own_body = snapshot
                             .as_ref()
                             .filter(|s| !first_person && s.game_mode != 3)
-                            .and_then(|s| own_body(s, pose));
+                            .and_then(|s| own_body(s, pose, self.settings.skin_parts));
                         let hand_shown = self.view.hand();
                         let hand_frame = snapshot
                             .as_ref()
@@ -1978,7 +1990,7 @@ impl ApplicationHandler for App {
                             })
                             .and_then(|s| {
                                 let at = hud::inventory_model_point(&s.view, renderer.layout);
-                                own_model(s).map(|entity| (entity, at))
+                                own_model(s, self.settings.skin_parts).map(|entity| (entity, at))
                             });
                         let shown = model.as_ref().map(|(entity, _)| entity);
                         let at = model.as_ref().map_or((0.0, 0.0), |(_, at)| *at);
@@ -2477,6 +2489,9 @@ impl ApplicationHandler for App {
         if positioned && std::mem::take(&mut self.smoke_sounds) {
             self.pause.open_sounds();
         }
+        if positioned && std::mem::take(&mut self.smoke_skin) {
+            self.pause.open_skin();
+        }
         if positioned && std::mem::take(&mut self.smoke_packs) {
             self.pause.open_packs(&self.settings);
         }
@@ -2751,6 +2766,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         smoke_hud_editor: options.smoke_hud_editor,
         smoke_settings: options.smoke_settings,
         smoke_sounds: options.smoke_sounds,
+        smoke_skin: options.smoke_skin,
         smoke_packs: options.smoke_packs,
         smoke_pack_reload: options.smoke_pack_reload,
         smoke_pause: options.smoke_pause,
@@ -2910,13 +2926,14 @@ fn reopen_launcher() {
 fn own_body(
     snapshot: &Snapshot,
     pose: PositionLook,
+    skin_parts: u8,
 ) -> Option<(i32, horizon_world_189::entities::Entity)> {
     let mut body = snapshot.own_body.clone()?;
     if let Some((uuid, profile)) = &snapshot.own {
         body.uuid = *uuid;
         body.profile = Some(profile.clone());
     }
-    body.skin_parts = 0x7f;
+    body.skin_parts = skin_parts;
     let [helmet, chest, legs, boots] = snapshot.armor.clone();
     body.equipment = [snapshot.hand.item.clone(), boots, legs, chest, helmet];
     body.swing = snapshot.swing;
@@ -2934,7 +2951,7 @@ fn own_body(
     Some((snapshot.entity_id, body))
 }
 
-fn own_model(snapshot: &Snapshot) -> Option<horizon_world_189::entities::Entity> {
+fn own_model(snapshot: &Snapshot, skin_parts: u8) -> Option<horizon_world_189::entities::Entity> {
     let uuid = snapshot.own.as_ref().map_or(0, |(uuid, _)| *uuid);
     let mut tracked = horizon_world_189::entities::Entities::default();
     tracked.apply(horizon_protocol_47::entities::EntityPacket::SpawnPlayer {
@@ -2948,7 +2965,7 @@ fn own_model(snapshot: &Snapshot) -> Option<horizon_world_189::entities::Entity>
     });
     let mut entity = tracked.get(0)?.clone();
     entity.profile = snapshot.own.as_ref().map(|(_, profile)| profile.clone());
-    entity.skin_parts = 0x7f;
+    entity.skin_parts = skin_parts;
     // Held item, then boots, leggings, chestplate and helmet.
     let [helmet, chest, legs, boots] = snapshot.armor.clone();
     entity.equipment = [snapshot.hand.item.clone(), boots, legs, chest, helmet];

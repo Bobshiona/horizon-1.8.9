@@ -189,6 +189,8 @@ pub struct Settings {
     pub resource_packs: Vec<String>,
     /// `soundCategory_*`: master first, in `audio::CATEGORIES` order.
     pub sound: [f32; 9],
+    /// `modelPart_*`: Skin Customization's shown parts, as C15 sends them.
+    pub skin_parts: u8,
     path: Option<PathBuf>,
 }
 
@@ -210,6 +212,7 @@ impl Default for Settings {
             servers: default_servers(),
             resource_packs: Vec::new(),
             sound: [1.0; 9],
+            skin_parts: 0x7f,
             video: Video::default(),
             path: None,
         }
@@ -284,6 +287,9 @@ impl Settings {
                     settings.sound[index] = (level as f32).clamp(0.0, 1.0);
                 }
             }
+        }
+        if let Some(parts) = root.get("skin_parts").and_then(Value::as_u64) {
+            settings.skin_parts = (parts & 0x7f) as u8;
         }
         if let Some(Value::Array(packs)) = root.get("resource_packs") {
             settings.resource_packs = packs
@@ -379,6 +385,7 @@ impl Settings {
             "hud": Value::Object(huds),
             "servers": servers,
             "resource_packs": self.resource_packs,
+            "skin_parts": self.skin_parts,
             "sound": crate::audio::CATEGORIES
                 .iter()
                 .zip(self.sound)

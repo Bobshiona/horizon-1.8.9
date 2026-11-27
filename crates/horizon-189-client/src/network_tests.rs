@@ -57,6 +57,7 @@ impl Actor {
                 autopilot: false,
                 autopilot_fly: false,
                 view_distance: 2,
+                skin_parts: 0x7f,
             };
             run_actor(
                 &w,
@@ -110,7 +111,7 @@ impl Actor {
         write_string(&mut join, "default", 16).unwrap();
         join.push(0);
         self.send(join);
-        assert_eq!(self.peer.receive().unwrap(), play::client_settings(2));
+        assert_eq!(self.peer.receive().unwrap(), play::client_settings(2, 0x7f));
         assert_eq!(self.peer.receive().unwrap(), play::brand().unwrap());
     }
     fn position(&mut self) {
@@ -427,6 +428,7 @@ fn retry_after_login_rejection_uses_fresh_state_and_same_session() {
         autopilot: false,
         autopilot_fly: false,
         view_distance: 2,
+        skin_parts: 0x7f,
     };
     let copy = config.clone();
     assert!(Arc::ptr_eq(&config.session, &copy.session));
@@ -463,7 +465,7 @@ fn retry_after_login_rejection_uses_fresh_state_and_same_session() {
             write_string(&mut join, "default", 16).unwrap();
             join.push(0);
             peer.send(&join).unwrap();
-            assert_eq!(peer.receive().unwrap(), play::client_settings(2));
+            assert_eq!(peer.receive().unwrap(), play::client_settings(2, 0x7f));
             assert_eq!(peer.receive().unwrap(), play::brand().unwrap());
             let mut position = vec![8];
             for v in [4.5f64, 70.0, 8.5] {

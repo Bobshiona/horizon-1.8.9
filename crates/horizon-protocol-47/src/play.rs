@@ -117,7 +117,9 @@ pub fn keep_alive(id: i32) -> Vec<u8> {
 
 /// Serverbound 0x15 with vanilla defaults: `en_US`, chat full, colours on,
 /// every skin part shown. Vanilla clamps view distance to 2..=16 chunks.
-pub fn client_settings(view_distance: u8) -> Vec<u8> {
+/// C15 Client Settings: locale, view distance, chat full with colours,
+/// and the shown skin parts (`EnumPlayerModelParts` bits).
+pub fn client_settings(view_distance: u8, skin_parts: u8) -> Vec<u8> {
     vec![
         0x15,
         5,
@@ -129,7 +131,7 @@ pub fn client_settings(view_distance: u8) -> Vec<u8> {
         view_distance.clamp(2, 16),
         0,
         1,
-        0x7f,
+        skin_parts & 0x7f,
     ]
 }
 
@@ -311,10 +313,13 @@ mod tests {
 
     #[test]
     fn client_settings_clamp_view_distance_like_vanilla() {
-        assert_eq!(client_settings(8)[7], 8);
-        assert_eq!(client_settings(0)[7], 2);
-        assert_eq!(client_settings(40)[7], 16);
-        assert_eq!(client_settings(8).len(), 11);
+        assert_eq!(client_settings(8, 0x7f)[7], 8);
+        assert_eq!(client_settings(0, 0x7f)[7], 2);
+        assert_eq!(client_settings(40, 0x7f)[7], 16);
+        assert_eq!(client_settings(8, 0x7f).len(), 11);
+        // The skin parts byte comes last, seven bits.
+        assert_eq!(client_settings(8, 0x41)[10], 0x41);
+        assert_eq!(client_settings(8, 0xff)[10], 0x7f);
     }
 
     #[test]

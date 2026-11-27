@@ -29,6 +29,8 @@ enum Page {
     Packs,
     /// `GuiScreenOptionsSounds`.
     Sounds,
+    /// `GuiCustomizeSkin`.
+    Skin,
 }
 
 /// What a click asked the app to do.
@@ -42,6 +44,8 @@ pub enum Click {
     Changed,
     /// The pack stack changed on Done: save and reload resources.
     Packs,
+    /// A skin part was toggled: save and tell the server (C15).
+    SkinParts,
     /// Open Resource Pack Folder.
     OpenFolder,
     Nothing,
@@ -135,6 +139,10 @@ enum Target {
     Sounds,
     /// A `SoundCategory` level slider (`GuiScreenOptionsSounds.Button`).
     Volume(u8),
+    /// Skin Customization...
+    SkinCustomization,
+    /// An `EnumPlayerModelParts` toggle, by bit.
+    SkinPart(u8),
     /// A vanilla button this client has nothing behind (translation key).
     Inert(&'static str),
     Done,
@@ -186,6 +194,7 @@ fn vanilla_geometry(page: Page, layout: Layout) -> Geometry {
                 Target::Slider(Slider::Scale),
                 Target::ResourcePacks,
                 Target::Sounds,
+                Target::SkinCustomization,
             ];
             for (i, target) in rows.into_iter().enumerate() {
                 let i = i as i32;
@@ -195,6 +204,17 @@ fn vanilla_geometry(page: Page, layout: Layout) -> Geometry {
                 ));
             }
             targets.push((Target::Done, rect(w / 2 - 100, h / 6 + 168, 200)));
+        }
+        Page::Skin => {
+            // GuiCustomizeSkin: the seven parts two by two, Done below.
+            for part in 0..7u8 {
+                let i = i32::from(part);
+                targets.push((
+                    Target::SkinPart(part),
+                    rect(w / 2 - 155 + i % 2 * 160, h / 6 + 24 * (i >> 1), 150),
+                ));
+            }
+            targets.push((Target::Done, rect(w / 2 - 100, h / 6 + 24 * 4, 200)));
         }
         Page::Sounds => {
             // GuiScreenOptionsSounds: Master across both columns, then the
@@ -231,9 +251,11 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
         return vanilla_geometry(page, layout);
     }
     match page {
-        Page::Settings | Page::Sounds => {
+        Page::Settings | Page::Sounds | Page::Skin => {
             let rows: Vec<Target> = if page == Page::Sounds {
                 (0..9).map(Target::Volume).collect()
+            } else if page == Page::Skin {
+                (0..7).map(Target::SkinPart).collect()
             } else {
                 vec![
                     Target::Slider(Slider::Fov),
@@ -272,22 +294,28 @@ fn geometry(page: Page, layout: Layout, vanilla: bool) -> Geometry {
             }
             let bottom = sheet[3] - PAD - BUTTON_H;
             let mid = (sheet[0] + sheet[2]) / 2.0;
-            if page == Page::Sounds {
+            if page != Page::Settings {
                 targets.push((
                     Target::Done,
                     [mid - 60.0, bottom, mid + 60.0, bottom + BUTTON_H],
                 ));
             } else {
-                // Resource Packs... and Music & Sounds... beside Done: no
-                // rows of their own, so short windows still fit.
-                let third = ((sheet[2] - sheet[0] - 2.0 * PAD - 12.0) / 3.0).floor();
+                // The sub-screens' buttons beside Done: no rows of their
+                // own, so short windows still fit.
+                let buttons = [
+                    Target::ResourcePacks,
+                    Target::Sounds,
+                    Target::SkinCustomization,
+                    Target::Done,
+                ];
+                let gap = 6.0;
+                let count = buttons.len() as f32;
+                let each =
+                    ((sheet[2] - sheet[0] - 2.0 * PAD - gap * (count - 1.0)) / count).floor();
                 let left = sheet[0] + PAD;
-                for (index, target) in [Target::ResourcePacks, Target::Sounds, Target::Done]
-                    .into_iter()
-                    .enumerate()
-                {
-                    let x = left + index as f32 * (third + 6.0);
-                    targets.push((target, [x, bottom, x + third, bottom + BUTTON_H]));
+                for (index, target) in buttons.into_iter().enumerate() {
+                    let x = left + index as f32 * (each + gap);
+                    targets.push((target, [x, bottom, x + each, bottom + BUTTON_H]));
                 }
             }
             Geometry { sheet, targets }
@@ -350,6 +378,12 @@ impl Pause {
         self.shown = 0.0;
     }
 
+    /// Straight to Skin Customization (validation captures).
+    pub fn open_skin(&mut self) {
+        self.page = Page::Skin;
+        self.shown = 1.0;
+    }
+
     /// Straight to Music & Sounds (validation captures).
     pub fn open_sounds(&mut self) {
         self.page = Page::Sounds;
@@ -377,7 +411,7 @@ impl Pause {
         self.drag = None;
         self.drag_volume = None;
         self.page = match self.page {
-            Page::Packs | Page::Sounds => Page::Settings,
+            Page::Packs | Page::Sounds | Page::Skin => Page::Settings,
             Page::Settings => Page::Menu,
             _ => Page::Closed,
         };
@@ -459,7 +493,7 @@ impl Pause {
                 Click::Leave
             }
             Target::Done => {
-                self.page = if self.page == Page::Sounds {
+                self.page = if matches!(self.page, Page::Sounds | Page::Skin) {
                     Page::Settings
                 } else {
                     Page::Menu
@@ -469,6 +503,14 @@ impl Pause {
             Target::Sounds => {
                 self.page = Page::Sounds;
                 Click::Nothing
+            }
+            Target::SkinCustomization => {
+                self.page = Page::Skin;
+                Click::Nothing
+            }
+            Target::SkinPart(part) => {
+                settings.skin_parts ^= 1 << part;
+                Click::SkinParts
             }
             Target::Volume(category) => {
                 self.drag_volume = Some(category);
@@ -597,6 +639,7 @@ impl Pause {
         let title = match self.page {
             Page::Settings => translate("options.title"),
             Page::Sounds => translate("options.sounds.title"),
+            Page::Skin => translate("options.skinCustomisation.title"),
             _ => translate("menu.game"),
         };
         canvas.system_text(
@@ -641,14 +684,17 @@ impl Pause {
                     let level = settings.sound[usize::from(category)];
                     glass_slider(canvas, g.sheet[0], rect, &label, level, e);
                 }
-                Target::Sounds => button(
-                    canvas,
-                    rect,
-                    &format!("{}...", translate("options.sounds").trim_end_matches('.')),
-                    hover,
-                    false,
-                    e,
-                ),
+                Target::Sounds => button(canvas, rect, "Sounds", hover, false, e),
+                Target::SkinCustomization => button(canvas, rect, "Skin", hover, false, e),
+                Target::SkinPart(part) => {
+                    let label = translate(&format!(
+                        "options.modelPart.{}",
+                        SKIN_PARTS[usize::from(part)]
+                    ));
+                    row_label(canvas, g.sheet[0] + PAD, rect, &label, e);
+                    let on = settings.skin_parts & (1 << part) != 0;
+                    switch(canvas, rect[0], rect[1], if on { 1.0 } else { 0.0 }, e);
+                }
                 Target::GuiScale => {
                     row_label(
                         canvas,
@@ -687,17 +733,7 @@ impl Pause {
                     row_label(canvas, g.sheet[0] + PAD, rect, &label, e);
                     switch(canvas, rect[0], rect[1], if on { 1.0 } else { 0.0 }, e);
                 }
-                Target::ResourcePacks => button(
-                    canvas,
-                    rect,
-                    &format!(
-                        "{}...",
-                        translate("options.resourcepack").trim_end_matches('.')
-                    ),
-                    hover,
-                    false,
-                    e,
-                ),
+                Target::ResourcePacks => button(canvas, rect, "Packs", hover, false, e),
                 Target::Inert(_) => {}
             }
         }
@@ -713,6 +749,7 @@ impl Pause {
         let (title, title_y) = match self.page {
             Page::Settings => (translate("options.title"), 15.0),
             Page::Sounds => (translate("options.sounds.title"), 15.0),
+            Page::Skin => (translate("options.skinCustomisation.title"), 20.0),
             _ => (translate("menu.game"), 40.0),
         };
         let (gw, _) = gui_size(canvas.layout);
@@ -774,6 +811,15 @@ impl Pause {
                     continue;
                 }
                 Target::Sounds => translate("options.sounds"),
+                Target::SkinCustomization => translate("options.skinCustomisation"),
+                Target::SkinPart(part) => format!(
+                    "{}: {}",
+                    translate(&format!(
+                        "options.modelPart.{}",
+                        SKIN_PARTS[usize::from(part)]
+                    )),
+                    on_off(settings.skin_parts & (1 << part) != 0)
+                ),
             };
             let enabled = !matches!(target, Target::Inert(_));
             button_widget(canvas, &label, size, enabled, hover && enabled);
@@ -850,6 +896,17 @@ fn volume_label(settings: &Settings, category: u8, translate: &dyn Fn(&str) -> S
     };
     format!("{}: {value}", translate(&format!("soundCategory.{name}")))
 }
+
+/// `EnumPlayerModelParts` by bit, as their translation keys name them.
+const SKIN_PARTS: [&str; 7] = [
+    "cape",
+    "jacket",
+    "left_sleeve",
+    "right_sleeve",
+    "left_pants_leg",
+    "right_pants_leg",
+    "hat",
+];
 
 fn row_label(canvas: &mut Canvas<'_>, x: f32, rect: [f32; 4], label: &str, opacity: f32) {
     let y = (rect[1] + rect[3]) / 2.0 - BODY / 2.0;
@@ -1114,5 +1171,49 @@ mod tests {
             let rect = glass.targets.iter().find(|(t, _)| *t == target).unwrap().1;
             assert!(rect[0] >= glass.sheet[0] && rect[2] <= glass.sheet[2]);
         }
+    }
+
+    #[test]
+    fn skin_customization_toggles_parts_like_gui_customize_skin() {
+        let layout = Layout::new((854, 480), 1.0, 2);
+        let mut settings = Settings::default();
+        settings.toggles.vanilla_menu = true;
+        let mut pause = Pause::default();
+        pause.open_settings();
+        let g = geometry(Page::Settings, layout, true);
+        let (_, skin) = *g
+            .targets
+            .iter()
+            .find(|(t, _)| *t == Target::SkinCustomization)
+            .unwrap();
+        assert_eq!(skin, [218.0, 148.0, 368.0, 168.0]);
+        pause.press(layout, centre(skin), &mut settings);
+        assert_eq!(pause.page, Page::Skin);
+        let g = geometry(Page::Skin, layout, true);
+        let at = |t: Target| g.targets.iter().find(|(x, _)| *x == t).unwrap().1;
+        assert_eq!(at(Target::SkinPart(0)), [58.0, 40.0, 208.0, 60.0]);
+        assert_eq!(at(Target::SkinPart(6)), [58.0, 112.0, 208.0, 132.0]);
+        assert_eq!(at(Target::Done), [113.0, 136.0, 313.0, 156.0]);
+        // The hat (bit 6) off and on again.
+        let hat = at(Target::SkinPart(6));
+        assert_eq!(
+            pause.press(layout, centre(hat), &mut settings),
+            Click::SkinParts
+        );
+        assert_eq!(settings.skin_parts, 0x3f);
+        assert_eq!(Settings::parse(&settings.to_json()).skin_parts, 0x3f);
+        pause.press(layout, centre(hat), &mut settings);
+        assert_eq!(settings.skin_parts, 0x7f);
+        pause.press(layout, centre(at(Target::Done)), &mut settings);
+        assert_eq!(pause.page, Page::Settings);
+        // The glass row of sub-screens stays inside its sheet.
+        let glass = geometry(Page::Settings, layout, false);
+        let skin = glass
+            .targets
+            .iter()
+            .find(|(t, _)| *t == Target::SkinCustomization)
+            .unwrap()
+            .1;
+        assert!(skin[0] >= glass.sheet[0] && skin[2] <= glass.sheet[2]);
     }
 }
